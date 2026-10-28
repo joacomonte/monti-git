@@ -28,14 +28,22 @@ pub fn run(args: &[&str], repo: &Path) -> Result<String, String> {
 }
 
 pub fn run_input(args: &[&str], repo: &Path, input: Option<&str>) -> Result<String, String> {
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(repo)
         // Fail instead of hanging forever if a remote asks for a username/password.
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        // CREATE_NO_WINDOW: without it every git call flashes a console window.
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| format!("couldn't run git: {e}"))?;
     if let Some(input) = input {
