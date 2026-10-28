@@ -57,6 +57,7 @@ struct Changes {
     changes: HashMap<String, String>, // path -> status letter
     counts: HashMap<String, (u32, u32)>, // path -> lines added, removed
     paths: Vec<String>, // what the tree shows: changed files, or every file with `all`
+    staged: Vec<String>, // uncommitted-changes row only: files in the index
 }
 
 /// Files of a selection. `target` None = the uncommitted-changes row; `base` None = root commit.
@@ -84,7 +85,8 @@ fn load_changes(repo: String, base: Option<String>, target: Option<String>, all:
         paths.sort();
         paths.dedup();
     }
-    Changes { changes, counts, paths }
+    let staged = if target.is_none() { git::staged_files(repo) } else { vec![] };
+    Changes { changes, counts, paths, staged }
 }
 
 #[derive(Serialize)]
@@ -165,6 +167,27 @@ fn discard_file(repo: String, path: String) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
+fn stage(repo: String, paths: Vec<String>) -> Result<(), String> {
+    actions::stage(&paths, Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn unstage(repo: String, paths: Vec<String>) -> Result<(), String> {
+    actions::unstage(&paths, Path::new(&repo))
+}
+
+/// Placeholder for the commit form: the previous commit's message.
+#[tauri::command(async)]
+fn last_commit_message(repo: String) -> String {
+    git::run(&["log", "-1", "--format=%B"], Path::new(&repo)).unwrap_or_default().trim().to_string()
+}
+
+#[tauri::command(async)]
+fn commit(repo: String, message: String, push: bool) -> Result<String, String> {
+    actions::commit(&message, push, Path::new(&repo))
+}
+
+#[tauri::command(async)]
 fn discard_all(repo: String) -> Result<(), String> {
     actions::discard_all(Path::new(&repo))
 }
@@ -185,7 +208,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![list_repos, load_history, load_changes, load_diff, load_dashboard, branch_chain,
-            sync, changed_file_count, checkout, pull, squash, update_branch, force_push, discard_file, discard_all, discard_hunk])
+            sync, changed_file_count, checkout, pull, squash, update_branch, force_push, discard_file, discard_all, discard_hunk,
+            stage, unstage, last_commit_message, commit])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -2,21 +2,28 @@
 <script lang="ts">
   import { WORKTREE_ID, type Commit, type Row } from "$lib/api";
   import type { Range, RepoModel } from "$lib/model.svelte";
-  import GraphCell, { LANE, PAD } from "./GraphCell.svelte";
+  import GraphCell, { LANE, PAD, laneColor } from "./GraphCell.svelte";
   import RefBadge from "./RefBadge.svelte";
 
   let { model }: { model: RepoModel } = $props();
 
-  const ROW = 62;
-  const QUIET = 26; // merge without refs: a short single-line row, so real commits lead
+  const ROW = 68; // two lines: branch badges (or the uncommitted row) above the subject
+  const LINE = 44; // plain commit: date · subject · author on one line
+  const QUIET = 32; // merge without refs: a short single-line row, so real commits lead
   const isQuietMerge = (c: Commit) => c.parents.length > 1 && c.refs.length === 0;
+  const isTall = (c: Commit) => c.id === WORKTREE_ID || badges(c.refs).length > 0;
 
   let scrollTop = $state(0);
   let viewHeight = $state(600);
   let scroller: HTMLDivElement;
 
   const width = $derived(model.graphLanes * LANE + PAD * 2);
-  const heightOf = (r: Range) => (r[0] === r[1] && isQuietMerge(model.commits[r[0]]) ? QUIET : ROW);
+  const heightOf = (r: Range) => {
+    const c = model.commits[r[0]];
+    return r[0] === r[1] && isQuietMerge(c) ? QUIET : isTall(c) ? ROW : LINE;
+  };
+  /** Subject text tinted with its branch line's color, mixed with the foreground so it stays readable. */
+  const tint = (r: Range) => `color-mix(in oklab, ${laneColor(rowFor(r).color)} 28%, var(--foreground))`;
   const offsets = $derived.by(() => {
     const out = new Float64Array(model.visible.length + 1);
     model.visible.forEach((r, i) => (out[i + 1] = out[i] + heightOf(r)));
@@ -116,6 +123,16 @@
   }
 </script>
 
+{#snippet pill(range: Range, groupSize: number, commit: Commit)}
+  <button
+    class="pill shrink-0"
+    class:dim={range[1] === range[0]}
+    id="group-toggle-{commit.id}"
+    title={range[1] > range[0] ? `Show ${groupSize - 1} more commits by ${commit.author} (→)` : `Collapse ${groupSize} commits (←)`}
+    onclick={(e) => { e.stopPropagation(); model.toggle(range[0]); }}
+  >{groupSize}</button>
+{/snippet}
+
 <div
   bind:this={scroller}
   bind:clientHeight={viewHeight}
@@ -147,31 +164,31 @@
             isWorktree={commit.id === WORKTREE_ID} isMerge={commit.parents.length > 1} names={model.names} {highlight} />
         </div>
         {#if quiet}
-          <div class="flex min-w-0 items-center px-2 text-[11px] text-tertiary opacity-70"><span class="truncate">{commit.subject}</span></div>
+          <div class="flex min-w-0 items-center px-2 text-[12px] text-tertiary opacity-70"><span class="truncate">{commit.subject}</span></div>
+        {:else if !isTall(commit)}
+          <div class="flex min-w-0 flex-1 items-center gap-2.5 px-2 text-[12.5px] whitespace-nowrap" class:opacity-55={commit.parents.length > 1}>
+            {#if groupSize}{@render pill(range, groupSize, commit)}{/if}
+            <span class="shrink-0 text-tertiary" title={new Date(commit.date * 1000).toLocaleString()}>{when(commit.date)}</span>
+            <span class="min-w-0 flex-1 truncate" style:color={tint(range)} title={commit.subject}>{commit.subject}</span>
+            <span class="max-w-[35%] shrink-0 truncate text-tertiary" title={commit.author}>{commit.author}</span>
+          </div>
         {:else}
           <div class="flex min-w-0 flex-1 flex-col justify-center gap-[5px] px-2" class:opacity-55={commit.parents.length > 1}>
             {#if commit.id === WORKTREE_ID}
-              <div class="text-[13px] font-semibold">Uncommitted changes</div>
+              <div class="text-[13.5px] font-semibold">Uncommitted changes</div>
             {:else}
-              <!-- Left to right: commit count, branches, then author/date (least relevant). -->
+              <!-- Left to right: commit count, branches, date; the author on the right edge. -->
               <div class="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-                {#if groupSize}
-                  <button
-                    class="pill shrink-0"
-                    class:dim={range[1] === range[0]}
-                    id="group-toggle-{commit.id}"
-                    title={range[1] > range[0] ? `Show ${groupSize - 1} more commits by ${commit.author} (→)` : `Collapse ${groupSize} commits (←)`}
-                    onclick={(e) => { e.stopPropagation(); model.toggle(range[0]); }}
-                  >{groupSize}</button>
-                {/if}
+                {#if groupSize}{@render pill(range, groupSize, commit)}{/if}
                 {#each badges(commit.refs) as badge (badge.ref)}
-                  <RefBadge ref={badge.ref} isSynced={badge.isSynced} />
+                  <RefBadge ref={badge.ref} isSynced={badge.isSynced} color={laneColor(rowFor(range).color)} />
                 {/each}
-                <span class="shrink-0 text-[12px] font-medium text-muted-foreground">{commit.author}</span>
-                <span class="shrink-0 text-[12px] text-tertiary" title={new Date(commit.date * 1000).toLocaleString()}>{when(commit.date)}</span>
+                <span class="shrink-0 text-[12.5px] text-tertiary" title={new Date(commit.date * 1000).toLocaleString()}>{when(commit.date)}</span>
+                <!-- Author right-aligned, same column as on one-line rows. -->
+                <span class="ml-auto truncate pl-2 text-[12.5px] text-tertiary" title={commit.author}>{commit.author}</span>
               </div>
             {/if}
-            <div class="truncate text-[12px] text-muted-foreground">{commit.subject}</div>
+            <div class="truncate text-[12.5px]" style:color={tint(range)}>{commit.subject}</div>
           </div>
         {/if}
       </div>

@@ -185,6 +185,7 @@ export class RepoModel {
 
   changes = $state.raw<Record<string, string>>({});
   counts = $state.raw<Record<string, [number, number]>>({});
+  staged = $state.raw(new Set<string>()); // uncommitted-changes row: files in the index (checked in the tree)
   tree = $state.raw<FileNode[]>([]);
   changedDirs = $state.raw(new Set<string>()); // folders containing a change, highlighted and expanded
   expandedDirs = $state.raw(new Set<string>());
@@ -227,6 +228,7 @@ export class RepoModel {
     if (this.selected !== range || this.showAllFiles !== all) return; // user moved on while git was running
     this.changes = result.changes;
     this.counts = result.counts;
+    this.staged = new Set(result.staged);
     this.tree = fileTree(result.paths);
     const dirs = new Set<string>();
     for (const path of Object.keys(result.changes)) {
@@ -508,6 +510,34 @@ export class RepoModel {
   discardHunk(index: number) {
     const path = this.fileFilter;
     if (path) this.discard((repo) => api.discardHunk(repo, path, index));
+  }
+
+  /** Stages or unstages files from the tree's checkboxes; only the tree and the dashboard counts refresh. */
+  async setStaged(paths: string[], on: boolean) {
+    const repo = this.repo;
+    if (!repo || !paths.length) return;
+    try {
+      await (on ? api.stage(repo, paths) : api.unstage(repo, paths));
+    } catch (error) {
+      this.syncStatus = `${on ? "Stage" : "Unstage"} failed: ` + String(error);
+    }
+    if (this.repo !== repo) return;
+    this.loadTree();
+    this.loadDashboard();
+  }
+
+  /** Commits what's staged (and pushes with `push`). Resolves to false if git refused, so the form keeps the message. */
+  async commit(message: string, push: boolean) {
+    let failed = false;
+    await this.act(push ? "Committing and pushing…" : "Committing…", "Commit failed", async (repo) => {
+      try {
+        return await api.commit(repo, message, push);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    });
+    return !failed;
   }
 
   private async discard(work: (repo: string) => Promise<void>) {

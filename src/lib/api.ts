@@ -38,6 +38,7 @@ export type Changes = {
   changes: Record<string, string>; // path -> status letter
   counts: Record<string, [number, number]>; // path -> added, removed
   paths: string[];
+  staged: string[]; // uncommitted-changes row only: files in the index
 };
 
 export type Side = { number: number; text: string; changed: [number, number] | null };
@@ -105,4 +106,8 @@ export const api = {
   discardFile: (repo: string, path: string) => invoke<void>("discard_file", { repo, path }),
   discardAll: (repo: string) => invoke<void>("discard_all", { repo }),
   discardHunk: (repo: string, path: string, index: number) => invoke<void>("discard_hunk", { repo, path, index }),
+  stage: (repo: string, paths: string[]) => invoke<void>("stage", { repo, paths }),
+  unstage: (repo: string, paths: string[]) => invoke<void>("unstage", { repo, paths }),
+  lastCommitMessage: (repo: string) => invoke<string>("last_commit_message", { repo }),
+  commit: (repo: string, message: string, push: boolean) => invoke<string>("commit", { repo, message, push }),
 };

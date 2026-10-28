@@ -331,3 +331,34 @@ pub fn discard_hunk(index: usize, diff: &str, repo: &Path) -> Result<(), String>
     }
     Ok(())
 }
+
+/// Adds files to the index (new, modified or deleted alike).
+pub fn stage(paths: &[String], repo: &Path) -> Result<(), String> {
+    let args: Vec<&str> = ["add", "-A", "--"].into_iter().chain(paths.iter().map(String::as_str)).collect();
+    run(&args, repo).map(|_| ())
+}
+
+/// Takes files out of the index; their changes stay in the working tree.
+pub fn unstage(paths: &[String], repo: &Path) -> Result<(), String> {
+    let args: Vec<&str> = ["reset", "-q", "--"].into_iter().chain(paths.iter().map(String::as_str)).collect();
+    run(&args, repo).map(|_| ())
+}
+
+/// Commits what's staged. With `push`, pushes the current branch too, setting its upstream the first time.
+pub fn commit(message: &str, push: bool, repo: &Path) -> Result<String, String> {
+    run_input(&["commit", "-q", "-F", "-"], repo, Some(message))?;
+    if !push {
+        return Ok("Committed".into());
+    }
+    // The commit is done either way: a failed push is reported as a status, not as an error that keeps the form filled.
+    let branch = run(&["symbolic-ref", "--short", "HEAD"], repo)?.trim().to_string();
+    let pushed = if run(&["rev-parse", "--abbrev-ref", "@{u}"], repo).is_ok() {
+        run(&["push"], repo)
+    } else {
+        run(&["push", "-u", "origin", &branch], repo)
+    };
+    Ok(match pushed {
+        Ok(_) => format!("Committed and pushed {branch}"),
+        Err(e) => format!("Committed, but the push failed: {}", e.lines().next().unwrap_or("unknown error")),
+    })
+}

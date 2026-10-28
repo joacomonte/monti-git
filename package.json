@@ -1,6 +1,6 @@
 {
   "name": "monti-git",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "",
   "type": "module",
   "scripts": {
@@ -28,6 +28,7 @@
     "@tauri-apps/cli": "^2",
     "bits-ui": "^2.20.2",
     "clsx": "^2.1.1",
+    "material-icon-theme": "^5.40.0",
     "svelte": "^5.56.3",
     "svelte-check": "^4.6.0",
     "tailwind-merge": "^3.7.0",

@@ -103,12 +103,12 @@
 {/snippet}
 
 {#snippet status(label: string, info: string, s: Status)}
-  <div class="flex flex-col gap-1">
+  <div class="flex flex-col gap-1.5">
     <div class="flex items-center gap-1">
       <span class="text-[9px] font-semibold tracking-[0.6px] text-tertiary uppercase">{label}</span>
       <InfoButton title={label} text={info} id="dashboard-info-{card.ref}-{label}" />
     </div>
-    <div class="flex flex-col gap-px text-[12px]" title={s.help}>
+    <div class="flex flex-col gap-1 text-[12px]" title={s.help}>
       <div class="flex items-center gap-[5px]">
         <s.icon size={10} strokeWidth={3} class="w-[11px] shrink-0 {s.blue ? 'text-primary' : 'text-muted-foreground'}" />
         <span class="truncate {s.blue ? 'text-primary' : 'text-muted-foreground'}">{s.text}</span>
@@ -176,7 +176,7 @@
   <div class="w-px shrink-0 bg-border"></div>
 
   <!-- Status column: small and quiet, color only where something needs doing. -->
-  <div class="flex w-[170px] shrink-0 flex-col gap-3">
+  <div class="flex w-[210px] shrink-0 flex-col gap-5 pl-1">
     <div class="-mb-2 flex justify-end">
       <Popover.Root bind:open={showActions}>
         <Popover.Trigger class="menu" id="dashboard-card-menu-{card.ref}" title="Actions: check out, pull, copy the name…"><ChevronDown size={10} strokeWidth={3.5} /></Popover.Trigger>

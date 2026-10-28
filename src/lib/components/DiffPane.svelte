@@ -13,6 +13,7 @@
   /** ⌥← / ⌥→: previous/next changed file. */
   function keydown(e: KeyboardEvent) {
     if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return; // word jumps while typing
     e.preventDefault();
     model.stepFile(e.key === "ArrowLeft" ? -1 : 1);
   }

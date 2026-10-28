@@ -177,6 +177,11 @@ pub fn worktree_files(repo: &Path) -> HashMap<String, String> {
     result
 }
 
+/// Files with staged changes (new files included once `git add`ed).
+pub fn staged_files(repo: &Path) -> Vec<String> {
+    ok(&["-c", "core.quotePath=false", "diff", "--cached", "--name-only", "--no-renames"], repo).unwrap_or_default().lines().map(String::from).collect()
+}
+
 /// Lines added/removed per file (None base = root commit, None target = working tree vs HEAD). Binary files are left out.
 pub fn line_counts(base: Option<&str>, target: Option<&str>, repo: &Path) -> HashMap<String, (u32, u32)> {
     let args: Vec<&str> = match (base, target) {
