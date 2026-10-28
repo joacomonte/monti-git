@@ -56,10 +56,10 @@
   {#if step === "choose"}
     <span class="px-2 text-[13px] font-semibold text-muted-foreground">Bring in {parentName}'s {n} new commit{n === 1 ? "" : "s"}</span>
     <div class="flex flex-col gap-1">
-      <ActionRow title="Merge (recommended)" detail="Adds one merge commit. Safest: no force push needed." icon={GitMerge}
+      <ActionRow title="Merge (recommended)" detail="Adds one merge commit. Safest: no force push needed." icon={GitMerge} color="#34c77b"
         id="update-option-merge" onclick={() => run(false)} />
       <ActionRow title="Rebase" detail={"Replays your commits on top for a straight history." + (isPushed ? " Needs a force push." : "")}
-        icon={ArrowUpDown} id="update-option-rebase" onclick={() => run(true)} />
+        icon={ArrowUpDown} color="#8b7bff" id="update-option-rebase" onclick={() => run(true)} />
       {#if !model.isUpdateDismissed(card)}
         <ActionRow title="Hide this notice" detail="Stays as a grey tag; turns blue again when {parentName} gets new commits." icon={EyeOff} grey
           id="update-option-hide" onclick={() => { model.dismissUpdate(card); dismiss(); }} />

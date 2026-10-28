@@ -57,7 +57,7 @@
         <div class="relative flex flex-col gap-1">
           <h2 id="whats-new-title" class="text-[22px] font-bold tracking-tight">What's new</h2>
           <span class="text-[12.5px] text-muted-foreground">
-            {from ? `You're on ${current} · updated from ${from}` : `monti-git ${current}`}
+            {from ? `You're on ${current} · updated from ${from}` : `Monti Git ${current}`}
           </span>
         </div>
       </div>

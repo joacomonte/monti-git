@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.1.7",
+    "changes": [
+      { "kind": "new", "title": "Pick your repositories", "detail": "Add repos one by one, or a folder with several inside. Nothing is scanned on its own anymore, so it works on Windows too." },
+      { "kind": "new", "title": "Right-click a repo", "detail": "Add it to Favorites, hide it, or remove it (or its whole folder) from the sidebar." },
+      { "kind": "new", "title": "Star your favorites", "detail": "Right after adding several repos, pick the ones you use most: they stay at the top of the sidebar." },
+      { "kind": "improved", "title": "Colorful actions", "detail": "Every option in the branch menus has its own color, so you find it at a glance." },
+      { "kind": "improved", "title": "Opens on the dashboard", "detail": "The app always starts on the overview of your branches." },
+      { "kind": "improved", "title": "Monti Git", "detail": "The app has a proper name now." }
+    ]
+  },
+  {
     "version": "0.1.6",
     "changes": [
       { "kind": "new", "title": "What's new", "detail": "After every update, this screen shows what changed since the version you had." },

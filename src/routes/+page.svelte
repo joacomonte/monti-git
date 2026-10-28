@@ -8,6 +8,7 @@
   import DiffPane from "$lib/components/DiffPane.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
   import Loader from "$lib/components/Loader.svelte";
+  import Onboarding from "$lib/components/Onboarding.svelte";
   import PaneDivider from "$lib/components/PaneDivider.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import UpdateGate from "$lib/components/UpdateGate.svelte";
@@ -32,7 +33,7 @@
     {#if model.isRefreshing}<div class="refresh-bar" title="Refreshing: checking the repo for anything new"></div>{/if}
     <!-- Top row: view switch centered; the graph's "My branches only" filter on the right. The strip drags the window. -->
     <header data-tauri-drag-region class="relative flex h-[56px] shrink-0 items-center gap-2 px-3.5 pt-1">
-      {#if model.repo && !model.error}
+      {#if model.repo && !model.error && model.hasSources && !model.onboarding}
         <Tabs.Root bind:value={() => (model.showGraph ? "graph" : "dashboard"), (v) => model.setShowGraph(v === "graph")}
           class="absolute left-1/2 -translate-x-1/2" id="view-switch">
           <Tabs.List class="h-10 w-[340px]">
@@ -58,7 +59,9 @@
     {#if model.repo && model.pendingCheckout}<CheckoutPrompt target={model.pendingCheckout} {model} />{/if}
 
     <div class="min-h-0 flex-1" bind:clientWidth={space.width} bind:clientHeight={space.height}>
-      {#if model.error}
+      {#if !model.hasSources || model.onboarding}
+        <Onboarding {model} />
+      {:else if model.error}
         <div class="flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
           <TriangleAlert size={32} strokeWidth={1.5} />
           <span class="text-[15px] font-semibold text-foreground">Not a git repository</span>

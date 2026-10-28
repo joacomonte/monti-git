@@ -1,6 +1,6 @@
 [package]
 name = "monti-git"
-version = "0.1.6"
+version = "0.1.7"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2024"
@@ -23,6 +23,7 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

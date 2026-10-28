@@ -1,11 +1,12 @@
-<!-- Repos of the scan folder: Favorites first, then one section per owner; groups and repos ordered by most recent activity. -->
+<!-- Repos the user added (one by one or a folder of them): Favorites first, then one section per owner; groups and repos ordered by most recent activity. -->
 <script lang="ts">
-  import { ChevronRight, GitBranch, RefreshCw, RotateCw, Star, TriangleAlert } from "@lucide/svelte";
+  import { ChevronRight, EyeOff, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, RotateCw, Star, TriangleAlert, X } from "@lucide/svelte";
+  import ActionRow from "./ActionRow.svelte";
   import { Button } from "$lib/components/ui/button";
   import * as Popover from "$lib/components/ui/popover";
   import { getVersion } from "@tauri-apps/api/app";
   import { api, type RepoEntry } from "$lib/api";
-  import { prefs, type RepoModel } from "$lib/model.svelte";
+  import type { RepoModel } from "$lib/model.svelte";
 
   let { model }: { model: RepoModel } = $props();
   let repos = $state<RepoEntry[]>([]);
@@ -13,21 +14,23 @@
   getVersion().then((v) => (version = v));
 
   async function refresh() {
-    // Opened by path on a previous run but outside the scan folder: still listed.
-    repos = await api.listRepos(null, model.repo ? [model.repo] : []);
+    const { folders, repos: added, hidden } = model.sources;
+    repos = (await api.listRepos(folders, added)).filter((r) => !hidden.includes(r.path));
   }
-  refresh();
+  $effect(() => {
+    model.sources; // relist whenever a folder or repo is added, removed or hidden
+    refresh();
+  });
 
-  // Same blob as SidebarPrefs in RepoSidebar.swift; only `favorites` is used so far.
-  type SidebarPrefs = { favorites?: string[] };
-  let favorites = $state(prefs.get<SidebarPrefs>("sidebarPrefs", {}).favorites ?? []);
+  let showAdd = $state(false);
+  const add = (kind: "repo" | "folder") => { showAdd = false; model.addRepos(kind); };
 
-  function toggleFavorite(path: string) {
-    favorites = favorites.includes(path) ? favorites.filter((p) => p !== path) : [...favorites, path];
-    prefs.set("sidebarPrefs", { ...prefs.get<SidebarPrefs>("sidebarPrefs", {}), favorites });
-  }
+  // Right-click menu on a repo row.
+  let menu = $state<{ x: number; y: number; repo: RepoEntry } | null>(null);
+  const run = (action: () => void) => () => { menu = null; action(); };
 
   const sections = $derived.by(() => {
+    const favorites = model.favorites;
     const sorted = [...repos].sort((a, b) => b.lastActivity - a.lastActivity);
     const groups = new Map<string, RepoEntry[]>();
     for (const repo of sorted.filter((r) => !favorites.includes(r.path))) {
@@ -59,6 +62,8 @@
     setTimeout(() => (copied = false), 1500);
   }
 </script>
+
+<svelte:window onclick={() => (menu = null)} onkeydown={(e) => { if (e.key === "Escape") menu = null; }} onblur={() => (menu = null)} />
 
 <aside class="flex h-full flex-col bg-sidebar">
   <!-- Room for the window buttons, then the controls; the strip drags the window. -->
@@ -101,6 +106,15 @@
         </Popover.Content>
       </Popover.Root>
     {/if}
+    <!-- Always here: add a repo, or a folder whose repos are all listed. -->
+    <Popover.Root bind:open={showAdd}>
+      <Popover.Trigger class="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-quinary hover:text-foreground" id="add-repos"
+        title="Add repositories"><Plus size={15} strokeWidth={2.5} /></Popover.Trigger>
+      <Popover.Content side="right" align="start" class="w-[300px] gap-1 p-1.5">
+        <ActionRow title="Add repository" detail="One or more git repos, picked one by one" icon={FolderGit2} color="#8b7bff" id="add-repository" onclick={() => add("repo")} />
+        <ActionRow title="Add folder of repos" detail="Every repo inside it; new ones show up by themselves" icon={FolderTree} color="#2fc4b2" id="add-folder" onclick={() => add("folder")} />
+      </Popover.Content>
+    </Popover.Root>
     <Button variant="ghost" size="icon-sm" onclick={() => model.sync()} disabled={!model.repo || model.isSyncing} id="sync-button"
       title="Pull everything: downloads the latest from the server and updates every branch that's behind. Safe: it skips branches where you have unpushed commits or uncommitted changes. Ej: main is 3 behind → it catches up.">
       <RefreshCw class={model.isSyncing ? "animate-spin" : ""} />
@@ -113,13 +127,14 @@
     {#each sections as [owner, list] (owner)}
       <div class="px-2 pt-3 pb-1 text-[11px] font-semibold text-tertiary">{owner}</div>
       {#each list as repo (repo.path)}
-        {@const isFavorite = favorites.includes(repo.path)}
+        {@const isFavorite = model.favorites.includes(repo.path)}
         <button
           class="repo flex h-[26px] w-full items-center gap-2 rounded-md px-2 text-left text-[13px]"
           class:active={model.repo === repo.path}
           title={repo.path}
           id="repo-{repo.path}"
           onclick={() => { if (model.repo !== repo.path) model.setShowGraph(false); model.open(repo.path); }}
+          oncontextmenu={(e) => { e.preventDefault(); menu = { x: e.clientX, y: e.clientY, repo }; }}
         >
           <GitBranch size={13} class="shrink-0 text-muted-foreground" />
           <span class="flex-1 truncate">{nameOf(repo.path)}</span>
@@ -127,18 +142,38 @@
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <span role="button" tabindex="0" class="star shrink-0" class:on={isFavorite} id="favorite-toggle-{nameOf(repo.path)}"
             title={isFavorite ? "Remove from Favorites" : "Add to Favorites: keeps this repo at the top of the list."}
-            onclick={(e) => { e.stopPropagation(); toggleFavorite(repo.path); }}>
+            onclick={(e) => { e.stopPropagation(); model.toggleFavorite(repo.path); }}>
             <Star size={10} fill={isFavorite ? "currentColor" : "none"} />
           </span>
         </button>
       {/each}
     {/each}
   </nav>
+  {#if menu}
+    {@const repo = menu.repo}
+    {@const isFavorite = model.favorites.includes(repo.path)}
+    {@const folderName = repo.folder ? nameOf(repo.folder) : ""}
+    <div class="enter-fade fixed z-50 flex w-[230px] flex-col rounded-lg border bg-popover p-1 text-[12.5px] shadow-lg" id="repo-menu"
+      style:left="{menu.x}px" style:top="{menu.y}px">
+      <button class="item" id="repo-menu-favorite" onclick={run(() => model.toggleFavorite(repo.path))}>
+        <Star size={13} />{isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+      </button>
+      <div class="my-1 h-px bg-border"></div>
+      {#if repo.folder}
+        <button class="item" id="repo-menu-hide" onclick={run(() => model.hideRepo(repo.path))}><EyeOff size={13} />Hide from sidebar</button>
+        <button class="item" id="repo-menu-remove-folder" onclick={run(() => model.removeFolder(repo.folder!))}>
+          <FolderMinus size={13} /><span class="truncate">Remove folder "{folderName}"</span>
+        </button>
+      {:else}
+        <button class="item" id="repo-menu-remove" onclick={run(() => model.removeRepo(repo.path))}><X size={13} />Remove from sidebar</button>
+      {/if}
+    </div>
+  {/if}
   {#if model.syncStatus}
     <!-- Last action's result (sync, checkout, pull…). -->
     <div class="enter line-clamp-2 shrink-0 px-2.5 py-2 text-[10px] text-tertiary" title={model.syncStatus} id="sync-status">{model.syncStatus}</div>
   {/if}
-  <div class="shrink-0 px-2.5 pb-2 text-[10px] text-tertiary" id="app-version">monti-git v{version}</div>
+  <div class="shrink-0 px-2.5 pb-2 text-[10px] text-tertiary" id="app-version">Monti Git v{version}</div>
 </aside>
 
 <style>
@@ -147,4 +182,6 @@
   .star { display: none; color: var(--tertiary); }
   .star.on { display: block; color: rgb(234 179 8 / 0.7); }
   .repo:hover .star { display: block; }
+  .item { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 6px; text-align: left; }
+  .item:hover { background: var(--quinary); }
 </style>

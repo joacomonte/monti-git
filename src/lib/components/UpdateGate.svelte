@@ -89,7 +89,7 @@
 {#if available && phase === "ready"}
   <div class="enter fixed right-4 bottom-4 z-50 flex items-center gap-2.5 rounded-xl border bg-popover px-3.5 py-2.5 text-[12px] shadow-lg" id="update-toast">
     <Sparkles size={14} class="shrink-0 text-primary" />
-    <span>monti-git {available} is out. It installs next time you open the app.</span>
+    <span>Monti Git {available} is out. It installs next time you open the app.</span>
     <button class="grid size-5 place-items-center text-muted-foreground" title="Dismiss" id="update-toast-dismiss" onclick={() => (available = null)}>
       <X size={11} strokeWidth={3} />
     </button>

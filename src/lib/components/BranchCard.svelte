@@ -22,7 +22,7 @@
     cutFrom: "The branch this one was created from. Files and Commits are compared against it. Ej: you created it off main → it says main.",
     promoted: "Did this branch's work already reach main or qa? Ej: \"no, not in main · 3 commits waiting\" = 3 of your commits still need a PR into main. \"yes, in qa\" = it's already on qa.",
     remote: "Your copy vs the server's. Ej: \"2 to push\" = 2 commits only you have; \"not pushed yet\" = it only lives on your computer.",
-    wip: "Unsaved changes monti-git put aside when you switched away. Ej: you left with half-done work → it waits here and comes back when you return.",
+    wip: "Unsaved changes Monti Git put aside when you switched away. Ej: you left with half-done work → it waits here and comes back when you return.",
   };
 
   const localName = (ref: string) => (/^(origin|upstream)\//.test(ref) ? ref.slice(ref.indexOf("/") + 1) : ref);

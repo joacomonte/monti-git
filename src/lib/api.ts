@@ -32,7 +32,7 @@ export type History = {
   hasMore: boolean;
 };
 
-export type RepoEntry = { path: string; owner: string; lastActivity: number };
+export type RepoEntry = { path: string; owner: string; lastActivity: number; folder: string | null }; // folder: the added folder it came from
 
 export type Changes = {
   changes: Record<string, string>; // path -> status letter
@@ -83,7 +83,8 @@ export type SyncResult = { updated: string[]; skipped: string[]; log: string[] }
 export type WipMode = "shelve" | "commit" | "carry";
 
 export const api = {
-  listRepos: (folder: string | null, extras: string[]) => invoke<RepoEntry[]>("list_repos", { folder, extras }),
+  listRepos: (folders: string[], repos: string[]) => invoke<RepoEntry[]>("list_repos", { folders, repos }),
+  isRepo: (path: string) => invoke<boolean>("is_repo", { path }),
   loadHistory: (repo: string, limit: number, onlyMine: boolean, preferred: string | null) =>
     invoke<History>("load_history", { repo, limit, onlyMine, preferred }),
   loadChanges: (repo: string, base: string | null, target: string | null, all: boolean) =>

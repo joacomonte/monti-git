@@ -1,4 +1,4 @@
-//! Repos shown in the sidebar: every git repo directly inside the scan folder, plus the ones opened by hand.
+//! Repos shown in the sidebar: every git repo directly inside the folders the user added, plus the repos added one by one.
 use crate::git;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -9,21 +9,26 @@ pub struct RepoEntry {
     pub owner: String,
     #[serde(rename = "lastActivity")]
     pub last_activity: i64, // unix seconds of the newest local branch commit, 0 = no commits yet
+    pub folder: Option<String>, // the added folder it was found in; None = added on its own
 }
 
-pub fn default_folder() -> PathBuf {
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
-    Path::new(&home).join("Documents").join("Dev")
+/// .git is a folder in normal repos and a file in worktrees: both count.
+pub fn is_repo(path: &Path) -> bool {
+    path.join(".git").exists()
 }
 
-pub fn discover(folder: &Path, extras: &[String]) -> Vec<RepoEntry> {
-    let scanned = std::fs::read_dir(folder).into_iter().flatten().flatten().map(|e| e.path());
-    let mut paths: Vec<PathBuf> = scanned.chain(extras.iter().map(PathBuf::from))
-        .filter(|p| p.join(".git").exists()) // .git is a folder in normal repos and a file in worktrees: both count
-        .collect();
-    paths.sort();
-    paths.dedup();
-    paths.iter().map(|p| RepoEntry { path: p.to_string_lossy().into(), owner: owner(p), last_activity: last_activity(p) }).collect()
+pub fn discover(folders: &[String], repos: &[String]) -> Vec<RepoEntry> {
+    let mut found: Vec<(PathBuf, Option<String>)> = repos.iter().map(|r| (PathBuf::from(r), None)).collect();
+    for folder in folders {
+        let children = std::fs::read_dir(folder).into_iter().flatten().flatten().map(|e| e.path());
+        found.extend(children.map(|p| (p, Some(folder.clone()))));
+    }
+    found.retain(|(p, _)| is_repo(p));
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found.dedup_by(|a, b| a.0 == b.0); // added on its own and inside a folder: listed once
+    found.into_iter()
+        .map(|(p, folder)| RepoEntry { path: p.to_string_lossy().into(), owner: owner(&p), last_activity: last_activity(&p), folder })
+        .collect()
 }
 
 fn last_activity(repo: &Path) -> i64 {

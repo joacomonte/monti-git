@@ -1,4 +1,5 @@
 // App state, ported from RepoModel in ContentView.swift. Prefs keep the Swift UserDefaults key names.
+import { open as pickFolders } from "@tauri-apps/plugin-dialog";
 import { api, WORKTREE_ID, type Card, type Commit, type Dashboard, type DiffRow, type Row, type WipMode } from "./api";
 
 export const prefs = {
@@ -282,7 +283,7 @@ export class RepoModel {
 
   dashboard = $state.raw<Dashboard | null>(null);
   isLoadingDashboard = $state(false);
-  showGraph = $state(prefs.get("showGraph", false)); // false = dashboard (default)
+  showGraph = $state(false); // every launch opens on the dashboard
   highlightChain = $state.raw(new Set<string>()); // commits of the branch shown from the dashboard: its graph line glows
   dismissedUpdates = $state.raw<Record<string, string>>({}); // branch -> parent tip when its "new commits" notice was hidden
   scrollRow = $state<{ row: number } | null>(null); // table row to bring into view; a new object every request
@@ -290,7 +291,6 @@ export class RepoModel {
   setShowGraph(value: boolean) {
     this.showGraph = value;
     if (!value) this.highlightChain = new Set();
-    prefs.set("showGraph", value);
   }
 
   /** A remote-only base ("origin/main") counts as current when its local twin is checked out. */
@@ -397,6 +397,63 @@ export class RepoModel {
     if (row < 0) return;
     this.select(this.visible[row]);
     this.scrollRow = { row };
+  }
+
+  // MARK: Repo sources: what the sidebar lists, added by the user (nothing is scanned by default)
+
+  sources = $state<{ folders: string[]; repos: string[]; hidden: string[] }>(
+    prefs.get("repoSources", { folders: [], repos: [], hidden: [] }), // hidden: repos of an added folder taken out of the list
+  );
+
+  onboarding = $state(false); // keeps the onboarding up after the first repos are added, for its favorites step
+
+  // Same blob as SidebarPrefs in RepoSidebar.swift; only `favorites` is used so far.
+  favorites = $state<string[]>(prefs.get<{ favorites?: string[] }>("sidebarPrefs", {}).favorites ?? []);
+
+  toggleFavorite(path: string) {
+    this.favorites = this.favorites.includes(path) ? this.favorites.filter((p) => p !== path) : [...this.favorites, path];
+    prefs.set("sidebarPrefs", { ...prefs.get<object>("sidebarPrefs", {}), favorites: this.favorites });
+  }
+
+  get hasSources() {
+    return this.sources.folders.length + this.sources.repos.length > 0;
+  }
+
+  private saveSources(next: typeof this.sources) {
+    this.sources = next;
+    prefs.set("repoSources", next);
+  }
+
+  /** Native folder picker. "repo": each pick must be a git repo. "folder": every repo directly inside it, rescanned on refresh. */
+  async addRepos(kind: "repo" | "folder") {
+    const picked = await pickFolders({ directory: true, multiple: true, title: kind === "repo" ? "Add repositories" : "Add a folder of repositories" });
+    const paths = picked == null ? [] : Array.isArray(picked) ? picked : [picked];
+    if (!paths.length) return;
+    const s = this.sources;
+    const unhide = (added: string[]) => s.hidden.filter((h) => !added.includes(h));
+    if (kind === "folder") {
+      this.saveSources({ ...s, folders: [...new Set([...s.folders, ...paths])] });
+      return;
+    }
+    const checks = await Promise.all(paths.map((p) => api.isRepo(p)));
+    const repos = paths.filter((_, i) => checks[i]);
+    const rejected = paths.filter((_, i) => !checks[i]);
+    if (rejected.length) this.syncStatus = `Not a git repository: ${rejected.map((p) => p.split(/[\\/]/).pop()).join(", ")}. Use "Add folder of repos" for a folder that contains several.`;
+    if (!repos.length) return;
+    this.saveSources({ ...s, repos: [...new Set([...s.repos, ...repos])], hidden: unhide(repos) });
+    if (!this.repo) this.open(repos[0]);
+  }
+
+  removeRepo(path: string) {
+    this.saveSources({ ...this.sources, repos: this.sources.repos.filter((r) => r !== path) });
+  }
+
+  hideRepo(path: string) {
+    this.saveSources({ ...this.sources, hidden: [...this.sources.hidden, path] });
+  }
+
+  removeFolder(folder: string) {
+    this.saveSources({ ...this.sources, folders: this.sources.folders.filter((f) => f !== folder) });
   }
 
   // MARK: Actions (see src-tauri/src/actions.rs)

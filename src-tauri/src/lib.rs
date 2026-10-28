@@ -7,14 +7,18 @@ mod library;
 
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // `async` in the attribute runs these on a worker thread, so git never blocks the UI.
 
 #[tauri::command(async)]
-fn list_repos(folder: Option<String>, extras: Vec<String>) -> Vec<library::RepoEntry> {
-    let folder = folder.map(PathBuf::from).unwrap_or_else(library::default_folder);
-    library::discover(&folder, &extras)
+fn list_repos(folders: Vec<String>, repos: Vec<String>) -> Vec<library::RepoEntry> {
+    library::discover(&folders, &repos)
+}
+
+#[tauri::command(async)]
+fn is_repo(path: String) -> bool {
+    library::is_repo(Path::new(&path))
 }
 
 #[derive(Serialize)]
@@ -204,12 +208,13 @@ fn discard_hunk(repo: String, path: String, index: usize) -> Result<(), String> 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![list_repos, load_history, load_changes, load_diff, load_dashboard, branch_chain,
             sync, changed_file_count, checkout, pull, squash, update_branch, force_push, discard_file, discard_all, discard_hunk,
-            stage, unstage, last_commit_message, commit])
+            stage, unstage, last_commit_message, commit, is_repo])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

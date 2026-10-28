@@ -20,10 +20,13 @@ jobs:
       - id: create
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The id comes from the create response: a draft isn't findable by its tag until it's published.
         run: |
           node .github/scripts/release.mjs notes > notes.md
-          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft --title "monti-git $GITHUB_REF_NAME" --notes-file notes.md
-          echo "id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id")" >> "$GITHUB_OUTPUT"
+          id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$GITHUB_REF_NAME" -f name="Monti Git $GITHUB_REF_NAME" \
+            -F draft=true -F body=@notes.md --jq .id)
+          test -n "$id"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
 
   build:
     needs: create-release
@@ -63,14 +66,19 @@ jobs:
           args: ${{ matrix.args }}
 
   publish:
-    needs: build
+    needs: [create-release, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Everything by release id (the release is still a draft): fetch the signatures, upload latest.json, then publish.
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ID: ${{ needs.create-release.outputs.id }}
         run: |
-          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -p "*.sig" -D sigs
+          mkdir sigs
+          gh api "repos/$GITHUB_REPOSITORY/releases/$ID" --jq '.assets[] | select(.name | endswith(".sig")) | "\(.id) \(.name)"' |
+            while read -r asset name; do gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$asset" > "sigs/$name"; done
           node .github/scripts/release.mjs latest-json > latest.json
-          gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" latest.json --clobber
-          gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft=false --latest
+          curl -sSf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" --data-binary @latest.json \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$ID/assets?name=latest.json" > /dev/null
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F draft=false -f make_latest=true > /dev/null
