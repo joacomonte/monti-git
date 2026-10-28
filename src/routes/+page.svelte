@@ -10,6 +10,7 @@
   import Loader from "$lib/components/Loader.svelte";
   import PaneDivider from "$lib/components/PaneDivider.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
+  import UpdateGate from "$lib/components/UpdateGate.svelte";
   import { prefs, RepoModel } from "$lib/model.svelte";
 
   const model = new RepoModel();
@@ -22,7 +23,7 @@
 
 <!-- Back from the editor/terminal: pick up new commits, checkouts and uncommitted changes. -->
 <svelte:window onfocus={() => model.reload()} />
-
+<UpdateGate>
 <div class="grid h-full grid-cols-[220px_1fr] grid-rows-1">
   <div class="border-r"><Sidebar {model} /></div>
 
@@ -89,6 +90,7 @@
     </div>
   </main>
 </div>
+</UpdateGate>
 
 <style>
   /* Thin sliding line along the top while cached content is being refreshed. */

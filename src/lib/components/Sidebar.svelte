@@ -3,11 +3,14 @@
   import { ChevronRight, GitBranch, RefreshCw, RotateCw, Star, TriangleAlert } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button";
   import * as Popover from "$lib/components/ui/popover";
+  import { getVersion } from "@tauri-apps/api/app";
   import { api, type RepoEntry } from "$lib/api";
   import { prefs, type RepoModel } from "$lib/model.svelte";
 
   let { model }: { model: RepoModel } = $props();
   let repos = $state<RepoEntry[]>([]);
+  let version = $state("");
+  getVersion().then((v) => (version = v));
 
   async function refresh() {
     // Opened by path on a previous run but outside the scan folder: still listed.
@@ -135,6 +138,7 @@
     <!-- Last action's result (sync, checkout, pull…). -->
     <div class="line-clamp-2 shrink-0 px-2.5 py-2 text-[10px] text-tertiary" title={model.syncStatus} id="sync-status">{model.syncStatus}</div>
   {/if}
+  <div class="shrink-0 px-2.5 pb-2 text-[10px] text-tertiary" id="app-version">monti-git v{version}</div>
 </aside>
 
 <style>

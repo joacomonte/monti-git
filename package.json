@@ -1,6 +1,6 @@
 {
   "name": "monti-git",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "",
   "type": "module",
   "scripts": {
@@ -15,7 +15,9 @@
   "license": "MIT",
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "~2.4.0",
+    "@tauri-apps/plugin-updater": "~2.14.0"
   },
   "devDependencies": {
     "@lucide/svelte": "^1.62.0",
