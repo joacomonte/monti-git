@@ -5,7 +5,7 @@ Friendly git dashboard and graph for Mac and Windows (Tauri + SvelteKit + TypeSc
 ## Install
 
 Download the installer from the [latest release](https://github.com/joacomonte/monti-git/releases/latest):
-- Mac: the `.dmg` (`aarch64` = Apple Silicon, `x64` = Intel). The first time, right click → Open (the app isn't notarized).
+- Mac: the `universal.dmg` (Apple Silicon and Intel). The first time, right click → Open (the app isn't notarized).
 - Windows: the `-setup.exe`. If SmartScreen warns, "More info" → "Run anyway".
 
 After that it updates itself: at launch it installs any new version and restarts.

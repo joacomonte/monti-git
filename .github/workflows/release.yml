@@ -12,12 +12,11 @@ jobs:
       contents: write
     strategy:
       fail-fast: false
+      max-parallel: 1 # parallel jobs race to rewrite latest.json and one of them fails
       matrix:
         include:
           - platform: macos-latest
-            args: --target aarch64-apple-darwin
-          - platform: macos-latest
-            args: --target x86_64-apple-darwin
+            args: --target universal-apple-darwin # one .dmg for Apple Silicon and Intel
           - platform: windows-latest
             args: ""
     runs-on: ${{ matrix.platform }}
@@ -45,7 +44,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: monti-git ${{ github.ref_name }}
-          releaseBody: "Mac: the .dmg (aarch64 = Apple Silicon, x64 = Intel). Windows: the -setup.exe. Installed apps update themselves at launch."
+          releaseBody: "Mac: the .dmg (Apple Silicon and Intel). Windows: the -setup.exe. Installed apps update themselves at launch."
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
