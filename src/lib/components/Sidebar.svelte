@@ -136,7 +136,7 @@
   </nav>
   {#if model.syncStatus}
     <!-- Last action's result (sync, checkout, pull…). -->
-    <div class="line-clamp-2 shrink-0 px-2.5 py-2 text-[10px] text-tertiary" title={model.syncStatus} id="sync-status">{model.syncStatus}</div>
+    <div class="enter line-clamp-2 shrink-0 px-2.5 py-2 text-[10px] text-tertiary" title={model.syncStatus} id="sync-status">{model.syncStatus}</div>
   {/if}
   <div class="shrink-0 px-2.5 pb-2 text-[10px] text-tertiary" id="app-version">monti-git v{version}</div>
 </aside>

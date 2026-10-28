@@ -20,8 +20,9 @@ pnpm tauri dev
 ## Release
 
 1. Bump `version` in `src-tauri/tauri.conf.json` (e.g. `0.2.0`).
+   Add its entry at the top of `src/lib/changelog.json`: the app shows it after updating, and it becomes the release text.
 2. Commit, then `git tag v0.2.0 && git push origin main v0.2.0`.
-3. The `release` workflow builds Mac + Windows and publishes the GitHub Release with `latest.json`.
+3. The `release` workflow creates a draft release, builds Mac + Windows in parallel, then writes `latest.json` and publishes it.
 
 The updater signing key lives outside the repo (`/Users/monti/.config/monti-access/monti-git-updater.key`) and in the
 repo secret `TAURI_SIGNING_PRIVATE_KEY`. If it's lost, installed apps can't update anymore: they need a manual reinstall.

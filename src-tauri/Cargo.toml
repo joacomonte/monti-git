@@ -1,6 +1,6 @@
 [package]
 name = "monti-git"
-version = "0.1.5"
+version = "0.1.6"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2024"
@@ -27,8 +27,7 @@ tauri-plugin-process = "2"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
-codegen-units = 1
-lto = true
+lto = "thin" # much faster CI builds than full LTO + 1 codegen unit, for a slightly bigger binary
 opt-level = 3
 panic = "abort"
 strip = true

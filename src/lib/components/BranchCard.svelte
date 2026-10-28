@@ -213,6 +213,13 @@
     background: color-mix(in oklab, var(--quinary) 70%, transparent);
     box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.08);
   }
+  /* Cards ease in one after another when the dashboard opens. */
+  @media (prefers-reduced-motion: no-preference) {
+    .card { animation: enter 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both; transition: box-shadow 0.2s ease, opacity 0.2s ease; }
+    .card:nth-child(2) { animation-delay: 40ms; } .card:nth-child(3) { animation-delay: 80ms; }
+    .card:nth-child(4) { animation-delay: 120ms; } .card:nth-child(5) { animation-delay: 160ms; }
+    .card:nth-child(n + 6) { animation-delay: 200ms; }
+  }
   .card.current { box-shadow: inset 0 0 0 1.5px var(--primary), 0 0 10px color-mix(in oklab, var(--primary) 35%, transparent); }
   .tile {
     display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 8px;

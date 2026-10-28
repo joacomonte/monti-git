@@ -1,0 +1,40 @@
+[
+  {
+    "version": "0.1.6",
+    "changes": [
+      { "kind": "new", "title": "What's new", "detail": "After every update, this screen shows what changed since the version you had." },
+      { "kind": "improved", "title": "Smoother feel", "detail": "Soft animations everywhere: cards ease in, views and diffs fade, buttons respond to hover and clicks." },
+      { "kind": "improved", "title": "Bigger view switch", "detail": "Dashboard and Graph buttons are larger and easier to hit." },
+      { "kind": "improved", "title": "\"My branches only\"", "detail": "The graph filter got a clearer name and moved to the top right." }
+    ]
+  },
+  {
+    "version": "0.1.5",
+    "changes": [
+      { "kind": "new", "title": "Commit from the graph", "detail": "Check the files to stage, write a title and description (the last commit's message shows as a hint), then Commit or Commit & Push." },
+      { "kind": "new", "title": "File type icons", "detail": "Every file shows the icon of its format, like in VS Code." },
+      { "kind": "new", "title": "Flat file list", "detail": "Switch the file tree to one row per file, with its folder dimmed." },
+      { "kind": "improved", "title": "Cleaner history", "detail": "Plain commits take a single line, and their text picks up the color of their branch line." },
+      { "kind": "improved", "title": "Colored branch badges", "detail": "Each badge matches its line in the graph." }
+    ]
+  },
+  {
+    "version": "0.1.4",
+    "changes": [
+      { "kind": "fixed", "title": "No more flashing windows on Windows", "detail": "Git runs quietly in the background instead of opening a console each time." }
+    ]
+  },
+  {
+    "version": "0.1.2",
+    "changes": [
+      { "kind": "improved", "title": "Faster update notices", "detail": "New versions are also checked when you come back to the window." }
+    ]
+  },
+  {
+    "version": "0.1.1",
+    "changes": [
+      { "kind": "new", "title": "Automatic updates", "detail": "New versions install by themselves when you open the app." },
+      { "kind": "new", "title": "New app icon", "detail": "A little branch that leaves main and merges back." }
+    ]
+  }
+]

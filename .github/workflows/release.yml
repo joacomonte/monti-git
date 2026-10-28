@@ -1,18 +1,34 @@
-# Push a tag like v0.2.0 (same version as src-tauri/tauri.conf.json) to build Mac + Windows and publish a
-# GitHub Release with the signed updater files and latest.json, which installed apps check at launch.
+# Push a tag like v0.2.0 (same version as src-tauri/tauri.conf.json, with its entry in src/lib/changelog.json):
+# a draft release is created, Mac and Windows build in parallel and upload to it, then the last job writes
+# latest.json (which installed apps check at launch) and publishes the release.
 name: release
 
 on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: write
+
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.create.outputs.id }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node .github/scripts/release.mjs notes > notes.md
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft --title "monti-git $GITHUB_REF_NAME" --notes-file notes.md
+          echo "id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id")" >> "$GITHUB_OUTPUT"
+
   build:
-    permissions:
-      contents: write
+    needs: create-release
     strategy:
       fail-fast: false
-      max-parallel: 1 # parallel jobs race to rewrite latest.json and one of them fails
       matrix:
         include:
           - platform: macos-latest
@@ -21,11 +37,11 @@ jobs:
             args: ""
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 12
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: pnpm
@@ -36,15 +52,25 @@ jobs:
         with:
           workspaces: "./src-tauri -> target"
       - run: pnpm install --frozen-lockfile
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: monti-git ${{ github.ref_name }}
-          releaseBody: "Mac: the .dmg (Apple Silicon and Intel). Windows: the -setup.exe. Installed apps update themselves at launch."
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.id }}
+          uploadUpdaterJson: false # written once by the publish job, so parallel builds don't race
           args: ${{ matrix.args }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -p "*.sig" -D sigs
+          node .github/scripts/release.mjs latest-json > latest.json
+          gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" latest.json --clobber
+          gh release edit "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft=false --latest

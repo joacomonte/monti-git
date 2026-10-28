@@ -56,7 +56,8 @@
       <span class="text-[13px] font-semibold">{model.diffMessage}</span>
     </div>
   {:else}
-    <div class="flex-1 overflow-auto font-mono text-[12px] select-text" id="diff-rows">
+    {#key model.fileFilter}
+    <div class="enter-fade flex-1 overflow-auto font-mono text-[12px] select-text" id="diff-rows">
       {#each model.diffRows as row}
         {#if row.hunk != null}
           <div class="flex items-center gap-2 bg-quinary px-2 py-[3px] text-[11px] text-tertiary">
@@ -83,6 +84,7 @@
         {/if}
       {/each}
     </div>
+    {/key}
   {/if}
 </div>
 

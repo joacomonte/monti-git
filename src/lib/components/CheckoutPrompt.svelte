@@ -23,7 +23,7 @@
   </button>
 {/snippet}
 
-<div class="flex items-center gap-2 border-b bg-primary/8 px-3.5 py-[7px]">
+<div class="enter flex items-center gap-2 border-b bg-primary/8 px-3.5 py-[7px]">
   <CircleAlert size={14} class="shrink-0 text-primary" />
   <span class="shrink-0 text-[12px] font-semibold">{n} modified file{n === 1 ? "" : "s"}</span>
   <span class="truncate text-[12px] text-muted-foreground">checking out {target}</span>

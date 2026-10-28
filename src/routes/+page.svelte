@@ -11,6 +11,7 @@
   import PaneDivider from "$lib/components/PaneDivider.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import UpdateGate from "$lib/components/UpdateGate.svelte";
+  import WhatsNew from "$lib/components/WhatsNew.svelte";
   import { prefs, RepoModel } from "$lib/model.svelte";
 
   const model = new RepoModel();
@@ -29,27 +30,29 @@
 
   <main class="relative flex min-w-0 flex-col">
     {#if model.isRefreshing}<div class="refresh-bar" title="Refreshing: checking the repo for anything new"></div>{/if}
-    <!-- Top row: view switch centered; "Only mine" on the left while the graph shows. The strip drags the window. -->
-    <header data-tauri-drag-region class="relative flex h-[48px] shrink-0 items-center gap-2 px-3.5 pt-1">
+    <!-- Top row: view switch centered; the graph's "My branches only" filter on the right. The strip drags the window. -->
+    <header data-tauri-drag-region class="relative flex h-[56px] shrink-0 items-center gap-2 px-3.5 pt-1">
       {#if model.repo && !model.error}
-        {#if model.showGraph}
-          <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground"
-            title="Shows only branches whose last commit is yours, plus main. Ej: hides your teammates' branches so the list stays clean.">
-            <Switch size="sm" checked={model.onlyMine} onCheckedChange={(on) => model.setOnlyMine(on)} id="only-mine-toggle" />
-            Only mine
-          </label>
-        {/if}
         <Tabs.Root bind:value={() => (model.showGraph ? "graph" : "dashboard"), (v) => model.setShowGraph(v === "graph")}
           class="absolute left-1/2 -translate-x-1/2" id="view-switch">
-          <Tabs.List class="h-8 w-[280px]">
-            <Tabs.Trigger value="dashboard" id="view-dashboard" title="Dashboard: an overview of your branches. Ej: what's in qa, what's pending.">
+          <Tabs.List class="h-10 w-[340px]">
+            <Tabs.Trigger value="dashboard" id="view-dashboard" class="text-[14px] [&_svg:not([class*='size-'])]:size-[17px]"
+              title="Dashboard: an overview of your branches. Ej: what's in qa, what's pending.">
               <LayoutGrid /> Dashboard
             </Tabs.Trigger>
-            <Tabs.Trigger value="graph" id="view-graph" title="Graph: every commit over time. Ej: see where a branch split off.">
+            <Tabs.Trigger value="graph" id="view-graph" class="text-[14px] [&_svg:not([class*='size-'])]:size-[17px]"
+              title="Graph: every commit over time. Ej: see where a branch split off.">
               <Waypoints /> Graph
             </Tabs.Trigger>
           </Tabs.List>
         </Tabs.Root>
+        {#if model.showGraph}
+          <label class="ml-auto flex items-center gap-2 text-[12px] font-medium text-muted-foreground"
+            title="Shows only branches whose last commit is yours, plus main. Ej: hides your teammates' branches so the list stays clean.">
+            My branches only
+            <Switch checked={model.onlyMine} onCheckedChange={(on) => model.setOnlyMine(on)} id="only-mine-toggle" />
+          </label>
+        {/if}
       {/if}
     </header>
     {#if model.repo && model.pendingCheckout}<CheckoutPrompt target={model.pendingCheckout} {model} />{/if}
@@ -68,28 +71,29 @@
           <span class="text-[12px]">Pick one in the sidebar</span>
         </div>
       {:else if !model.showGraph}
-        <Dashboard {model} />
+        {#key model.repo}<div class="enter h-full"><Dashboard {model} /></div>{/key}
       {:else if model.commits.length === 0 && model.isLoading}
         <Loader title="Loading history" detail="Reading the last {model.limit} commits (git log)" />
       {:else}
         <!-- Graph and file tree on top, diff below; with nothing selected the graph takes the whole pane. -->
-        <div class="flex h-full flex-col">
+        <div class="enter-fade flex h-full flex-col">
           <div class="flex min-h-0 flex-1">
             <div class="min-w-0 flex-1"><CommitList {model} /></div>
             {#if model.selected}
               <PaneDivider vertical bind:size={treeWidth} min={220} max={Math.max(220, space.width - 500)} />
-              <div style:width="{Math.min(treeWidth, Math.max(220, space.width - 500))}px" class="shrink-0"><FileTree {model} /></div>
+              <div style:width="{Math.min(treeWidth, Math.max(220, space.width - 500))}px" class="enter-fade shrink-0"><FileTree {model} /></div>
             {/if}
           </div>
           {#if model.selected}
             <PaneDivider vertical={false} bind:size={diffHeight} min={150} max={Math.max(150, space.height - 240)} />
-            <div style:height="{Math.min(diffHeight, Math.max(150, space.height - 240))}px" class="shrink-0"><DiffPane {model} /></div>
+            <div style:height="{Math.min(diffHeight, Math.max(150, space.height - 240))}px" class="enter-fade shrink-0"><DiffPane {model} /></div>
           {/if}
         </div>
       {/if}
     </div>
   </main>
 </div>
+  <WhatsNew />
 </UpdateGate>
 
 <style>

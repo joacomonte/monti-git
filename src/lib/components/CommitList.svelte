@@ -127,6 +127,7 @@
   <button
     class="pill shrink-0"
     class:dim={range[1] === range[0]}
+    style:--lane={laneColor(rowFor(range).color)}
     id="group-toggle-{commit.id}"
     title={range[1] > range[0] ? `Show ${groupSize - 1} more commits by ${commit.author} (→)` : `Collapse ${groupSize} commits (←)`}
     onclick={(e) => { e.stopPropagation(); model.toggle(range[0]); }}
@@ -197,10 +198,15 @@
 </div>
 
 <style>
+  .row { transition: background-color 0.15s ease; }
+  .row:hover { background: color-mix(in oklab, var(--quinary) 50%, transparent); }
   .row.selected { background: var(--quinary); } /* faint tint instead of the strong system blue */
+  /* Commit count, tinted like the branch badges of its line. */
   .pill {
-    min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; background: var(--quinary);
-    font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+    min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+    color: color-mix(in oklab, var(--lane) 35%, var(--foreground));
+    background: color-mix(in oklab, var(--lane) 16%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--lane) 28%, transparent);
   }
-  .pill.dim { color: var(--muted-foreground); }
+  .pill.dim { opacity: 0.6; } /* group expanded */
 </style>

@@ -47,7 +47,7 @@
   }
 </script>
 
-<div class="flex flex-col gap-1.5 border-b p-2" id="commit-box">
+<div class="enter flex flex-col gap-1.5 border-b p-2" id="commit-box">
   <input id="commit-title" bind:value={title} onkeydown={keydown} placeholder={previous.title || "Title"} autocomplete="off"
     class="h-7 rounded-md bg-quinary px-2 text-[12px] font-medium outline-none focus:ring-2 focus:ring-primary/40" />
   <textarea id="commit-description" bind:value={description} onkeydown={keydown} placeholder={previous.description || "Description (optional)"}
