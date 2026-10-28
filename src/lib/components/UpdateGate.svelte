@@ -1,6 +1,6 @@
 <!-- Auto-update from GitHub Releases. At launch the app waits behind a splash until the check answers: a new version
      downloads and installs there (animated, with progress) and the app restarts already updated. One found while the
-     app is open only shows a toast, so nothing restarts under the user's hands. -->
+     app is open (checked every 30 min and on window focus) only shows a toast, so nothing restarts under the user's hands. -->
 <script lang="ts">
   import { Sparkles, X } from "@lucide/svelte";
   import { relaunch } from "@tauri-apps/plugin-process";
@@ -35,11 +35,17 @@
         phase = "ready";
       }
     });
-    const timer = setInterval(async () => {
+    // While open: every 30 min and whenever the window comes back to the front (at most once a minute).
+    let last = Date.now();
+    const recheck = async () => {
+      if (Date.now() - last < 60 * 1000) return;
+      last = Date.now();
       const update = await find();
       if (update) available = update.version;
-    }, 30 * 60 * 1000);
-    return () => clearInterval(timer);
+    };
+    const timer = setInterval(recheck, 30 * 60 * 1000);
+    window.addEventListener("focus", recheck);
+    return () => { clearInterval(timer); window.removeEventListener("focus", recheck); };
   });
 </script>
 
