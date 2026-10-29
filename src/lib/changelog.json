@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.1.9",
+    "changes": [
+      { "kind": "fixed", "title": "No more repeated permission prompts", "detail": "macOS now remembers that Monti Git can read your repos in Documents, instead of asking again and again." },
+      { "kind": "new", "title": "Pin a branch from the dashboard", "detail": "With nothing pinned yet, a quick button lets you pick one." }
+    ]
+  },
+  {
     "version": "0.1.8",
     "changes": [
       { "kind": "new", "title": "Redesigned branch cards", "detail": "How long since the last commit, what it was, merge ticks per environment and where it stands with origin, all at a glance. Click a card to open it in the graph." },
