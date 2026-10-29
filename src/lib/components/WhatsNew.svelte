@@ -6,9 +6,10 @@
   import type { Component } from "svelte";
   import changelog from "$lib/changelog.json";
   import { prefs } from "$lib/model.svelte";
+  import WhatsNewDemo from "./WhatsNewDemo.svelte";
 
   type Kind = "new" | "improved" | "fixed";
-  type Release = { version: string; changes: { kind: Kind; title: string; detail: string }[] };
+  type Release = { version: string; changes: { kind: Kind; title: string; detail: string; demo?: string }[] }; // demo: see WhatsNewDemo
 
   const KINDS: Record<Kind, { icon: Component; label: string; color: string }> = {
     new: { icon: Sparkles, label: "New", color: "#8b7bff" },
@@ -49,7 +50,7 @@
 {#if releases.length}
   <div class="backdrop fixed inset-0 z-50 grid place-items-center bg-black/45 p-6 backdrop-blur-[6px]" id="whats-new"
     role="presentation" onclick={(e) => { if (e.target === e.currentTarget) close(); }}>
-    <div class="panel flex max-h-[min(640px,90vh)] w-[480px] flex-col overflow-hidden rounded-[22px] border bg-popover shadow-2xl"
+    <div class="panel flex max-h-[min(640px,90vh)] w-[520px] flex-col overflow-hidden rounded-[22px] border bg-popover shadow-2xl"
       role="dialog" aria-modal="true" aria-labelledby="whats-new-title">
       <!-- Header: the app icon on a soft glow of its own gradient. -->
       <div class="hero relative flex flex-col items-center gap-3 px-8 pt-9 pb-6 text-center">
@@ -72,12 +73,13 @@
               {@const kind = KINDS[change.kind]}
               <div class="item flex items-start gap-3 rounded-[14px] p-3" style:--tint={kind.color} style:animation-delay="{120 + (starts[r] + c) * 45}ms">
                 <span class="tile grid size-8 shrink-0 place-items-center rounded-[10px]"><kind.icon size={15} strokeWidth={2.4} /></span>
-                <div class="flex min-w-0 flex-col gap-0.5">
+                <div class="flex min-w-0 flex-1 flex-col gap-0.5">
                   <div class="flex items-center gap-2">
                     <span class="text-[13.5px] font-semibold">{change.title}</span>
                     <span class="tag rounded-full px-1.5 text-[9.5px] font-bold tracking-[0.5px] uppercase">{kind.label}</span>
                   </div>
                   <span class="text-[12.5px] leading-[1.45] text-muted-foreground">{change.detail}</span>
+                  {#if change.demo}<WhatsNewDemo name={change.demo} />{/if}
                 </div>
               </div>
             {/each}

@@ -1,6 +1,6 @@
 <!-- Repos the user added (one by one or a folder of them): Favorites first, then one section per owner; groups and repos ordered by most recent activity. -->
 <script lang="ts">
-  import { ChevronRight, EyeOff, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, RotateCw, Star, TriangleAlert, X } from "@lucide/svelte";
+  import { ChevronRight, CloudDownload, Copy, EyeOff, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
   import ActionRow from "./ActionRow.svelte";
   import { Button } from "$lib/components/ui/button";
   import * as Popover from "$lib/components/ui/popover";
@@ -12,6 +12,16 @@
   let repos = $state<RepoEntry[]>([]);
   let version = $state("");
   getVersion().then((v) => (version = v));
+  // Ticks so "2m ago" next to Auto sync stays current.
+  let now = $state(Date.now());
+  $effect(() => {
+    const timer = setInterval(() => (now = Date.now()), 20_000);
+    return () => clearInterval(timer);
+  });
+  const ago = (ms: number) => {
+    const s = (now - ms) / 1000;
+    return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
+  };
 
   async function refresh() {
     const { folders, repos: added, hidden } = model.sources;
@@ -106,34 +116,40 @@
         </Popover.Content>
       </Popover.Root>
     {/if}
-    <!-- Always here: add a repo, or a folder whose repos are all listed. -->
+  </div>
+  <!-- Global (every repo, same setting), so it lives in the sidebar. On by default; the line under it forces a pull right now. -->
+  <!-- Toggle button, same look on or off: the label says which. -->
+  <button class="sync-button" aria-pressed={model.autoSyncOn} id="auto-sync"
+    onclick={() => model.setAutoSync(!model.autoSyncOn)}
+    title={`Auto sync: ${model.autoSyncOn ? "on" : "off"}\nKeeps every branch up to date with origin on its own: fetch and safe fast-forwards when you use the app (at most once a minute) and every 5 minutes. Never merges or rewrites anything.`}>
+    <RefreshCw size={12} class="shrink-0 {model.isSyncing ? 'animate-spin' : ''}" />Auto sync {model.autoSyncOn ? "on" : "off"}
+  </button>
+  <button class="sync-button pull" onclick={() => model.sync()} disabled={!model.repo || model.isSyncing} id="sync-button"
+    title="Force pull now: downloads the latest from the server and updates every branch that's behind. Safe: it skips branches where you have unpushed commits or uncommitted changes. Ej: main is 3 behind → it catches up.">
+    <CloudDownload size={11} class={model.isSyncing ? "animate-pulse" : ""} />Force pull now
+  </button>
+  <span class="synced" id="last-synced">{model.isSyncing ? "syncing…" : model.lastSynced ? `synced ${ago(model.lastSynced)}` : ""}</span>
+  <nav class="flex-1 overflow-auto px-2 pb-3" id="repo-sidebar">
+    <!-- First item of the list, dashed: add a repo, or a folder whose repos are all listed. -->
     <Popover.Root bind:open={showAdd}>
-      <Popover.Trigger class="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-quinary hover:text-foreground" id="add-repos"
-        title="Add repositories"><Plus size={15} strokeWidth={2.5} /></Popover.Trigger>
+      <Popover.Trigger class="add-repo" id="add-repos" title="Add repositories: one or more repos, or a folder with several">
+        <Plus size={13} strokeWidth={2.5} class="shrink-0" />Add repository
+      </Popover.Trigger>
       <Popover.Content side="right" align="start" class="w-[300px] gap-1 p-1.5">
         <ActionRow title="Add repository" detail="One or more git repos, picked one by one" icon={FolderGit2} color="#8b7bff" id="add-repository" onclick={() => add("repo")} />
         <ActionRow title="Add folder of repos" detail="Every repo inside it; new ones show up by themselves" icon={FolderTree} color="#2fc4b2" id="add-folder" onclick={() => add("folder")} />
       </Popover.Content>
     </Popover.Root>
-    <Button variant="ghost" size="icon-sm" onclick={() => model.sync()} disabled={!model.repo || model.isSyncing} id="sync-button"
-      title="Pull everything: downloads the latest from the server and updates every branch that's behind. Safe: it skips branches where you have unpushed commits or uncommitted changes. Ej: main is 3 behind → it catches up.">
-      <RefreshCw class={model.isSyncing ? "animate-spin" : ""} />
-    </Button>
-    <Button variant="ghost" size="icon-sm" onclick={() => { refresh(); model.reload(); }} disabled={model.isLoading} title="Reload" id="sidebar-reload">
-      <RotateCw class={model.isLoading ? "animate-spin" : ""} />
-    </Button>
-  </div>
-  <nav class="flex-1 overflow-auto px-2 pb-3" id="repo-sidebar">
     {#each sections as [owner, list] (owner)}
-      <div class="px-2 pt-3 pb-1 text-[11px] font-semibold text-tertiary">{owner}</div>
+      <div class="px-2 pt-5 pb-1.5 text-[11px] font-semibold text-tertiary">{owner}</div>
       {#each list as repo (repo.path)}
         {@const isFavorite = model.favorites.includes(repo.path)}
         <button
-          class="repo flex h-[26px] w-full items-center gap-2 rounded-md px-2 text-left text-[13px]"
+          class="repo flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left text-[13px]"
           class:active={model.repo === repo.path}
           title={repo.path}
           id="repo-{repo.path}"
-          onclick={() => { if (model.repo !== repo.path) model.setShowGraph(false); model.open(repo.path); }}
+          onclick={() => model.open(repo.path)}
           oncontextmenu={(e) => { e.preventDefault(); menu = { x: e.clientX, y: e.clientY, repo }; }}
         >
           <GitBranch size={13} class="shrink-0 text-muted-foreground" />
@@ -158,6 +174,9 @@
       <button class="item" title="Favorites stay at the top of the sidebar" id="repo-menu-favorite" onclick={run(() => model.toggleFavorite(repo.path))}>
         <Star size={13} />{isFavorite ? "Remove from Favorites" : "Add to Favorites"}
       </button>
+      <button class="item" title={repo.path} id="repo-menu-copy-path" onclick={run(() => navigator.clipboard.writeText(repo.path))}>
+        <Copy size={13} />Copy full path
+      </button>
       <div class="my-1 h-px bg-border"></div>
       {#if repo.folder}
         <button class="item" title="Take it out of the list; it comes back if you add it again" id="repo-menu-hide" onclick={run(() => model.hideRepo(repo.path))}><EyeOff size={13} />Hide from sidebar</button>
@@ -177,6 +196,22 @@
 </aside>
 
 <style>
+  /* Auto sync and Force pull: two stacked buttons, same width and look. */
+  .sync-button {
+    display: flex; flex-shrink: 0; align-items: center; gap: 7px; height: 30px; margin: 0 8px 6px; padding: 0 10px; border-radius: 8px;
+    font-size: 12px; font-weight: 500; color: var(--muted-foreground);
+    background: oklch(0.5 0 0 / 0.07); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.12);
+  }
+  #auto-sync { margin-top: 10px; }
+  .sync-button:hover:not(:disabled) { color: var(--foreground); background: oklch(0.5 0 0 / 0.12); }
+  :global(.add-repo) {
+    display: flex; width: 100%; align-items: center; justify-content: center; gap: 6px; height: 30px; margin: 10px 0 6px; padding: 0 8px; border-radius: 6px;
+    font-size: 12.5px; color: var(--tertiary); border: 1px dashed oklch(0.5 0 0 / 0.3);
+  }
+  :global(.add-repo:hover), :global(.add-repo[data-state="open"]) { color: var(--foreground); border-color: color-mix(in oklab, var(--primary) 55%, transparent); }
+  /* Second line under Auto sync, quiet until hovered. */
+  .synced { flex-shrink: 0; height: 14px; margin: -2px 18px 10px; font-size: 10.5px; color: var(--tertiary); }
+  .pull:disabled { opacity: 0.45; }
   .repo:hover { background: var(--quinary); }
   .repo.active { background: color-mix(in oklch, var(--primary) 20%, transparent); }
   .star { display: none; color: var(--tertiary); }

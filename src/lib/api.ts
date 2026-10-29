@@ -27,9 +27,17 @@ export type Row = {
 export type History = {
   commits: Commit[];
   rows: Row[];
-  runs: [number, number][];
   names: (string | null)[];
   hasMore: boolean;
+};
+
+/** A commit whose title or description matched a global search (see search.rs). */
+export type SearchHit = { repo: string; id: string; author: string; date: number; subject: string; snippet: string | null };
+
+/** Everything about one commit (see CommitInfo in src-tauri/src/lib.rs). Dates in unix seconds. */
+export type CommitInfo = {
+  id: string; author: string; authorEmail: string; authorDate: number; committer: string; committerEmail: string; committerDate: number;
+  parents: string[]; refs: string[]; subject: string; body: string;
 };
 
 export type RepoEntry = { path: string; owner: string; lastActivity: number; folder: string | null }; // folder: the added folder it came from
@@ -87,12 +95,16 @@ export type WipMode = "shelve" | "commit" | "carry";
 export const api = {
   listRepos: (folders: string[], repos: string[]) => invoke<RepoEntry[]>("list_repos", { folders, repos }),
   isRepo: (path: string) => invoke<boolean>("is_repo", { path }),
-  loadHistory: (repo: string, limit: number, onlyMine: boolean, preferred: string | null, environments: string[]) =>
-    invoke<History>("load_history", { repo, limit, onlyMine, preferred, environments }),
+  loadHistory: (repo: string, limit: number, onlyMine: boolean, preferred: string | null, environments: string[], focus: string[]) =>
+    invoke<History>("load_history", { repo, limit, onlyMine, preferred, environments, focus }),
+  searchCommits: (repos: string[], query: string) => invoke<SearchHit[]>("search_commits", { repos, query }),
+  commitPlaces: (repo: string, id: string) => invoke<string[]>("commit_places", { repo, id }),
+  commitInfo: (repo: string, id: string) => invoke<CommitInfo>("commit_info", { repo, id }),
+  commitPatch: (repo: string, id: string) => invoke<string>("commit_patch", { repo, id }),
   loadChanges: (repo: string, base: string | null, target: string | null, all: boolean) =>
     invoke<Changes>("load_changes", { repo, base, target, all }),
-  loadDiff: (repo: string, path: string, base: string | null, target: string | null, group: string[]) =>
-    invoke<FileDiff>("load_diff", { repo, path, base, target, group }),
+  loadDiff: (repo: string, path: string, base: string | null, target: string | null, group: string[], whole: boolean) =>
+    invoke<FileDiff>("load_diff", { repo, path, base, target, group, whole }),
   loadDashboard: (repo: string, preferred: string | null, pinned: string[], environments: string[] | null, states: Record<string, string>) =>
     invoke<Dashboard>("load_dashboard", { repo, preferred, pinned, environments, states }),
   branchChain: (repo: string, base: string, reference: string) => invoke<string[]>("branch_chain", { repo, base, reference }),
@@ -102,6 +114,7 @@ export const api = {
   checkout: (repo: string, name: string, wip: WipMode | null) => invoke<string>("checkout", { repo, name, wip }),
   pull: (repo: string, name: string) => invoke<string>("pull", { repo, name }),
   deleteBranch: (repo: string, branch: string, remote: boolean) => invoke<string>("delete_branch", { repo, branch, remote }),
+  openFile: (repo: string, path: string, reveal: boolean) => invoke<void>("open_file", { repo, path, reveal }),
   updatePrompt: (repo: string, branch: string) => invoke<string>("update_prompt", { repo, branch }),
   squash: (repo: string, branch: string, base: string, expectedTip: string, message: string) =>
     invoke<void>("squash", { repo, branch, base, expectedTip, message }),

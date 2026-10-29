@@ -19,13 +19,12 @@
     row: Row;
     height: number;
     width: number;
-    isGroup: boolean; // collapsed group: stacked dot
     isWorktree: boolean; // uncommitted changes: dashed line to HEAD, hollow dot
     isMerge: boolean;
     names: (string | null)[];
     highlight: Set<number>; // commit indices of the branch shown from the dashboard: its line glows, everything else dims
   };
-  let { index, row, height, width, isGroup, isWorktree, isMerge, names, highlight }: Props = $props();
+  let { index, row, height, width, isWorktree, isMerge, names, highlight }: Props = $props();
 
   const x = (lane: number) => PAD + lane * LANE + LANE / 2;
   const mid = $derived(height / 2);
@@ -79,10 +78,6 @@
     <path d={s.d} stroke={s.color} stroke-width={s.width} fill="none" stroke-dasharray={s.dashed ? "3 3" : undefined} opacity={s.opacity}
       style:filter={s.glow ? `drop-shadow(0 0 ${s.width > 2 ? 3 : 2}px ${s.color})` : undefined} />
   {/each}
-  {#if isGroup}
-    <!-- Collapsed group: dot with a halo ring, reads as "several commits here". -->
-    <circle cx={x(row.column)} cy={mid} r="7.5" fill="var(--background)" stroke={dot} stroke-width="1.5" stroke-opacity={dotOpacity} />
-  {/if}
   {#if isMerge || isWorktree}
     <circle cx={x(row.column)} cy={mid} {r} fill="var(--background)" stroke={dot} stroke-width={isMerge ? 1.5 : 2} stroke-opacity={dotOpacity} />
   {:else}

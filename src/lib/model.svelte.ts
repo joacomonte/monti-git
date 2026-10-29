@@ -42,38 +42,27 @@ export function fileTree(paths: Iterable<string>, prefix = ""): FileNode[] {
 const PAGE = 300;
 
 /** What a repo looked like when we left it, so coming back shows it at once while `reload()` refreshes it. */
-type Snapshot = Pick<RepoModel, "commits" | "rows" | "runs" | "names" | "expanded" | "limit" | "hasMore" | "dashboard">;
+/** `view`: where the user was (dashboard or graph, commit, file, focus), restored on coming back to compare across repos. */
+type Snapshot = Pick<RepoModel, "commits" | "rows" | "names" | "limit" | "hasMore" | "dashboard"> & {
+  view: { showGraph: boolean; selectedId: string | null; fileFilter: string | null; diffOpen: boolean; focus: string[] | null; highlightChain: Set<string> };
+};
 
 export class RepoModel {
   repo = $state<string | null>(null);
   commits = $state.raw<Commit[]>([]);
   rows = $state.raw<Row[]>([]);
-  runs = $state.raw(new Map<number, number>()); // collapsible groups: first commit index -> last
   names = $state.raw<(string | null)[]>([]); // branch each commit belongs to, for the line tooltip
-  expanded = $state.raw(new Set<string>()); // hash of the first commit of each expanded group
   selected = $state.raw<Range | null>(null);
   error = $state<string | null>(null);
   limit = PAGE;
   hasMore = $state(false);
   isLoading = $state(false);
   onlyMine = $state(prefs.get("onlyMine", true)); // hide other people's branches; on by default
+  focus = $state.raw<string[] | null>(null); // "Only this branch": the branch and its base, the rest of the graph hidden
   private cache = new Map<string, Snapshot>();
 
-  /** Table rows: a range longer than 1 is a collapsed group. */
-  visible = $derived.by(() => {
-    const result: Range[] = [];
-    for (let i = 0; i < this.commits.length; ) {
-      const last = this.runs.get(i);
-      if (last != null && !this.expanded.has(this.commits[i].id)) {
-        result.push([i, last]);
-        i = last + 1;
-      } else {
-        result.push([i, i]);
-        i += 1;
-      }
-    }
-    return result;
-  });
+  /** Table rows, one per commit. */
+  visible = $derived(this.commits.map((_, i): Range => [i, i]));
 
   graphLanes = $derived(Math.max(1, ...this.rows.map((r) => Math.max(r.before.length, r.after.length))));
 
@@ -89,14 +78,16 @@ export class RepoModel {
 
   open(path: string) {
     if (this.repo && this.repo !== path && !this.error) {
-      const { commits, rows, runs, names, expanded, limit, hasMore, dashboard } = this;
-      this.cache.set(this.repo, { commits, rows, runs, names, expanded, limit, hasMore, dashboard });
+      const { commits, rows, names, limit, hasMore, dashboard, showGraph, fileFilter, diffOpen, focus, highlightChain } = this;
+      const selectedId = this.selected ? commits[this.selected[0]].id : null;
+      this.cache.set(this.repo, { commits, rows, names, limit, hasMore, dashboard, view: { showGraph, selectedId, fileFilter, diffOpen, focus, highlightChain } });
     }
     this.repo = path;
     prefs.set("lastRepo", path); // reopened on next launch
     this.selected = null;
     this.error = null;
     this.highlightChain = new Set();
+    this.focus = null;
     this.syncStatus = "";
     this.syncFailure = null;
     this.pendingCheckout = null;
@@ -105,29 +96,46 @@ export class RepoModel {
     const cached = this.cache.get(path);
     this.commits = cached?.commits ?? [];
     this.rows = cached?.rows ?? [];
-    this.runs = cached?.runs ?? new Map();
     this.names = cached?.names ?? [];
-    this.expanded = cached?.expanded ?? new Set();
     this.limit = cached?.limit ?? PAGE;
     this.hasMore = cached?.hasMore ?? false;
     this.dashboard = cached?.dashboard ?? null;
+    // Same view as when we left this repo, shown from the cache right away while reload() refreshes it in the
+    // background. First visit: the dashboard.
+    const view = cached?.view;
+    this.showGraph = view?.showGraph ?? false;
+    if (view) {
+      this.focus = view.focus;
+      this.highlightChain = view.highlightChain;
+      this.fileFilter = view.fileFilter;
+      this.diffOpen = view.diffOpen;
+    }
+    this.restoreId = view?.selectedId ?? null;
+    const row = this.restoreId ? this.visible.findIndex(([first]) => this.commits[first].id === this.restoreId) : -1;
+    if (row >= 0) {
+      this.selected = this.visible[row];
+      this.scrollRow = { row };
+      this.loadTree();
+      this.loadDetail();
+    }
     this.reload();
   }
+
+  private restoreId: string | null = null; // commit to select once loaded, coming back to a repo
 
   async reload() {
     const repo = this.repo;
     if (!repo) return;
     this.loadDashboard();
     this.isLoading = true;
-    const selectedID = this.selected ? this.commits[this.selected[0]].id : null; // indices go stale: re-find by hash
+    const selectedID = this.selected ? this.commits[this.selected[0]].id : this.restoreId; // indices go stale: re-find by hash
     const preferred = prefs.get<Record<string, string>>("mainBranches", {})[repo] ?? null;
     try {
       this.historyEnvironments = this.environmentRefs();
-      const history = await api.loadHistory(repo, this.limit, this.onlyMine, preferred, this.historyEnvironments);
+      const history = await api.loadHistory(repo, this.limit, this.onlyMine, preferred, this.historyEnvironments, this.focus ?? []);
       if (this.repo !== repo) return; // switched repos meanwhile: the newer load owns the state
       this.commits = history.commits;
       this.rows = history.rows;
-      this.runs = new Map(history.runs);
       this.names = history.names;
       this.hasMore = history.hasMore;
       this.error = null;
@@ -135,7 +143,6 @@ export class RepoModel {
       if (this.repo !== repo) return;
       this.commits = [];
       this.rows = [];
-      this.runs = new Map();
       this.error = String(error);
     }
     this.isLoading = false;
@@ -145,6 +152,8 @@ export class RepoModel {
     if (range) {
       this.loadTree();
       this.loadDetail();
+      if (this.restoreId) this.scrollRow = { row: this.visible.indexOf(range) };
+      this.restoreId = null;
     }
   }
 
@@ -155,28 +164,33 @@ export class RepoModel {
     this.reload(); // --topo-order output is prefix-stable, so rows above don't move
   }
 
+  /** Branch the "Only this branch" toggle would show: the one being focused, or the selected commit's. */
+  get focusTarget(): string | null {
+    if (this.focus) return this.focus[0];
+    const name = this.selected ? this.names[this.selected[0]] : null;
+    return name && name !== "uncommitted changes" ? name : null;
+  }
+
+  /** Graph shows only `branch` and its base (where it was cut from, else main); null = everything again. */
+  async setFocus(branch: string | null, base: string | null = this.dashboard?.base?.ref ?? null) {
+    this.focus = branch ? [...new Set([branch, base].filter((r): r is string => r != null))] : null;
+    this.limit = PAGE;
+    await this.reload();
+  }
+
   setOnlyMine(on: boolean) {
     this.onlyMine = on;
     prefs.set("onlyMine", on);
     this.reload();
   }
 
-  /** Expands or collapses the group starting at `first`, keeping the selection on it. */
-  toggle(first: number) {
-    const last = this.runs.get(first);
-    if (last == null) return;
-    const id = this.commits[first].id;
-    const expanded = new Set(this.expanded);
-    const collapsing = expanded.delete(id);
-    if (!collapsing) expanded.add(id);
-    this.expanded = expanded;
-    const sel = this.selected;
-    if (sel && sel[0] <= last && sel[1] >= first) this.select(collapsing ? [first, last] : [first, first]);
-  }
 
+  /** Opens the file tree only; the diff pane waits until a file is picked there. */
   select(range: Range | null) {
     if (range && this.selected && range[0] === this.selected[0] && range[1] === this.selected[1]) return;
     this.selected = range;
+    this.restoreId = null;
+    this.diffOpen = false;
     if (!range) return; // deselected: the panes hide, nothing to load
     this.clearDetail();
     this.diffMessage = "Loading…";
@@ -193,6 +207,7 @@ export class RepoModel {
   expandedDirs = $state.raw(new Set<string>());
   changedOrder = $state.raw<string[]>([]); // changed files in tree order, for ⌥←/⌥→
   fileFilter = $state<string | null>(null); // file shown in the diff pane
+  diffOpen = $state(false); // diff pane under the graph: opens on the first file click in the tree
   showAllFiles = $state(prefs.get("treeShowsAll", false));
   diffRows = $state.raw<DiffRow[]>([]);
   diffMessage = $state("Select a file");
@@ -241,7 +256,7 @@ export class RepoModel {
     this.expandedDirs = new Set(dirs);
     const files = (nodes: FileNode[]): string[] => nodes.flatMap((n) => (n.children ? files(n.children) : [n.path]));
     this.changedOrder = files(this.tree).filter((p) => p in result.changes);
-    if (!this.fileFilter || !(this.fileFilter in result.changes)) {
+    if (this.diffOpen && (!this.fileFilter || !(this.fileFilter in result.changes))) {
       // New selection: start at the first changed file.
       this.fileFilter = this.changedOrder[0] ?? null;
       this.loadDetail();
@@ -250,8 +265,13 @@ export class RepoModel {
   }
 
   /** Picks the file shown in the diff. A folder jumps to its first changed file. */
+  /** Clicking the file already shown hides/shows the bottom pane. */
   filter(path: string) {
-    if (this.fileFilter === path) return;
+    if (this.fileFilter === path) {
+      this.diffOpen = !this.diffOpen;
+      return;
+    }
+    this.diffOpen = true;
     this.fileFilter = path in this.changes ? path : (this.changedOrder.find((p) => p.startsWith(path + "/")) ?? path);
     this.loadDetail();
   }
@@ -273,11 +293,11 @@ export class RepoModel {
     if (!repo || !range || !path) return;
     const { base, target } = this.span(range);
     const group = this.commits.slice(range[0], range[1] + 1).filter((c) => c.id !== WORKTREE_ID);
-    const result = await api.loadDiff(repo, path, base, target, group.map((c) => c.id));
+    const result = await api.loadDiff(repo, path, base, target, group.map((c) => c.id), !(path in this.changes));
     if (this.selected !== range || this.fileFilter !== path) return;
     this.fileCommits = group.filter((c) => result.touching.includes(c.id));
     this.diffRows = result.rows;
-    this.diffMessage = path in this.changes ? "Binary file or no text changes" : "No changes in this file";
+    this.diffMessage = path in this.changes ? "Binary file or no text changes" : "Empty or binary file";
   }
 
   // MARK: Dashboard
@@ -377,6 +397,7 @@ export class RepoModel {
     const index = this.commits.findIndex((c) => c.refs.some((r) => r === name || r === local || r === "HEAD -> " + local));
     const row = this.visible.findIndex(([first, last]) => first <= index && index <= last);
     if (index >= 0 && row >= 0) this.scrollRow = { row };
+    return index >= 0 ? row : -1;
   }
 
   /** Dashboard card: opens the graph at the branch tip with the branch's own line lit up (first-parent commits
@@ -385,20 +406,47 @@ export class RepoModel {
     const repo = this.repo;
     if (!repo) return;
     const chain = card.squashBase ? await api.branchChain(repo, card.squashBase, card.ref) : [];
-    // An older branch may sit past the loaded page: keep loading history until its tip shows up (or there is no more).
-    const tip = card.last?.id;
-    for (let pages = 0; tip && this.repo === repo && pages < 30 && !this.commits.some((c) => c.id === tip); pages++) {
-      while (this.isLoading) await new Promise((r) => setTimeout(r, 100));
-      if (!this.hasMore) break;
-      this.loadMore();
-      while (this.isLoading) await new Promise((r) => setTimeout(r, 100));
-    }
+    // Minimal view by default: only this branch and its base (the toggle in the header brings the rest back).
+    await this.setFocus(card.ref, card.parent ?? this.dashboard?.base?.ref ?? null);
+    if (card.last) await this.loadUntil(card.last.id);
     if (this.repo !== repo) return;
-    this.reveal(card.ref);
+    const row = this.reveal(card.ref);
+    if (row >= 0) this.select(this.visible[row]);
     this.highlightChain = new Set(chain);
   }
 
-  /** Dashboard "uncommitted changes" banner: opens the graph on the working-tree row, with its files and diffs. */
+  /** An older commit may sit past the loaded page: keep loading history until it shows up (or there is no more). */
+  private async loadUntil(id: string) {
+    const repo = this.repo;
+    const idle = async () => { while (this.isLoading) await new Promise((r) => setTimeout(r, 100)); };
+    await idle();
+    for (let pages = 0; this.repo === repo && pages < 30 && !this.commits.some((c) => c.id === id); pages++) {
+      if (!this.hasMore) break;
+      this.loadMore();
+      await idle();
+    }
+    return this.commits.some((c) => c.id === id);
+  }
+
+  /** Global search result: opens its repo on the graph with that commit selected. A commit hidden by
+   *  "My branches only" (someone else's branch) turns that filter off, so it can be shown. */
+  async revealCommit(repo: string, id: string) {
+    if (this.repo !== repo) this.open(repo);
+    this.setShowGraph(true);
+    if (this.focus) await this.setFocus(null);
+    if (!(await this.loadUntil(id)) && this.onlyMine && this.repo === repo) {
+      this.setOnlyMine(false);
+      await this.loadUntil(id);
+    }
+    if (this.repo !== repo) return;
+    const index = this.commits.findIndex((c) => c.id === id);
+    const row = this.visible.findIndex(([first, last]) => first <= index && index <= last);
+    if (index < 0 || row < 0) return;
+    this.select(this.visible[row]);
+    this.scrollRow = { row };
+  }
+
+  /** Dashboard "uncommitted changes" banner: opens the graph on the working-tree row, with its files. */
   revealWorktree() {
     this.setShowGraph(true);
     const row = this.visible.findIndex(([first]) => this.commits[first].id === WORKTREE_ID);

@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.2.0",
+    "changes": [
+      { "kind": "new", "title": "Search every commit", "detail": "Press ⌘K and type a ticket like MOA-854: every commit that mentions it, in this repo or all of them, with the branches and environments it already reached. Click one to open it in the graph.", "demo": "search" },
+      { "kind": "new", "title": "Copy for AI", "detail": "Right-click a commit: copy just the repo and hash for an agent with git, or everything (message, files and the full diff). Files and folders in the tree have it too, with the branch.", "demo": "copy-ai" },
+      { "kind": "new", "title": "Only this branch", "detail": "One click and the graph shows just that branch's own commits, nothing else. \"View in graph\" from the dashboard opens it this way.", "demo": "focus" },
+      { "kind": "new", "title": "The whole project in the file tree", "detail": "Turn off \"Show changes only\" to browse every file, and open any of them to read it whole. Hover a file to copy its path, show it in Finder or open it in your editor.", "demo": "files" },
+      { "kind": "new", "title": "Commit details", "detail": "Click a commit to see its title above the files; \"see more…\" shows the description, hash, author, dates and the branches that contain it. Hide what you don't need.", "demo": "details" },
+      { "kind": "improved", "title": "Each repo remembers its view", "detail": "Switch repos and come back: same view, same commit, same file, shown at once while it refreshes in the background." },
+      { "kind": "improved", "title": "Diffs only when you ask", "detail": "Selecting a commit opens just its files; the diff shows when you pick a file, and clicking it again hides it." },
+      { "kind": "improved", "title": "Every commit in sight", "detail": "No more collapsed groups of commits: the graph lists them all." },
+      { "kind": "improved", "title": "Tidier sidebar and toolbar", "detail": "Auto sync and Force pull now sit in the sidebar, Add repository at the top of the list, and the graph's filters in a slim bar." },
+      { "kind": "improved", "title": "Smoother file tree", "detail": "Big projects scroll without lag, and one button collapses every folder." },
+      { "kind": "fixed", "title": "Switches and menus", "detail": "Switches slide all the way, and right-click menus look right." }
+    ]
+  },
+  {
     "version": "0.1.9",
     "changes": [
       { "kind": "fixed", "title": "No more repeated permission prompts", "detail": "macOS now remembers that Monti Git can read your repos in Documents, instead of asking again and again." },

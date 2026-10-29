@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { LayoutGrid, TriangleAlert, Waypoints } from "@lucide/svelte";
-  import { Switch } from "$lib/components/ui/switch";
+  import { Crosshair, LayoutGrid, Search, TriangleAlert, UserRound, Waypoints } from "@lucide/svelte";
+  import CommitSearch from "$lib/components/CommitSearch.svelte";
   import * as Tabs from "$lib/components/ui/tabs";
   import CheckoutPrompt from "$lib/components/CheckoutPrompt.svelte";
   import CommitList from "$lib/components/CommitList.svelte";
@@ -22,16 +22,7 @@
   let space = $state({ width: 1200, height: 800 });
   $effect(() => prefs.set("treeWidth", treeWidth));
   $effect(() => prefs.set("diffHeight", diffHeight));
-  // Ticks so "synced 2m ago" stays current.
-  let now = $state(Date.now());
-  $effect(() => {
-    const timer = setInterval(() => (now = Date.now()), 20_000);
-    return () => clearInterval(timer);
-  });
-  const ago = (ms: number, at: number) => {
-    const s = Math.max(0, (at - ms) / 1000);
-    return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
-  };
+  let searching = $state(false); // ⌘K commit search open
   // Keeps every branch up to date with origin: on open, every 5 min, on focus and on any activity (below).
   $effect(() => {
     if (!model.repo) return;
@@ -43,16 +34,29 @@
 
 <!-- Back from the editor/terminal: pick up new commits, checkouts and uncommitted changes. -->
 <!-- Any activity also syncs with origin (at most once a minute, see autoSync). -->
-<svelte:window onfocus={() => { model.reload(); model.autoSync(); }} onpointerdown={() => model.autoSync()} onkeydown={() => model.autoSync()} onwheel={() => model.autoSync()} />
+<!-- oncontextmenu: no browser menu (Reload / Inspect Element) on right click; text fields and selected text keep it for copy/paste. -->
+<svelte:window onfocus={() => { model.reload(); model.autoSync(); }} onpointerdown={() => model.autoSync()} onwheel={() => model.autoSync()}
+  oncontextmenu={(e) => {
+    const field = (e.target as Element).closest("input, textarea, [contenteditable]");
+    if (!field && !getSelection()?.toString()) e.preventDefault();
+  }}
+  onkeydown={(e) => {
+    model.autoSync();
+    if (e.key === "k" && (e.metaKey || e.ctrlKey) && model.hasSources) { e.preventDefault(); searching = !searching; }
+  }} />
 <UpdateGate>
 <div class="grid h-full grid-cols-[220px_1fr] grid-rows-1">
   <div class="border-r"><Sidebar {model} /></div>
 
   <main class="relative flex min-w-0 flex-col">
     {#if model.isRefreshing}<div class="refresh-bar" title="Refreshing: checking the repo for anything new"></div>{/if}
-    <!-- Top row: switches on the left, view switch centered. The strip drags the window. -->
+    <!-- Top row: global search on the left, view switch centered. The strip drags the window. -->
     <header data-tauri-drag-region class="relative flex h-[56px] shrink-0 items-center gap-2 px-3.5 pt-1">
       {#if model.repo && !model.error && model.hasSources && !model.onboarding}
+        <button class="search" id="commit-search-open" onclick={() => (searching = true)}
+          title={"Search commits (⌘K)\nFind a text like MOA-854 in commit titles and descriptions, in this repo or all of them."}>
+          <Search size={13} />Search commits<kbd>⌘K</kbd>
+        </button>
         <Tabs.Root bind:value={() => (model.showGraph ? "graph" : "dashboard"), (v) => model.setShowGraph(v === "graph")}
           class="absolute left-1/2 -translate-x-1/2" id="view-switch">
           <Tabs.List class="h-10 w-[340px]">
@@ -66,23 +70,26 @@
             </Tabs.Trigger>
           </Tabs.List>
         </Tabs.Root>
-        <!-- Left: auto sync with origin (and how long ago), plus the graph's "My branches only". -->
-        <div class="flex items-center gap-5 text-[13px] font-medium text-muted-foreground">
-          <label class="flex items-center gap-2"
-            title="Keep every branch up to date with origin on its own: fetch and safe fast-forwards when you use the app (at most once a minute) and every 5 minutes. Never merges or rewrites anything.">
-            <Switch checked={model.autoSyncOn} onCheckedChange={(on) => model.setAutoSync(on)} id="auto-sync-toggle" />Auto sync
-            {#if model.isSyncing}<span class="text-[12px] font-normal text-tertiary">syncing…</span>
-            {:else if model.lastSynced}<span class="text-[12px] font-normal text-tertiary">synced {ago(model.lastSynced, now)}</span>{/if}
-          </label>
-          {#if model.showGraph}
-            <label class="flex items-center gap-2"
-              title="Shows only branches whose last commit is yours, plus main and the environments (qa, develop…). Ej: hides your teammates' branches so the graph stays clean.">
-              <Switch checked={model.onlyMine} onCheckedChange={(on) => model.setOnlyMine(on)} id="only-mine-toggle" />My branches only
-            </label>
-          {/if}
-        </div>
       {/if}
     </header>
+    {#if model.repo && !model.error && model.hasSources && !model.onboarding && model.showGraph}
+      <!-- Thin strip under the header with the graph's toggles (blue when on), short labels; the full explanation on hover. -->
+      <div class="flex h-[30px] shrink-0 items-center gap-0.5 border-b px-3" id="toolbar">
+        <button class="tool" class:on={model.onlyMine} aria-pressed={model.onlyMine} id="only-mine-toggle"
+          onclick={() => model.setOnlyMine(!model.onlyMine)}
+          title={`My branches only: ${model.onlyMine ? "on" : "off"}\nShows only branches whose last commit is yours, plus main and the environments (qa, develop…). Ej: hides your teammates' branches so the graph stays clean.`}>
+          <UserRound size={12} />My branches
+        </button>
+        <button class="tool" class:on={model.focus != null} aria-pressed={model.focus != null} id="focus-branch-toggle"
+          disabled={!model.focusTarget}
+          onclick={() => model.setFocus(model.focus ? null : model.focusTarget)}
+          title={model.focus ? `Only this branch: on · ${model.focus[0]}\nThe graph shows just this branch's own commits. Click to show everything again.`
+            : model.focusTarget ? `Only this branch: off\nShow just ${model.focusTarget}'s own commits, nothing else.`
+            : "Only this branch\nSelect a commit first: shows just its branch's own commits."}>
+          <Crosshair size={12} />Only this branch
+          </button>
+      </div>
+    {/if}
     {#if model.repo && model.pendingCheckout}<CheckoutPrompt target={model.pendingCheckout} {model} />{/if}
 
     <div class="min-h-0 flex-1" bind:clientWidth={space.width} bind:clientHeight={space.height}>
@@ -114,7 +121,7 @@
               <div style:width="{Math.min(treeWidth, Math.max(220, space.width - 500))}px" class="enter-fade shrink-0"><FileTree {model} /></div>
             {/if}
           </div>
-          {#if model.selected}
+          {#if model.selected && model.diffOpen}
             <PaneDivider vertical={false} bind:size={diffHeight} min={150} max={Math.max(150, space.height - 240)} />
             <div style:height="{Math.min(diffHeight, Math.max(150, space.height - 240))}px" class="enter-fade shrink-0"><DiffPane {model} /></div>
           {/if}
@@ -126,8 +133,20 @@
   <WhatsNew />
 </UpdateGate>
 <QuickTooltip />
+<CommitSearch {model} bind:open={searching} />
 
 <style>
+  .tool { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; font-weight: 500; color: var(--muted-foreground); }
+  .tool:hover:not(:disabled) { color: var(--foreground); background: oklch(0.5 0 0 / 0.1); }
+  .tool:disabled { opacity: 0.4; }
+  .tool.on { color: var(--primary); background: color-mix(in oklab, var(--primary) 13%, transparent); }
+  .search {
+    display: flex; align-items: center; gap: 7px; height: 30px; width: 220px; padding: 0 10px; border-radius: 8px;
+    font-size: 12px; color: var(--tertiary); background: oklch(0.5 0 0 / 0.08); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.12);
+  }
+  .search:hover { color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.12); }
+  .search kbd { margin-left: auto; }
+  kbd { font-family: inherit; font-size: 10px; color: var(--tertiary); }
   /* Thin sliding line along the top while cached content is being refreshed. */
   .refresh-bar {
     position: absolute; top: 0; left: 0; z-index: 10; height: 2px; width: 30%; pointer-events: none;

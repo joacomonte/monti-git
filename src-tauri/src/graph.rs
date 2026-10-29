@@ -142,29 +142,6 @@ pub fn compute(commits: &[Commit], main_chain: &HashSet<String>) -> Vec<GraphRow
     rows
 }
 
-/// Runs of at least `min_size` consecutive rows by the same author on one lane with nothing branching in or out,
-/// as (first index, last index). Only the first commit may carry refs.
-pub fn linear_runs(commits: &[Commit], rows: &[GraphRow], min_size: usize) -> Vec<(usize, usize)> {
-    let continues = |k: usize| {
-        let (a, b) = (&commits[k], &commits[k + 1]);
-        a.parents.len() == 1 && a.parents[0] == b.id && b.parents.len() == 1 && a.author == b.author && b.refs.is_empty()
-            && rows[k].column == rows[k + 1].column
-            && rows[k + 1].before.iter().filter(|l| l.as_ref().is_some_and(|l| l.hash == b.id)).count() == 1 // no other branch forks from b
-    };
-    let mut runs = vec![];
-    let mut start = 0;
-    for k in 0..commits.len() {
-        if k + 1 < commits.len() && continues(k) {
-            continue;
-        }
-        if k + 1 - start >= min_size {
-            runs.push((start, k));
-        }
-        start = k + 1;
-    }
-    runs
-}
-
 /// "origin/x" / "upstream/x" -> "x".
 fn strip_remote(name: &str) -> &str {
     name.split_once('/').filter(|(r, _)| *r == "origin" || *r == "upstream").map_or(name, |(_, rest)| rest)
@@ -268,12 +245,5 @@ mod tests {
         assert_eq!(names["d1"], "old-fix (merged)");
         assert_eq!(merged_branch("Merge pull request #12 from joaco/feat/x"), Some("feat/x"));
         assert_eq!(merged_branch("Merged in hotfix (pull request #3)"), Some("hotfix"));
-    }
-
-    #[test]
-    fn runs() {
-        let commits = vec![c("a", &["b"], &["x"], ""), c("b", &["c"], &[], ""), c("c", &["d"], &[], ""), c("d", &[], &[], "")];
-        let rows = compute(&commits, &HashSet::new());
-        assert_eq!(linear_runs(&commits, &rows, 3), vec![(0, 2)]); // the root has no parent, so it can't join
     }
 }

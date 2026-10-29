@@ -1,6 +1,7 @@
 <!-- Virtualized commit list: only the rows on screen are in the DOM. Rows touch so the graph lines stay continuous. -->
 <script lang="ts">
-  import { WORKTREE_ID, type Commit, type Row } from "$lib/api";
+  import { Copy, FileText, Sparkles } from "@lucide/svelte";
+  import { api, WORKTREE_ID, type Commit, type Row } from "$lib/api";
   import type { Range, RepoModel } from "$lib/model.svelte";
   import GraphCell, { LANE, PAD, laneColor } from "./GraphCell.svelte";
   import RefBadge from "./RefBadge.svelte";
@@ -12,6 +13,43 @@
   const QUIET = 32; // merge without refs: a short single-line row, so real commits lead
   const isQuietMerge = (c: Commit) => c.parents.length > 1 && c.refs.length === 0;
   const isTall = (c: Commit) => c.id === WORKTREE_ID || badges(c.refs).length > 0;
+
+  // Right-click menu on a commit: copy it as context for an AI agent.
+  let menu = $state<{ commit: Commit; x: number; y: number } | null>(null);
+  let copied = $state<string | null>(null); // menu item just copied, for the ✓ before the menu closes
+
+  /** Moves the node to <body>, so the fixed menu isn't clipped by the scrolling list. */
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return { destroy: () => node.remove() };
+  }
+
+  async function copy(item: string, text: Promise<string> | string) {
+    await navigator.clipboard.writeText(await text);
+    copied = item;
+    setTimeout(() => { menu = null; copied = null; }, 500);
+  }
+
+  /** Enough for an agent with git access: it can `git show` the rest. */
+  const minimal = (c: Commit) => `Repo: ${model.repo}\nCommit: ${c.id}`;
+
+  /** Everything: where it is, who and when, the message, files changed and the full diff. */
+  async function full(c: Commit) {
+    const repo = model.repo!;
+    const [info, places, patch] = await Promise.all([api.commitInfo(repo, c.id), api.commitPlaces(repo, c.id), api.commitPatch(repo, c.id)]);
+    const date = (s: number) => new Date(s * 1000).toISOString().replace("T", " ").slice(0, 16);
+    return [
+      `Repo: ${repo}`,
+      `Commit: ${info.id}`,
+      `Branches containing it: ${places.join(", ") || "none"}`,
+      `Author: ${info.author} <${info.authorEmail}>, ${date(info.authorDate)}`,
+      info.committer !== info.author || info.committerDate !== info.authorDate ? `Committer: ${info.committer} <${info.committerEmail}>, ${date(info.committerDate)}` : null,
+      `Parents: ${info.parents.join(", ") || "none (first commit)"}`,
+      `Title: ${info.subject}`,
+      info.body ? `Description:\n${info.body}` : null,
+      `\nFiles changed and full diff:\n\`\`\`diff\n${patch.trim()}\n\`\`\``,
+    ].filter((line) => line != null).join("\n");
+  }
 
   let scrollTop = $state(0);
   let viewHeight = $state(600);
@@ -59,11 +97,7 @@
   });
 
   /** A collapsed group is drawn as one commit: lanes entering the newest, leaving the oldest. */
-  function rowFor([first, last]: Range): Row {
-    if (first === last) return model.rows[first];
-    const top = model.rows[first], bottom = model.rows[last];
-    return { ...top, after: bottom.after, parents: bottom.parents, isCurrent: bottom.isCurrent };
-  }
+  const rowFor = ([first]: Range): Row => model.rows[first];
 
   /** One badge per branch: a remote on the same commit as its local branch folds into the local badge. */
   function badges(refs: string[]) {
@@ -102,37 +136,20 @@
     else if (offsets[i + 1] > scroller.scrollTop + viewHeight) scroller.scrollTop = offsets[i + 1] - viewHeight;
   }
 
-  /** ↑/↓ move the selection; → expands the selected group, ← collapses the group the selected commit belongs to. */
+  /** ↑/↓ move the selection. */
   function keydown(e: KeyboardEvent) {
     const i = model.visible.findIndex(isSelected);
     if (i < 0) return;
-    const range = model.visible[i];
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       const next = model.visible[i + (e.key === "ArrowDown" ? 1 : -1)];
       if (next) {
         model.select(next);
         scrollToRow(i + (e.key === "ArrowDown" ? 1 : -1));
       }
-    } else if (e.key === "ArrowRight" && !e.altKey) {
-      if (range[1] > range[0]) model.toggle(range[0]);
-    } else if (e.key === "ArrowLeft" && !e.altKey) {
-      const group = [...model.runs].find(([first, last]) => first <= range[0] && range[0] <= last);
-      if (range[0] === range[1] && group) model.toggle(group[0]);
     } else return;
     e.preventDefault();
   }
 </script>
-
-{#snippet pill(range: Range, groupSize: number, commit: Commit)}
-  <button
-    class="pill shrink-0"
-    class:dim={range[1] === range[0]}
-    style:--lane={laneColor(rowFor(range).color)}
-    id="group-toggle-{commit.id}"
-    title={range[1] > range[0] ? `Show ${groupSize - 1} more commits by ${commit.author} (→)` : `Collapse ${groupSize} commits (←)`}
-    onclick={(e) => { e.stopPropagation(); model.toggle(range[0]); }}
-  >{groupSize}</button>
-{/snippet}
 
 <div
   bind:this={scroller}
@@ -147,7 +164,6 @@
   <div style:height="{offsets[model.visible.length]}px" class="relative">
     {#each model.visible.slice(start, end) as range, k (model.commits[range[0]].id)}
       {@const commit = model.commits[range[0]]}
-      {@const groupSize = model.runs.has(range[0]) ? model.runs.get(range[0])! - range[0] + 1 : null}
       {@const quiet = range[0] === range[1] && isQuietMerge(commit)}
       <div
         class="row absolute inset-x-0 flex"
@@ -155,20 +171,20 @@
         style:top="{offsets[start + k]}px"
         style:height="{heightOf(range)}px"
         onclick={() => click(range)}
+        oncontextmenu={(e) => { if (commit.id === WORKTREE_ID) return; e.preventDefault(); menu = { commit, x: e.clientX, y: e.clientY }; }}
         role="option"
         aria-selected={isSelected(range)}
         tabindex="-1"
         onkeydown={() => {}}
       >
         <div class="shrink-0" style:width="{width}px">
-          <GraphCell index={range[0]} row={rowFor(range)} height={heightOf(range)} {width} isGroup={range[1] > range[0]}
+          <GraphCell index={range[0]} row={rowFor(range)} height={heightOf(range)} {width}
             isWorktree={commit.id === WORKTREE_ID} isMerge={commit.parents.length > 1} names={model.names} {highlight} />
         </div>
         {#if quiet}
           <div class="flex min-w-0 items-center px-2 text-[12px] text-tertiary opacity-70"><span class="truncate">{commit.subject}</span></div>
         {:else if !isTall(commit)}
           <div class="flex min-w-0 flex-1 items-center gap-2.5 px-2 text-[12.5px] whitespace-nowrap" class:opacity-55={commit.parents.length > 1}>
-            {#if groupSize}{@render pill(range, groupSize, commit)}{/if}
             <span class="shrink-0 text-tertiary" title={new Date(commit.date * 1000).toLocaleString()}>{when(commit.date)}</span>
             <span class="min-w-0 flex-1 truncate" style:color={tint(range)} title={commit.subject}>{commit.subject}</span>
             <span class="max-w-[35%] shrink-0 truncate text-tertiary" title={commit.author}>{commit.author}</span>
@@ -180,7 +196,6 @@
             {:else}
               <!-- Left to right: commit count, branches, date; the author on the right edge. -->
               <div class="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-                {#if groupSize}{@render pill(range, groupSize, commit)}{/if}
                 {#each badges(commit.refs) as badge (badge.ref)}
                   <RefBadge ref={badge.ref} isSynced={badge.isSynced} color={laneColor(rowFor(range).color)} />
                 {/each}
@@ -197,16 +212,37 @@
   </div>
 </div>
 
+<svelte:window onmousedown={() => (menu = null)} onkeydown={(e) => e.key === "Escape" && (menu = null)} onwheel={() => (menu = null)} onblur={() => (menu = null)} />
+{#if menu}
+  {@const c = menu.commit}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div use:portal class="context-menu enter-fade" role="menu" tabindex="-1" id="commit-menu" onmousedown={(e) => e.stopPropagation()}
+    style:left="{Math.min(menu.x, innerWidth - 300)}px" style:top="{Math.min(menu.y, innerHeight - 140)}px">
+    <button role="menuitem" class="menu-item" id="commit-menu-copy-minimal" onclick={() => copy("minimal", minimal(c))}
+      title="Repo and commit hash: enough for an agent with git to look at it itself">
+      <Sparkles size={13} />{copied === "minimal" ? "Copied ✓" : "Copy for AI"}<span class="menu-hint">repo · hash</span>
+    </button>
+    <button role="menuitem" class="menu-item" id="commit-menu-copy-full" onclick={() => copy("full", full(c))}
+      title="Everything: branches containing it, author, dates, parents, full message, files changed and the whole diff. Ej: to port the change to another repo">
+      <FileText size={13} />{copied === "full" ? "Copied ✓" : "Copy for AI (full)"}<span class="menu-hint">+ message · diff</span>
+    </button>
+    <div class="my-1 h-px bg-border"></div>
+    <button role="menuitem" class="menu-item" id="commit-menu-copy-hash" onclick={() => copy("hash", c.id)}>
+      <Copy size={13} />{copied === "hash" ? "Copied ✓" : "Copy hash"}
+    </button>
+  </div>
+{/if}
+
 <style>
+  .context-menu {
+    position: fixed; z-index: 1000; width: max-content; min-width: 220px; padding: 4px; border-radius: 10px;
+    background: var(--popover); color: var(--popover-foreground);
+    box-shadow: 0 0 0 1px oklch(0.5 0 0 / 0.18), 0 8px 24px rgb(0 0 0 / 0.3);
+  }
+  .menu-item { display: flex; width: 100%; align-items: center; gap: 8px; height: 28px; padding: 0 10px; border-radius: 6px; font-size: 12px; text-align: left; white-space: nowrap; }
+  .menu-item:hover { background: oklch(0.5 0 0 / 0.12); }
+  .menu-hint { margin-left: auto; padding-left: 16px; font-size: 11px; color: var(--tertiary); }
   .row { transition: background-color 0.15s ease; }
   .row:hover { background: color-mix(in oklab, var(--quinary) 50%, transparent); }
   .row.selected { background: var(--quinary); } /* faint tint instead of the strong system blue */
-  /* Commit count, tinted like the branch badges of its line. */
-  .pill {
-    min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
-    color: color-mix(in oklab, var(--lane) 35%, var(--foreground));
-    background: color-mix(in oklab, var(--lane) 16%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--lane) 28%, transparent);
-  }
-  .pill.dim { opacity: 0.6; } /* group expanded */
 </style>

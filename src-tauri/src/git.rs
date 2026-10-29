@@ -87,7 +87,8 @@ fn ok(args: &[&str], repo: &Path) -> Option<String> {
 }
 
 /// `refs`: only these branches (plus HEAD); None = every branch, remote and tag.
-pub fn log(repo: &Path, refs: Option<&[String]>, limit: usize) -> Result<Vec<Commit>, String> {
+/// `refs` may hold any rev-list arguments (e.g. `--first-parent`, `^base`); `with_head` also lists HEAD's history.
+pub fn log(repo: &Path, refs: Option<&[String]>, with_head: bool, limit: usize) -> Result<Vec<Commit>, String> {
     // \x1f between fields, \x1e between records: neither can appear in a subject line.
     let max = format!("--max-count={limit}");
     let mut args = vec!["-c", "log.showSignature=false", "log"];
@@ -96,7 +97,10 @@ pub fn log(repo: &Path, refs: Option<&[String]>, limit: usize) -> Result<Vec<Com
         None => args.extend(["--branches", "--remotes", "--tags"]),
     }
     // --topo-order: each branch's commits stay together instead of interleaving by date.
-    args.extend(["HEAD", "--topo-order", &max, "--format=%H%x1f%P%x1f%an%x1f%at%x1f%D%x1f%s%x1e", "--"]);
+    if with_head {
+        args.push("HEAD");
+    }
+    args.extend(["--topo-order", &max, "--format=%H%x1f%P%x1f%an%x1f%at%x1f%D%x1f%s%x1e", "--"]);
     let output = run(&args, repo)?;
     Ok(output
         .split('\u{1e}')

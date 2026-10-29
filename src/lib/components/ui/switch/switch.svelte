@@ -27,7 +27,7 @@
 	<SwitchPrimitive.Thumb
 		data-slot="switch-thumb"
 		class={cn(
-			"bg-background dark:data-[state=unchecked]:bg-foreground dark:data-[state=checked]:bg-primary-foreground rounded-full group-data-[size=default]/switch:size-4 group-data-[size=sm]/switch:size-3 group-data-[size=default]/switch:data-[state=checked]:translate-x-[calc(100%_-_2px)] group-data-[size=sm]/switch:data-[state=checked]:translate-x-[calc(100%_-_2px)] group-data-[size=default]/switch:data-[state=unchecked]:translate-x-0 group-data-[size=sm]/switch:data-[state=unchecked]:translate-x-0 pointer-events-none block ring-0 transition-transform",
+			"bg-background dark:data-[state=unchecked]:bg-foreground dark:data-[state=checked]:bg-primary-foreground rounded-full group-data-[size=default]/switch:size-[16px] group-data-[size=sm]/switch:size-[12px] group-data-[size=default]/switch:data-[state=checked]:translate-x-[14px] group-data-[size=sm]/switch:data-[state=checked]:translate-x-[10px] group-data-[size=default]/switch:data-[state=unchecked]:translate-x-0 group-data-[size=sm]/switch:data-[state=unchecked]:translate-x-0 pointer-events-none block ring-0 transition-transform",
 			"rtl:data-[state=checked]:translate-x-[calc(-100%)]"
 		)}
 	/>

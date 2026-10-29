@@ -9,6 +9,7 @@
   let { model }: { model: RepoModel } = $props();
   const index = $derived(model.fileFilter ? model.changedOrder.indexOf(model.fileFilter) : -1);
   const counts = $derived(model.fileFilter ? model.counts[model.fileFilter] : undefined);
+  const single = $derived(model.diffRows.every((row) => !row.left)); // a file shown whole (or a new one): no "before" column
 
   /** ⌥← / ⌥→: previous/next changed file. */
   function keydown(e: KeyboardEvent) {
@@ -69,9 +70,10 @@
           </div>
         {:else}
           <div class="line flex">
-            {#each [row.left, row.right] as side, i}
-              {@const tint = i === 0 ? "var(--del)" : "var(--add)"}
-              <div class="flex flex-1 py-px" class:border-r={i === 0}
+            {#each single ? [row.right] : [row.left, row.right] as side, i}
+              {@const i2 = single ? 1 : i} <!-- 1 = the "after" side -->
+              {@const tint = i2 === 0 ? "var(--del)" : "var(--add)"}
+              <div class="flex flex-1 py-px" class:border-r={i2 === 0}
                 style:background={row.isChange ? (side ? `color-mix(in srgb, ${tint} 12%, transparent)` : "var(--quinary)") : undefined}>
                 <span class="w-11 shrink-0 pr-2 text-right text-tertiary">{side?.number ?? ""}</span>
                 {#if side}
