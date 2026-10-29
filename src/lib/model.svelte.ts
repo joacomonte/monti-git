@@ -122,7 +122,8 @@ export class RepoModel {
     const selectedID = this.selected ? this.commits[this.selected[0]].id : null; // indices go stale: re-find by hash
     const preferred = prefs.get<Record<string, string>>("mainBranches", {})[repo] ?? null;
     try {
-      const history = await api.loadHistory(repo, this.limit, this.onlyMine, preferred);
+      this.historyEnvironments = this.environmentRefs();
+      const history = await api.loadHistory(repo, this.limit, this.onlyMine, preferred, this.historyEnvironments);
       if (this.repo !== repo) return; // switched repos meanwhile: the newer load owns the state
       this.commits = history.commits;
       this.rows = history.rows;
@@ -360,6 +361,13 @@ export class RepoModel {
     if (this.repo !== repo) return;
     this.dashboard = dashboard;
     this.isLoadingDashboard = false;
+    // "My branches only" keeps the environments, which come from the dashboard: reload once if they arrived late or changed.
+    if (this.onlyMine && this.environmentRefs().join() !== this.historyEnvironments.join()) this.reload();
+  }
+
+  private historyEnvironments: string[] = [];
+  private environmentRefs() {
+    return this.dashboard?.environments.map((c) => c.ref) ?? [];
   }
 
   /** Scrolls the graph to a branch's tip (a remote-only base matches its origin/ ref). */
@@ -485,6 +493,7 @@ export class RepoModel {
     return this.act("Syncing…", "Sync failed", async (repo) => {
       try {
         const result = await api.sync(repo);
+        this.lastSynced = Date.now();
         if (result.skipped.length) this.syncFailure = { title: "Some branches weren't updated", reasons: result.skipped, log: result.log.join("\n\n") };
         const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
         const parts = [`Synced ${time}`];
@@ -497,6 +506,29 @@ export class RepoModel {
         throw error;
       }
     });
+  }
+
+  /** Quiet background sync (every few minutes and on focus): same safe fast-forwards as `sync`, without the status
+   *  line or the failure popover; what couldn't be updated shows on its card instead. */
+  private lastAutoSync = 0;
+  autoSyncOn = $state(prefs.get("autoSync", true));
+  lastSynced = $state<number | null>(null); // ms; any successful sync, manual or automatic
+
+  setAutoSync(on: boolean) {
+    this.autoSyncOn = on;
+    prefs.set("autoSync", on);
+    if (on) this.autoSync();
+  }
+
+  async autoSync() {
+    const repo = this.repo;
+    if (!repo || !this.autoSyncOn || this.isSyncing || Date.now() - this.lastAutoSync < 60_000) return;
+    this.lastAutoSync = Date.now();
+    this.isSyncing = true;
+    const result = await api.sync(repo).catch(() => null);
+    this.isSyncing = false;
+    if (result) this.lastSynced = Date.now();
+    if (result && this.repo === repo) this.reload();
   }
 
   /** With uncommitted changes, asks first (stash / WIP commit / move them) via `pendingCheckout`. */
@@ -522,6 +554,11 @@ export class RepoModel {
   /** Fetch + fast-forward one branch without switching to it. */
   pull(name: string) {
     return this.act(`Pulling ${name}…`, "Pull failed", (repo) => api.pull(repo, name));
+  }
+
+  /** Shipped branch clean-up: local only, or local + its remote. */
+  deleteBranch(name: string, remote: boolean) {
+    return this.act(`Deleting ${name}…`, "Delete failed", (repo) => api.deleteBranch(repo, name, remote));
   }
 
   /** Dashboard squash: the feature's own commits become one. Throws so the panel can show why. */

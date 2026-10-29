@@ -28,6 +28,34 @@ pub fn run(args: &[&str], repo: &Path) -> Result<String, String> {
 }
 
 pub fn run_input(args: &[&str], repo: &Path, input: Option<&str>) -> Result<String, String> {
+    let out = spawn(args, repo, input)?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Files that would conflict merging `theirs` into `ours`, without touching the working tree or index
+/// (exit 1 = conflicts, with their paths after the tree id).
+pub fn conflicts(ours: &str, theirs: &str, repo: &Path) -> Vec<String> {
+    let Ok(out) = spawn(&["-c", "core.quotePath=false", "merge-tree", "--write-tree", "--name-only", "--no-messages", ours, theirs], repo, None) else { return vec![] };
+    if out.status.code() != Some(1) {
+        return vec![];
+    }
+    let mut files: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().skip(1).filter(|l| !l.is_empty()).map(String::from).collect();
+    files.dedup();
+    files
+}
+
+/// True when merging `theirs` into `ours` would change nothing: its content is already there, e.g. after a
+/// squash merge (new commit, same changes). Nothing is written to the working tree or index.
+pub fn already_contains(ours: &str, theirs: &str, repo: &Path) -> bool {
+    let Ok(out) = spawn(&["merge-tree", "--write-tree", ours, theirs], repo, None) else { return false };
+    let merged = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().trim().to_string();
+    out.status.success() && ok(&["rev-parse", &format!("{ours}^{{tree}}")], repo).is_some_and(|tree| tree.trim() == merged)
+}
+
+fn spawn(args: &[&str], repo: &Path, input: Option<&str>) -> Result<std::process::Output, String> {
     let mut command = Command::new("git");
     command
         .args(args)
@@ -51,11 +79,7 @@ pub fn run_input(args: &[&str], repo: &Path, input: Option<&str>) -> Result<Stri
         let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
     }
     // wait_with_output drains stdout and stderr together, so a chatty stderr can't block git.
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    child.wait_with_output().map_err(|e| e.to_string())
 }
 
 fn ok(args: &[&str], repo: &Path) -> Option<String> {

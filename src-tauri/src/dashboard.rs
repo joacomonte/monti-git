@@ -43,6 +43,8 @@ pub struct Card {
     parent: Option<String>, // active features: branch it was cut from
     diff: Option<Totals>, // active features: changes against `parent`
     uncommitted: Option<Totals>, // current branch only
+    changed: Vec<String>, // current branch only: uncommitted file paths
+    conflicts: Vec<String>, // diverged from its upstream: files that would conflict pulling it
     worktree: Option<(usize, usize, usize)>, // current branch only: staged, not staged, untracked
     feature_commits: Vec<Commit>, // active features: own commits on top of `parent`, newest first, no merges
     squash_base: Option<String>, // active features: merge-base with `parent`
@@ -252,6 +254,18 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
             .cloned()
     };
 
+    // GitHub's rebase and squash merges land the same changes as new commits, so the plain count misses them:
+    // `git cherry` matches rebased commits by content (patch id), and a merge that would change nothing means squashed.
+    let merged_another_way = |target: &str, reference: &str, missing: u32| -> u32 {
+        let limit = base.as_deref().filter(|b| *b != target).and_then(|b| ok(&["merge-base", b, reference], repo)).map(|s| s.trim().to_string());
+        let mut args = vec!["cherry", target, reference];
+        if let Some(limit) = &limit {
+            args.push(limit);
+        }
+        let not_in = ok(&args, repo).map_or(missing, |out| out.lines().filter(|l| l.starts_with('+')).count() as u32);
+        if not_in == 0 || git::already_contains(target, reference, repo) { 0 } else { not_in.min(missing) }
+    };
+
     let totals = |status: &HashMap<String, String>, counts: &HashMap<String, (u32, u32)>| Totals {
         files: status.len(),
         added: status.keys().filter_map(|p| counts.get(p)).map(|c| c.0).sum(),
@@ -270,9 +284,12 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
             promotion: if light { vec![] } else {
                 targets
                     .iter()
-                    .map(|t| match &base {
-                        Some(b) if b != t => (t.clone(), count(&[reference, &format!("^{t}"), &format!("^{b}")], repo)),
-                        _ => (t.clone(), count(&[&format!("{t}..{reference}")], repo)),
+                    .map(|t| {
+                        let missing = match &base {
+                            Some(b) if b != t => count(&[reference, &format!("^{t}"), &format!("^{b}")], repo),
+                            _ => count(&[&format!("{t}..{reference}")], repo),
+                        };
+                        (t.clone(), if missing == 0 { 0 } else { merged_another_way(t, reference, missing) })
                     })
                     .collect()
             },
@@ -280,6 +297,8 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
             parent: None,
             diff: None,
             uncommitted: None,
+            changed: vec![],
+            conflicts: vec![],
             worktree: None,
             feature_commits: vec![],
             squash_base: None,
@@ -287,8 +306,11 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
             behind_parent: 0,
             parent_tip: None,
         };
-        if detail == Detail::Full {
+        // Hidden cards (Light) still say where they came from; only Full ones compare against it.
+        if detail != Detail::None {
             card.parent = parent_of(reference, &card.local);
+        }
+        if detail == Detail::Full {
             if let Some(parent) = card.parent.clone() {
                 if let Some(merge_base) = ok(&["merge-base", &parent, reference], repo).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
                     card.diff = Some(totals(&git::changed_files(Some(&merge_base), reference, repo), &git::line_counts(Some(&merge_base), Some(reference), repo)));
@@ -320,11 +342,16 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
                 }
             }
             card.uncommitted = (!status.is_empty()).then(|| totals(&status, &counts));
+            card.changed = status.keys().cloned().collect();
+            card.changed.sort();
             // "XY path": X = staged, Y = not staged, "??" = new file git doesn't track yet.
             let porcelain = ok(&["status", "--porcelain", "--untracked-files=all"], repo).unwrap_or_default();
             let lines: Vec<&[u8]> = porcelain.lines().map(str::as_bytes).collect();
             let marked = |i: usize| lines.iter().filter(|l| l.get(i).is_some_and(|c| *c != b' ' && *c != b'?')).count();
             card.worktree = Some((marked(0), marked(1), lines.iter().filter(|l| l.starts_with(b"??")).count()));
+        }
+        if card.summary.as_ref().is_some_and(|s| s.ahead > 0 && s.behind > 0) {
+            card.conflicts = git::conflicts(reference, &format!("{reference}@{{upstream}}"), repo);
         }
         card
     };

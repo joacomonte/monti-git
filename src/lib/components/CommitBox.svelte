@@ -65,7 +65,8 @@
           <ChevronDown size={11} strokeWidth={3} />
         </Popover.Trigger>
         <Popover.Content align="end" class="w-auto p-1">
-          <button class="option flex h-8 items-center gap-2 rounded-md px-2.5 text-[12px]" id="commit-and-push" onclick={() => commit(true)}>
+          <button class="option flex h-8 items-center gap-2 rounded-md px-2.5 text-[12px]" id="commit-and-push" onclick={() => commit(true)}
+            title="Commit the staged files, then push them to the server (sets the upstream if it has none)">
             <CloudUpload size={13} />Commit & Push
           </button>
         </Popover.Content>

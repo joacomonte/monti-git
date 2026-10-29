@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.1.8",
+    "changes": [
+      { "kind": "new", "title": "Redesigned branch cards", "detail": "How long since the last commit, what it was, merge ticks per environment and where it stands with origin, all at a glance. Click a card to open it in the graph." },
+      { "kind": "new", "title": "Auto sync", "detail": "Branches catch up with origin on their own while you use the app. Turn it off from the top bar anytime." },
+      { "kind": "new", "title": "Fix it with your AI", "detail": "When a branch can't update on its own, copy a ready-made prompt for your AI agent to resolve the conflicts." },
+      { "kind": "new", "title": "Quick filters", "detail": "See at once what's shipped, what's waiting in qa, what isn't merged and what changed after merging." },
+      { "kind": "new", "title": "Clean up shipped branches", "detail": "Branches already in production turn grey and offer to hide or delete them." },
+      { "kind": "improved", "title": "Squash and rebase merges", "detail": "Branches merged with squash or rebase on GitHub now show as merged." },
+      { "kind": "improved", "title": "Snappier tooltips", "detail": "Help shows up almost instantly, and every button tells you what it does." }
+    ]
+  },
+  {
     "version": "0.1.7",
     "changes": [
       { "kind": "new", "title": "Pick your repositories", "detail": "Add repos one by one, or a folder with several inside. Nothing is scanned on its own anymore, so it works on Windows too." },

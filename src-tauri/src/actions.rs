@@ -62,6 +62,68 @@ pub fn sync(repo: &Path) -> Result<SyncResult, String> {
     Ok(result)
 }
 
+/// Deletes a shipped branch: `git branch -d` (git itself refuses if it isn't merged), then, if asked, the same
+/// branch on its remote. Never the checked-out one.
+pub fn delete_branch(branch: &str, remote: bool, repo: &Path) -> Result<String, String> {
+    if current_branch(repo).as_deref() == Some(branch) {
+        return Err(format!("{branch} is checked out: switch to another branch first"));
+    }
+    let origin = ok(&["config", &format!("branch.{branch}.remote")], repo).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    run(&["branch", "-d", branch], repo)?;
+    if !remote {
+        return Ok(format!("Deleted {branch}"));
+    }
+    let Some(origin) = origin else { return Ok(format!("Deleted {branch} (it had no remote)")) };
+    Ok(match run(&["push", &origin, "--delete", branch], repo) {
+        Ok(_) => format!("Deleted {branch} here and on {origin}"),
+        Err(error) => format!("Deleted {branch} here, but not on {origin}: {}", error.lines().next().unwrap_or_default()),
+    })
+}
+
+/// A prompt to paste into an AI coding agent when a branch can't be updated from its upstream on its own
+/// (diverged, conflicts, or local changes in the way): the situation, both sides' commits, and what to do.
+pub fn update_prompt(branch: &str, repo: &Path) -> Result<String, String> {
+    let branch = strip_remote(branch);
+    let upstream = run(&["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")], repo)?.trim().to_string();
+    let count = |range: String| ok(&["rev-list", "--count", &range], repo).and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0);
+    let (mine, theirs) = (count(format!("{upstream}..{branch}")), count(format!("{branch}..{upstream}")));
+    let oneline = |range: String| ok(&["log", "--format=  %h %s (%an, %ar)", "-5", &range], repo).unwrap_or_default().trim_end().to_string();
+    let conflicts = crate::git::conflicts(branch, &upstream, repo);
+    let is_current = current_branch(repo).as_deref() == Some(branch);
+    let changed = if is_current { ok(&["-c", "core.quotePath=false", "status", "--porcelain", "-uall"], repo).unwrap_or_default() } else { String::new() };
+
+    let mut lines = vec![
+        "I need help updating a git branch that couldn't be updated automatically. Don't push or force-push without asking me.".to_string(),
+        String::new(),
+        format!("Repo: {}", repo.display()),
+        format!("Branch: {branch}{}", if is_current { " (checked out)" } else { " (not checked out)" }),
+        format!("{upstream} has {theirs} commit(s) I don't have, and I have {mine} commit(s) it doesn't have."),
+    ];
+    if mine > 0 {
+        lines.extend(["".into(), "My commits (newest 5):".into(), oneline(format!("{upstream}..{branch}"))]);
+    }
+    if theirs > 0 {
+        lines.extend(["".into(), "Their commits (newest 5):".into(), oneline(format!("{branch}..{upstream}"))]);
+    }
+    if !conflicts.is_empty() {
+        lines.extend(["".into(), "Files that conflict (detected with git merge-tree, nothing applied yet):".into()]);
+        lines.extend(conflicts.iter().map(|f| format!("  {f}")));
+    }
+    if !changed.trim().is_empty() {
+        lines.extend(["".into(), "Uncommitted changes in the working tree (git status --porcelain):".into(), changed.trim_end().to_string()]);
+    }
+    let pull = if mine > 0 { format!("git pull --rebase {}", upstream.replacen('/', " ", 1)) } else { "git pull --ff-only".to_string() };
+    lines.extend([
+        String::new(),
+        "Please:".into(),
+        if is_current { format!("1. Bring in the new commits ({pull}).") } else { format!("1. Check out {branch} first (keep my uncommitted work safe), then bring in the new commits ({pull}).") },
+        "2. If there are conflicts, resolve each one keeping the intent of both sides, and explain what each side changed.".into(),
+        "3. Run the tests for the touched files.".into(),
+        "4. Show me the result and wait for my OK before pushing.".into(),
+    ]);
+    Ok(lines.join("\n"))
+}
+
 /// Raw details of a diverged branch for the sync log: what each side has, and commands that fix it.
 fn diverged_report(branch: &str, upstream: &str, track: &str, repo: &Path) -> String {
     let remote = upstream.strip_prefix("refs/remotes/").unwrap_or(upstream);

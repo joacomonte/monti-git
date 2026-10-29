@@ -32,11 +32,11 @@ struct History {
 }
 
 #[tauri::command(async)]
-fn load_history(repo: String, limit: usize, only_mine: bool, preferred: Option<String>) -> Result<History, String> {
+fn load_history(repo: String, limit: usize, only_mine: bool, preferred: Option<String>, environments: Vec<String>) -> Result<History, String> {
     let repo = Path::new(&repo);
     let main = git::main_ref(repo, preferred.as_deref());
-    // Only mine: my branches plus the base branch, so the graph keeps its spine.
-    let refs = only_mine.then(|| git::my_branches(repo).into_iter().chain(main.clone()).collect::<Vec<_>>());
+    // Only mine: my branches plus the base branch and the environments (qa, develop…), so the graph keeps its spine.
+    let refs = only_mine.then(|| git::my_branches(repo).into_iter().chain(main.clone()).chain(environments).collect::<Vec<_>>());
     let mut commits = git::log(repo, refs.as_deref(), limit)?;
     let has_more = commits.len() >= limit;
     if let Some(worktree) = git::worktree_commit(repo) {
@@ -151,6 +151,16 @@ fn pull(repo: String, name: String) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
+fn delete_branch(repo: String, branch: String, remote: bool) -> Result<String, String> {
+    actions::delete_branch(&branch, remote, Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn update_prompt(repo: String, branch: String) -> Result<String, String> {
+    actions::update_prompt(&branch, Path::new(&repo))
+}
+
+#[tauri::command(async)]
 fn squash(repo: String, branch: String, base: String, expected_tip: String, message: String) -> Result<(), String> {
     actions::squash(&branch, &base, &expected_tip, &message, Path::new(&repo))
 }
@@ -213,7 +223,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![list_repos, load_history, load_changes, load_diff, load_dashboard, branch_chain,
-            sync, changed_file_count, checkout, pull, squash, update_branch, force_push, discard_file, discard_all, discard_hunk,
+            sync, changed_file_count, checkout, pull, update_prompt, delete_branch, squash, update_branch, force_push, discard_file, discard_all, discard_hunk,
             stage, unstage, last_commit_message, commit, is_repo])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

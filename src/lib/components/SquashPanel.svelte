@@ -92,8 +92,8 @@ It's fine if those branches get rebuilt or your team is OK with that. If you're 
     <textarea id="squash-message" bind:value={message} onkeydown={keydown}
       class="h-[140px] resize-none rounded-lg bg-quinary p-2 text-[12px] outline-none focus:ring-2 focus:ring-primary/40"></textarea>
     <div class="flex justify-end gap-2">
-      <Button variant="secondary" size="sm" onclick={dismiss} id="squash-cancel">Cancel</Button>
-      <Button size="sm" onclick={squash} disabled={isWorking || !message.trim()} title="⌘↩" id="squash-confirm">Squash</Button>
+      <Button variant="secondary" size="sm" onclick={dismiss} id="squash-cancel" title="Close without changing anything">Cancel</Button>
+      <Button size="sm" onclick={squash} disabled={isWorking || !message.trim()} title="Combine the commits into one with this message (⌘↩). The old ones stay recoverable in the reflog." id="squash-confirm">Squash</Button>
     </div>
   {:else if step === "squashed"}
     {@render title(CircleCheck, "Squashed into one commit", isPushed ? "The remote still has the old commits." : "It's only local: push it whenever you're ready.")}
@@ -106,12 +106,12 @@ It's fine if those branches get rebuilt or your team is OK with that. If you're 
       <span class="font-mono text-[11px] select-text">git update-ref refs/heads/{opened.local} {oldTip.slice(0, 12)}</span>
     </div>
     <div class="flex justify-end gap-2">
-      <Button variant="secondary" size="sm" onclick={dismiss} id="squash-close">{isPushed ? "Not now" : "Done"}</Button>
-      {#if isPushed}<Button size="sm" onclick={push} disabled={isWorking} id="squash-force-push">Force push</Button>{/if}
+      <Button variant="secondary" size="sm" onclick={dismiss} id="squash-close" title="Close: the squash stays only on your machine until you push">{isPushed ? "Not now" : "Done"}</Button>
+      {#if isPushed}<Button size="sm" onclick={push} disabled={isWorking} id="squash-force-push" title="Replace the branch on the server with the squashed one (force push with lease: refuses if someone else pushed)">Force push</Button>{/if}
     </div>
   {:else}
     {@render title(CircleCheck, "Pushed", "The remote now has the single squashed commit.")}
-    <div class="flex justify-end"><Button size="sm" onclick={dismiss} id="squash-done">Done</Button></div>
+    <div class="flex justify-end"><Button size="sm" onclick={dismiss} id="squash-done" title="Close">Done</Button></div>
   {/if}
   {#if error}<span class="font-mono text-[11px] whitespace-pre-wrap text-red-500 select-text">{error}</span>{/if}
 </div>

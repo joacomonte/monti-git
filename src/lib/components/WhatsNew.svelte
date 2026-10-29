@@ -86,7 +86,7 @@
       </div>
 
       <div class="flex justify-end px-6 pt-3 pb-5">
-        <button class="cta h-9 rounded-[10px] px-5 text-[13px] font-semibold text-white" id="whats-new-close" onclick={close}>Got it</button>
+        <button class="cta h-9 rounded-[10px] px-5 text-[13px] font-semibold text-white" id="whats-new-close" title="Close: shows again only after the next update" onclick={close}>Got it</button>
       </div>
     </div>
   </div>

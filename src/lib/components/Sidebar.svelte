@@ -89,7 +89,7 @@
             {/each}
           </div>
           {#if failure.log}
-            <button class="flex items-center gap-1 text-[11px] font-medium" id="sync-failure-log-toggle" onclick={() => (showLog = !showLog)}>
+            <button class="flex items-center gap-1 text-[11px] font-medium" id="sync-failure-log-toggle" title="Show the raw git output for the skipped branches" onclick={() => (showLog = !showLog)}>
               <ChevronRight size={10} strokeWidth={3} class="transition-transform {showLog ? 'rotate-90' : ''}" />Raw log
             </button>
             {#if showLog}
@@ -98,10 +98,10 @@
           {/if}
           <div class="flex gap-2">
             {#if failure.log}
-              <Button variant="secondary" size="sm" onclick={() => copyLog(failure.log)} id="sync-failure-copy">{copied ? "Copied" : "Copy log"}</Button>
+              <Button variant="secondary" size="sm" onclick={() => copyLog(failure.log)} id="sync-failure-copy" title="Copy the raw log, to paste it into an AI agent or a message">{copied ? "Copied" : "Copy log"}</Button>
             {/if}
             <span class="flex-1"></span>
-            <Button size="sm" onclick={() => (model.syncFailure = null)} id="sync-failure-dismiss">Dismiss</Button>
+            <Button size="sm" onclick={() => (model.syncFailure = null)} id="sync-failure-dismiss" title="Hide this until the next sync">Dismiss</Button>
           </div>
         </Popover.Content>
       </Popover.Root>
@@ -155,17 +155,17 @@
     {@const folderName = repo.folder ? nameOf(repo.folder) : ""}
     <div class="enter-fade fixed z-50 flex w-[230px] flex-col rounded-lg border bg-popover p-1 text-[12.5px] shadow-lg" id="repo-menu"
       style:left="{menu.x}px" style:top="{menu.y}px">
-      <button class="item" id="repo-menu-favorite" onclick={run(() => model.toggleFavorite(repo.path))}>
+      <button class="item" title="Favorites stay at the top of the sidebar" id="repo-menu-favorite" onclick={run(() => model.toggleFavorite(repo.path))}>
         <Star size={13} />{isFavorite ? "Remove from Favorites" : "Add to Favorites"}
       </button>
       <div class="my-1 h-px bg-border"></div>
       {#if repo.folder}
-        <button class="item" id="repo-menu-hide" onclick={run(() => model.hideRepo(repo.path))}><EyeOff size={13} />Hide from sidebar</button>
-        <button class="item" id="repo-menu-remove-folder" onclick={run(() => model.removeFolder(repo.folder!))}>
+        <button class="item" title="Take it out of the list; it comes back if you add it again" id="repo-menu-hide" onclick={run(() => model.hideRepo(repo.path))}><EyeOff size={13} />Hide from sidebar</button>
+        <button class="item" title="Stop listing every repo in this folder. Nothing is deleted from disk." id="repo-menu-remove-folder" onclick={run(() => model.removeFolder(repo.folder!))}>
           <FolderMinus size={13} /><span class="truncate">Remove folder "{folderName}"</span>
         </button>
       {:else}
-        <button class="item" id="repo-menu-remove" onclick={run(() => model.removeRepo(repo.path))}><X size={13} />Remove from sidebar</button>
+        <button class="item" title="Take it out of the sidebar. Nothing is deleted from disk." id="repo-menu-remove" onclick={run(() => model.removeRepo(repo.path))}><X size={13} />Remove from sidebar</button>
       {/if}
     </div>
   {/if}

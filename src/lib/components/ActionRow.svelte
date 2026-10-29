@@ -6,7 +6,7 @@
   let { title, detail, icon: Icon, id, color = "var(--primary)", grey = false, disabled = false, onclick }: Props = $props();
 </script>
 
-<button class="row" class:grey {id} {disabled} {onclick} style:--tint={color}>
+<button class="row" class:grey {id} {disabled} {onclick} style:--tint={color} title={detail}>
   <span class="tile"><Icon size={15} /></span>
   <span class="flex min-w-0 flex-col gap-0.5 text-left">
     <span class="text-[13px] font-semibold">{title}</span>

@@ -17,8 +17,8 @@
 
 <svelte:window onkeydown={keydown} />
 
-{#snippet option(title: string, Icon: Component, mode: WipMode, primary: boolean)}
-  <button class="option" class:primary id="checkout-prompt-{title.toLowerCase().replaceAll(' ', '-')}" onclick={() => model.runCheckout(target, mode)}>
+{#snippet option(title: string, Icon: Component, mode: WipMode, primary: boolean, tip: string)}
+  <button class="option" class:primary title={tip} id="checkout-prompt-{title.toLowerCase().replaceAll(' ', '-')}" onclick={() => model.runCheckout(target, mode)}>
     <Icon size={12} strokeWidth={2.5} />{title}
   </button>
 {/snippet}
@@ -28,9 +28,9 @@
   <span class="shrink-0 text-[12px] font-semibold">{n} modified file{n === 1 ? "" : "s"}</span>
   <span class="truncate text-[12px] text-muted-foreground">checking out {target}</span>
   <span class="flex-1"></span>
-  {@render option("Stash", Inbox, "shelve", true)}
-  {@render option("WIP commit", BadgeCheck, "commit", false)}
-  {@render option("Move to branch", ArrowRight, "carry", false)}
+  {@render option("Stash", Inbox, "shelve", true, "Put your changes aside on this branch; they come back when you return to it")}
+  {@render option("WIP commit", BadgeCheck, "commit", false, "Save your changes as a WIP commit on this branch; it is undone when you come back to it")}
+  {@render option("Move to branch", ArrowRight, "carry", false, "Take your uncommitted changes with you to the other branch")}
   <button class="grid size-6 place-items-center text-muted-foreground" title="Cancel" id="checkout-prompt-cancel" onclick={() => (model.pendingCheckout = null)}>
     <X size={11} strokeWidth={3} />
   </button>

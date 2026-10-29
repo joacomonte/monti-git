@@ -1,12 +1,13 @@
 <!-- Content of a card's ⌄ popover (BranchActions in BranchBar.swift). All card actions live here. -->
 <script lang="ts">
-  import { ArrowDownCircle, ArrowLeftRight, Check, ChevronLeft, Copy, Eye, EyeOff, House, Layers, Pin, PinOff, Server, Waypoints } from "@lucide/svelte";
+  import { ArrowDownCircle, ArrowLeftRight, Check, ChevronLeft, Copy, Eye, Hash, EyeOff, House, Layers, Pin, PinOff, Server, Waypoints } from "@lucide/svelte";
   import type { RepoModel } from "$lib/model.svelte";
   import ActionRow from "./ActionRow.svelte";
 
   type Props = {
     name: string;
     local: string; // name without "origin/"
+    hash?: string | null; // tip commit, for "Copy commit hash"
     isBase: boolean;
     isCurrent: boolean;
     featureIsOld?: boolean | null; // set on feature cards: adds the Hide / Show row
@@ -14,7 +15,7 @@
     model: RepoModel;
     dismiss: () => void;
   };
-  let { name, local, isBase, isCurrent, featureIsOld = null, onSquash = null, model, dismiss }: Props = $props();
+  let { name, local, hash = null, isBase, isCurrent, featureIsOld = null, onSquash = null, model, dismiss }: Props = $props();
   let choosingBase = $state(false);
   const isPinned = $derived(model.pinnedBranches.includes(name));
   const isEnvironment = $derived(model.isEnvironment(local));
@@ -49,6 +50,10 @@
       onclick={run(() => model.reveal(name))} />
     <ActionRow title="Copy name" detail={local} icon={Copy} color="#5ec8f2" id="branch-actions-copy-name"
       onclick={run(() => navigator.clipboard.writeText(local))} />
+    {#if hash}
+      <ActionRow title="Copy commit hash" detail={hash.slice(0, 7)} icon={Hash} color="#94a3b8" id="branch-actions-copy-hash"
+        onclick={run(() => navigator.clipboard.writeText(hash))} />
+    {/if}
     {#if isBase}
       <ActionRow title="Change base branch" detail="The one the dashboard and the graph compare against" icon={House} color="#ff8a4c" id="branch-actions-change-base"
         onclick={() => (choosingBase = true)} />

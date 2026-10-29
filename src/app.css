@@ -87,8 +87,18 @@
   button, [role="button"], [role="checkbox"], [role="option"], [role="tab"], input, textarea, label, a {
     transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
   }
-  /* Press feedback on small controls only: full-width rows would visibly shrink. */
-  button:not(.file, .repo, .line, .banner, .row):active:not(:disabled), [role="button"]:active { transform: scale(0.96); }
+  /* Press feedback on small controls only: full-width rows and cards would visibly shrink. */
+  button:not(.file, .repo, .line, .banner, .row, .action, .option, .item):active:not(:disabled), [role="button"]:not(.card):active { transform: scale(0.96); }
+  /* Small hover nudges: icon tiles grow a touch, arrows slide, chips lift. */
+  .row:hover:not(:disabled) .tile, .option:hover .tile { transform: scale(1.08); }
+  .tile { transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1); }
+  .chip { transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.15s ease; }
+  .chip:hover { transform: translateY(-1px); }
+  .repo svg:first-child, .file img { transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1); }
+  .repo:hover svg:first-child, .file:hover img { transform: translateX(2px); }
+  .enter-stagger > * { animation: enter 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  .enter-stagger > :nth-child(2) { animation-delay: 30ms; } .enter-stagger > :nth-child(3) { animation-delay: 60ms; }
+  .enter-stagger > :nth-child(4) { animation-delay: 90ms; } .enter-stagger > :nth-child(n + 5) { animation-delay: 120ms; }
   .enter { animation: enter 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
   .enter-fade { animation: enter-fade 0.2s ease-out both; }
 }
@@ -99,5 +109,7 @@
   * { @apply border-border outline-ring/50; }
   html, body { @apply h-full overflow-hidden bg-background text-foreground; font-size: 13px; }
   body { -webkit-user-select: none; user-select: none; cursor: default; }
-  button { cursor: default; }
+  /* Pointer on everything clickable, not-allowed when it's disabled. */
+  button, [role="button"], [role="checkbox"], [role="tab"], [role="switch"], [role="option"], a, summary, label:has(button, input) { cursor: pointer; }
+  button:disabled, [aria-disabled="true"], [data-disabled] { cursor: not-allowed; }
 }

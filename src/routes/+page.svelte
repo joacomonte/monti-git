@@ -9,6 +9,7 @@
   import FileTree from "$lib/components/FileTree.svelte";
   import Loader from "$lib/components/Loader.svelte";
   import Onboarding from "$lib/components/Onboarding.svelte";
+  import QuickTooltip from "$lib/components/QuickTooltip.svelte";
   import PaneDivider from "$lib/components/PaneDivider.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import UpdateGate from "$lib/components/UpdateGate.svelte";
@@ -21,17 +22,35 @@
   let space = $state({ width: 1200, height: 800 });
   $effect(() => prefs.set("treeWidth", treeWidth));
   $effect(() => prefs.set("diffHeight", diffHeight));
+  // Ticks so "synced 2m ago" stays current.
+  let now = $state(Date.now());
+  $effect(() => {
+    const timer = setInterval(() => (now = Date.now()), 20_000);
+    return () => clearInterval(timer);
+  });
+  const ago = (ms: number, at: number) => {
+    const s = Math.max(0, (at - ms) / 1000);
+    return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
+  };
+  // Keeps every branch up to date with origin: on open, every 5 min, on focus and on any activity (below).
+  $effect(() => {
+    if (!model.repo) return;
+    model.autoSync();
+    const timer = setInterval(() => model.autoSync(), 5 * 60_000);
+    return () => clearInterval(timer);
+  });
 </script>
 
 <!-- Back from the editor/terminal: pick up new commits, checkouts and uncommitted changes. -->
-<svelte:window onfocus={() => model.reload()} />
+<!-- Any activity also syncs with origin (at most once a minute, see autoSync). -->
+<svelte:window onfocus={() => { model.reload(); model.autoSync(); }} onpointerdown={() => model.autoSync()} onkeydown={() => model.autoSync()} onwheel={() => model.autoSync()} />
 <UpdateGate>
 <div class="grid h-full grid-cols-[220px_1fr] grid-rows-1">
   <div class="border-r"><Sidebar {model} /></div>
 
   <main class="relative flex min-w-0 flex-col">
     {#if model.isRefreshing}<div class="refresh-bar" title="Refreshing: checking the repo for anything new"></div>{/if}
-    <!-- Top row: view switch centered; the graph's "My branches only" filter on the right. The strip drags the window. -->
+    <!-- Top row: switches on the left, view switch centered. The strip drags the window. -->
     <header data-tauri-drag-region class="relative flex h-[56px] shrink-0 items-center gap-2 px-3.5 pt-1">
       {#if model.repo && !model.error && model.hasSources && !model.onboarding}
         <Tabs.Root bind:value={() => (model.showGraph ? "graph" : "dashboard"), (v) => model.setShowGraph(v === "graph")}
@@ -47,13 +66,21 @@
             </Tabs.Trigger>
           </Tabs.List>
         </Tabs.Root>
-        {#if model.showGraph}
-          <label class="ml-auto flex items-center gap-2 text-[12px] font-medium text-muted-foreground"
-            title="Shows only branches whose last commit is yours, plus main. Ej: hides your teammates' branches so the list stays clean.">
-            My branches only
-            <Switch checked={model.onlyMine} onCheckedChange={(on) => model.setOnlyMine(on)} id="only-mine-toggle" />
+        <!-- Left: auto sync with origin (and how long ago), plus the graph's "My branches only". -->
+        <div class="flex items-center gap-5 text-[13px] font-medium text-muted-foreground">
+          <label class="flex items-center gap-2"
+            title="Keep every branch up to date with origin on its own: fetch and safe fast-forwards when you use the app (at most once a minute) and every 5 minutes. Never merges or rewrites anything.">
+            <Switch checked={model.autoSyncOn} onCheckedChange={(on) => model.setAutoSync(on)} id="auto-sync-toggle" />Auto sync
+            {#if model.isSyncing}<span class="text-[12px] font-normal text-tertiary">syncing…</span>
+            {:else if model.lastSynced}<span class="text-[12px] font-normal text-tertiary">synced {ago(model.lastSynced, now)}</span>{/if}
           </label>
-        {/if}
+          {#if model.showGraph}
+            <label class="flex items-center gap-2"
+              title="Shows only branches whose last commit is yours, plus main and the environments (qa, develop…). Ej: hides your teammates' branches so the graph stays clean.">
+              <Switch checked={model.onlyMine} onCheckedChange={(on) => model.setOnlyMine(on)} id="only-mine-toggle" />My branches only
+            </label>
+          {/if}
+        </div>
       {/if}
     </header>
     {#if model.repo && model.pendingCheckout}<CheckoutPrompt target={model.pendingCheckout} {model} />{/if}
@@ -98,6 +125,7 @@
 </div>
   <WhatsNew />
 </UpdateGate>
+<QuickTooltip />
 
 <style>
   /* Thin sliding line along the top while cached content is being refreshed. */

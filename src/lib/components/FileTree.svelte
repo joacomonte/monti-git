@@ -64,8 +64,8 @@
   <div class="flex items-center gap-1.5 p-2">
     <Tabs.Root value={model.showAllFiles ? "all" : "changed"} onValueChange={(v) => model.setShowAllFiles(v === "all")} id="file-tree-mode">
       <Tabs.List>
-        <Tabs.Trigger value="changed" id="file-tree-changed">Changed</Tabs.Trigger>
-        <Tabs.Trigger value="all" id="file-tree-all">All</Tabs.Trigger>
+        <Tabs.Trigger value="changed" id="file-tree-changed" title="Only the files that changed">Changed</Tabs.Trigger>
+        <Tabs.Trigger value="all" id="file-tree-all" title="Every file in the repo, changed ones marked">All</Tabs.Trigger>
       </Tabs.List>
     </Tabs.Root>
     <!-- View controls together on the left (what to list, how to lay it out); actions on the right. -->
