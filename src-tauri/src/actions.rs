@@ -310,16 +310,6 @@ pub fn pull(name: &str, repo: &Path) -> Result<String, String> {
     })
 }
 
-/// Replaces every commit of `branch` after `base` with one commit holding the same final files.
-/// No checkout: the tree is identical, so the working tree, index and uncommitted changes stay as they are.
-/// `expected_tip` makes it refuse if the branch moved since the dashboard loaded; the old tip stays in the reflog.
-pub fn squash(branch: &str, base: &str, expected_tip: &str, message: &str, repo: &Path) -> Result<(), String> {
-    let tree = run(&["rev-parse", &format!("{expected_tip}^{{tree}}")], repo)?.trim().to_string();
-    let commit = run_input(&["commit-tree", &tree, "-p", base, "-F", "-"], repo, Some(message))?.trim().to_string();
-    run(&["update-ref", "-m", "monti-git: squash", &format!("refs/heads/{branch}"), &commit, expected_tip], repo)?;
-    Ok(())
-}
-
 /// Brings `parent`'s new commits into `branch` by merge (or rebase). Never leaves a half-done state: on a
 /// conflict it aborts and returns the conflicting files. A branch that isn't checked out is updated in a
 /// temporary worktree, so the user's checkout is never touched. The checked-out branch must have no
@@ -346,6 +336,83 @@ pub fn update(branch: &str, parent: &str, rebase: bool, is_current: bool, repo: 
     let result = integrate(&dir);
     let _ = run(&["worktree", "remove", "--force", &dir_str], repo);
     result
+}
+
+/// How a local branch compares with its copy on origin. `remote` false: there's none, use the local one as is.
+#[derive(Serialize)]
+pub struct BaseStatus {
+    pub ahead: usize,
+    pub behind: usize,
+    pub remote: bool,
+}
+
+/// Fetches, then compares `base` with origin/`base`: is it safe to start a branch from it?
+pub fn base_status(base: &str, repo: &Path) -> BaseStatus {
+    let _ = run(&["fetch", "--all", "--prune"], repo);
+    compare_with_origin(base, repo)
+}
+
+fn compare_with_origin(base: &str, repo: &Path) -> BaseStatus {
+    let remote = format!("refs/remotes/origin/{base}");
+    if ok(&["rev-parse", "--verify", "--quiet", &remote], repo).is_none() {
+        return BaseStatus { ahead: 0, behind: 0, remote: false };
+    }
+    let counts = ok(&["rev-list", "--left-right", "--count", &format!("refs/heads/{base}...{remote}")], repo).unwrap_or_default();
+    let mut n = counts.split_whitespace().map(|c| c.parse().unwrap_or(0));
+    BaseStatus { ahead: n.next().unwrap_or(0), behind: n.next().unwrap_or(0), remote: true } // no local base: 0/0, starts from origin
+}
+
+/// "Start feature": brings `base` up to date with origin (fast-forward only, refuses if it diverged), creates
+/// `name` from it without tracking it, and checks it out like `checkout` (`wip`: what to do with uncommitted changes).
+pub fn start_feature(name: &str, base: &str, wip: Option<WipMode>, repo: &Path) -> Result<String, String> {
+    run(&["check-ref-format", "--branch", name], repo).map_err(|_| format!("\"{name}\" isn't a valid branch name"))?;
+    let status = base_status(base, repo);
+    if status.ahead > 0 && status.behind > 0 {
+        return Err(format!("{base} diverged from origin ({} only here, {} only there): sort that out first", status.ahead, status.behind));
+    }
+    if status.behind > 0 {
+        // Fast-forward to origin's copy even if it doesn't track it; same moves as `pull`, never a merge.
+        let moved = if current_branch(repo).as_deref() == Some(base) {
+            run(&["merge", "--ff-only", &format!("origin/{base}")], repo)
+        } else {
+            run(&["fetch", ".", &format!("refs/remotes/origin/{base}:refs/heads/{base}")], repo)
+        };
+        moved.map_err(|_| format!("Couldn't bring {base} up to date (local changes in the way, or checked out elsewhere)"))?;
+    }
+    let has_local = ok(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{base}")], repo).is_some();
+    let start = if has_local { base.to_string() } else { format!("origin/{base}") };
+    run(&["branch", "--no-track", name, &start], repo)?;
+    match checkout(name, wip, repo) {
+        Ok(status) => Ok(format!("Created {name} from {base} · {status}")),
+        Err(error) => {
+            let _ = run(&["branch", "-D", name], repo); // brand new and never checked out: nothing to lose
+            Err(error)
+        }
+    }
+}
+
+/// Undo for the activity panel: puts `branch` back at `target`. `expected` None recreates a deleted branch;
+/// otherwise the branch must still be at `expected` (nothing happened since) and that state must not be on any
+/// remote, so undoing never rewrites shared history. The checked-out branch moves with `reset --soft`: the
+/// working tree stays and an undone commit's changes come back staged.
+pub fn move_branch(branch: &str, expected: Option<&str>, target: &str, repo: &Path) -> Result<(), String> {
+    let Some(expected) = expected else {
+        run(&["branch", branch, target], repo)?;
+        return Ok(());
+    };
+    let now = ok(&["rev-parse", &format!("refs/heads/{branch}")], repo).map(|s| s.trim().to_string());
+    if now.as_deref() != Some(expected) {
+        return Err(format!("{branch} changed since then: nothing was undone"));
+    }
+    if !ok(&["branch", "-r", "--contains", expected], repo).unwrap_or_default().trim().is_empty() {
+        return Err("Already pushed: undoing it would rewrite shared history".into());
+    }
+    if current_branch(repo).as_deref() == Some(branch) {
+        run(&["reset", "--soft", target], repo)?;
+    } else {
+        run(&["update-ref", "-m", "monti-git: undo", &format!("refs/heads/{branch}"), target, expected], repo)?;
+    }
+    Ok(())
 }
 
 /// Pushes `branch` over its upstream with --force-with-lease: git refuses if the remote has commits
@@ -423,4 +490,50 @@ pub fn commit(message: &str, push: bool, repo: &Path) -> Result<String, String> 
         Ok(_) => format!("Committed and pushed {branch}"),
         Err(e) => format!("Committed, but the push failed: {}", e.lines().next().unwrap_or("unknown error")),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn delete_branch_keeps_the_checked_out_one() {
+        let repo = crate::testutil::Repo::new("delete");
+        repo.commit("a.txt", "1", "init");
+        repo.git(&["branch", "done"]);
+        assert!(super::delete_branch("main", false, repo.path()).is_err());
+        super::delete_branch("done", false, repo.path()).unwrap();
+        assert!(!repo.git(&["branch"]).contains("done"));
+    }
+
+    #[test]
+    fn undo_moves_back_only_unpushed_unchanged_branches() {
+        let repo = crate::testutil::Repo::new("undo");
+        repo.commit("a.txt", "1", "one");
+        let one = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+        repo.commit("a.txt", "2", "two");
+        let two = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+        assert!(super::move_branch("main", Some(&one), &one, repo.path()).is_err()); // main isn't at `one` anymore
+        super::move_branch("main", Some(&two), &one, repo.path()).unwrap();
+        assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), one);
+        assert_eq!(repo.git(&["diff", "--cached", "--name-only"]).trim(), "a.txt"); // the undone commit's change, staged
+        super::move_branch("gone", None, &two, repo.path()).unwrap();
+        assert_eq!(repo.git(&["rev-parse", "gone"]).trim(), two);
+    }
+
+    #[test]
+    fn start_feature_updates_the_base_first() {
+        let server = crate::testutil::Repo::new("start-server");
+        server.commit("a.txt", "1", "one");
+        let repo = crate::testutil::Repo::new("start-local");
+        repo.git(&["remote", "add", "origin", &server.path().display().to_string()]);
+        repo.git(&["fetch", "-q", "origin"]);
+        repo.git(&["reset", "-q", "--hard", "origin/main"]);
+        server.commit("a.txt", "2", "two"); // local main is now 1 behind
+        let status = super::start_feature("feat/x", "main", None, repo.path()).unwrap();
+        assert!(status.starts_with("Created feat/x from main"), "{status}");
+        let tip = server.git(&["rev-parse", "HEAD"]);
+        assert_eq!(repo.git(&["rev-parse", "main"]), tip);
+        assert_eq!(repo.git(&["rev-parse", "HEAD"]), tip);
+        assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "feat/x");
+        assert!(super::start_feature("bad name", "main", None, repo.path()).is_err());
+    }
 }

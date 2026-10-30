@@ -60,3 +60,26 @@ pub fn places(repo: &str, id: &str) -> Vec<String> {
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::testutil::Repo;
+
+    #[test]
+    fn finds_tickets_in_titles_and_descriptions() {
+        let repo = Repo::new("search");
+        repo.commit("a.txt", "1", "feat(MOA-854): filters");
+        repo.git(&["checkout", "-q", "-b", "qa"]);
+        repo.git(&["commit", "-q", "--allow-empty", "-m", "fix: dates", "-m", "Part of moa-854"]);
+        repo.commit("b.txt", "1", "unrelated");
+        let hits = super::commits(&[repo.path().display().to_string()], "MOA-854");
+        assert_eq!(hits.len(), 2);
+        // Same second, so no order between them: look each one up.
+        let hit = |subject: &str| hits.iter().find(|h| h.subject == subject).unwrap();
+        assert_eq!(hit("fix: dates").snippet.as_deref(), Some("Part of moa-854")); // matched in the description
+        assert_eq!(hit("feat(MOA-854): filters").snippet, None);
+        let mut places = super::places(&repo.path().display().to_string(), &hit("feat(MOA-854): filters").id);
+        places.sort();
+        assert_eq!(places, ["main", "qa"]);
+    }
+}

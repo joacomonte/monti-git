@@ -1,15 +1,17 @@
-<!-- One dashboard card: how long since the last commit on the left; name, merge ticks, origin status and the last commit
-     on the right, then a button for each thing that needs doing. Click anywhere else opens the graph at this branch. -->
+<!-- One dashboard row, in columns the Dashboard header labels: age | name + origin | vs parent | shipped | changes | menu.
+     Cells that need something done are buttons: on hover their second line turns into the action. Click anywhere else opens the graph. -->
 <script lang="ts">
-  import { ArrowRight, ChevronDown, CloudOff, Copy, EyeOff, Trash2 } from "@lucide/svelte";
-  import { api, type Card, type Totals } from "$lib/api";
+  import { GitBranch, ArrowRight, ChevronDown, CloudOff, Ellipsis, Copy, EyeOff, Trash2 } from "@lucide/svelte";
+  import { api, type Card } from "$lib/api";
   import { isShipped as shipped } from "$lib/branchFilters";
   import type { RepoModel } from "$lib/model.svelte";
   import * as Popover from "$lib/components/ui/popover";
   import { Button } from "$lib/components/ui/button";
   import ActionRow from "./ActionRow.svelte";
   import BranchActions from "./BranchActions.svelte";
-  import SquashPanel from "./SquashPanel.svelte";
+  import PrPrompt from "./PrPrompt.svelte";
+  import SquashPrompt from "./SquashPrompt.svelte";
+  import StartFeature from "./StartFeature.svelte";
   import UpdatePanel from "./UpdatePanel.svelte";
 
   type Props = { card: Card; kind: "base" | "environment" | "feature"; isOld?: boolean; model: RepoModel };
@@ -54,8 +56,13 @@
       : "",
   );
   const isShipped = $derived(kind === "feature" && shipped(card));
-  // Background sync fast-forwards whatever it can, so anything still behind origin needs a hand.
-  const isStuck = $derived(!!s && s.behind > 0 && !model.isSyncing);
+  // Shipped everywhere and nothing uncommitted: the row says "finished" and suggests the clean-up instead of the columns.
+  const isDone = $derived(isShipped && !card.uncommitted);
+  // "vs" column: the branch it was cut from, else the base for features. Ej: ↓ 16 behind / main.
+  const against = $derived(card.parent ? localName(card.parent) : kind === "feature" ? baseName : null);
+  const behindAgainst = $derived(card.parent ? card.behindParent : kind === "feature" ? card.behindBase : 0);
+  // Pull can't fast-forward: both sides have commits, or files would conflict. Then the cell offers the AI prompt.
+  const cantPull = $derived(!!s && s.behind > 0 && (s.ahead > 0 || card.conflicts.length > 0));
   const stuckTitle = $derived(
     card.conflicts.length ? `Couldn't update: ${plural(card.conflicts.length, "file")} conflict`
     : s?.ahead ? "Couldn't update: you and origin both have new commits"
@@ -65,7 +72,11 @@
 
   let showUpdate = $state(false);
   let showActions = $state(false);
+  // Right-click: the options open where the pointer is, instead of at the ⋯ button.
+  let menuAt = $state<{ getBoundingClientRect: () => DOMRect } | null>(null);
   let showSquash = $state(false);
+  let showPr = $state(false);
+  let showNewBranch = $state(false);
   let showPrompt = $state(false);
   let showShipped = $state(false);
   let confirmDelete = $state<"local" | "remote" | null>(null);
@@ -73,6 +84,7 @@
   let copied = $state(false);
   // Panels anchor to parts that are always there: after updating, the button that opened them goes away.
   let headerEl = $state<HTMLElement | null>(null);
+  let deleteEl = $state<HTMLElement | null>(null); // the shipped panel opens right under its Delete… button
 
   async function openPrompt() {
     const repo = model.repo;
@@ -92,104 +104,137 @@
   const own = (action: () => void) => (e: MouseEvent) => { e.stopPropagation(); action(); };
 </script>
 
-<!-- One line; hovering it unfolds the detail below. -->
-{#snippet action(id: string, icon: string, title: string, detail: string, tone: "blue" | "grey" | "alert", onclick: () => void, tip = "", lines: Totals | null = null)}
-  <button class="action {tone}" {id} onclick={own(onclick)} title={tip}>
-    <span class="icon">{icon}</span>
-    <span class="flex min-w-0 flex-col text-left">
-      <span class="flex items-center gap-2 leading-[22px]">
-        <span class="truncate text-[12.5px] font-semibold">{title}</span>
-        {#if lines}<span class="counts shrink-0 text-[11.5px] font-semibold"><span class="add">+{lines.added.toLocaleString()}</span> <span class="del">−{lines.removed.toLocaleString()}</span></span>{/if}
-      </span>
-      <span class="detail"><span class="truncate text-[11.5px] text-muted-foreground">{detail}</span></span>
-    </span>
-    <ArrowRight size={13} class="arrow shrink-0" />
-  </button>
-{/snippet}
-
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<div class="card" class:opacity-80={isOld} class:shipped={isShipped} id="dashboard-card-{card.ref}" role="button" tabindex="0"
-  onclick={() => model.showInGraph(card)} onkeydown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) model.showInGraph(card); }}>
+<div class="card card-columns" class:current={isCurrent} class:opacity-80={isOld} class:shipped={isShipped} id="dashboard-card-{card.ref}" role="button" tabindex="0"
+  onclick={() => model.showInGraph(card)} oncontextmenu={(e) => { e.preventDefault(); const at = new DOMRect(e.clientX, e.clientY, 0, 0); menuAt = { getBoundingClientRect: () => at }; showActions = true; }} onkeydown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) model.showInGraph(card); }}>
   <div class="age" class:current={isCurrent}
     title={card.last ? `Last commit ${shortAge(card.last.date)} ago, by ${card.last.author}` : ""}>
     {#if card.last}
       {@const a = age(card.last.date)}
-      {#if a.n === "now"}<b class="text-[22px]">now</b>{:else}<b>{a.n}</b><span>{a.unit}</span><span class="ago">ago</span>{/if}
+      {#if a.n === "now"}<b class="text-[16px]">now</b>{:else}<b>{a.n}</b><span>{a.unit}</span><span class="ago">ago</span>{/if}
     {:else}<b>—</b>{/if}
   </div>
 
-  <div class="flex min-w-0 flex-1 flex-col gap-2.5">
-    <div bind:this={headerEl}>
-      <div class="flex items-center gap-1.5 pr-8 text-[12px] text-tertiary">
-        <span class="truncate">{slash >= 0 ? card.local.slice(0, slash + 1) : kind === "base" ? "base branch" : kind === "environment" ? "environment" : "branch"}</span>
-        {#if isCurrent}<span class="chip blue shrink-0" title="You're on this branch (checked out)">● checked out</span>{/if}
-        <span class="ml-auto flex shrink-0 gap-1">
-          {#each card.promotion as [target, missing] (target)}
-            <span class="chip {missing === 0 ? 'green' : 'grey'}"
-              title={missing === 0 ? `Merged into ${localName(target)}: all your commits are there.` : `Not in ${localName(target)} yet: ${plural(missing, "commit")} waiting to merge.`}>
-              {missing === 0 ? "✓" : "✗"} {localName(target)}
-            </span>
-          {/each}
-        </span>
+  <!-- Full name, the last segment in bold; under it the origin status. -->
+  <div class="min-w-0" bind:this={headerEl}>
+    {#if isCurrent}<div class="eyebrow"><i></i>Checked out</div>{/if}
+    <div class="name">
+      {card.local.slice(0, slash + 1)}<b>{card.local.slice(slash + 1)}</b>
+    </div>
+    <div class="sub">
+      <!-- origin, minimal: green when nobody pushed anything new; a chip to click when there is something to pull. -->
+      {#if !s}
+        <span class="shrink-0">only on the server</span>
+      {:else if s.behind}
+        <button class="pull" id="dashboard-card-pull-{card.ref}" onclick={own(cantPull ? openPrompt : () => model.pull(card.local))}
+          title={cantPull ? `${stuckTitle}. Click to copy a prompt for your AI agent.${card.conflicts.length ? `\nConflicting files:\n${card.conflicts.join("\n")}` : ""}` : "New commits on origin you don't have yet. Click to pull them."}>
+          <span class="label">↓ {s.behind} to pull</span><span class="do">{cantPull ? "Fix with AI…" : `↓ Pull ${s.behind}`}</span>
+        </button>
+      {:else}
+        <span class="ok shrink-0" title={s.hasUpstream ? "Nobody pushed anything you don't have" : "Not on origin, so nobody else can have pushed to it"}>✓ Nothing to pull</span>
+      {/if}
+      {#if s?.ahead}<span class="ml-1.5 shrink-0 text-primary" title="Commits only on your machine">↑ {s.ahead} to push</span>{/if}
+    </div>
+  </div>
+
+  {#if isDone}
+    <!-- Finished: being behind its parent no longer matters, so one wide cell with what to do next. -->
+    <div class="done">
+      <div class="flex min-w-0 flex-col gap-0.5">
+        <span class="ok text-[12.5px] font-semibold">✓ Finished · in {card.promotion.map(([t]) => localName(t)).join(", ")}</span>
+        <span class="text-[11.5px] leading-snug text-tertiary">All its commits are in every environment: safe to delete.</span>
       </div>
-      <div class="truncate text-[17px] font-bold" title={card.local}>{card.local.slice(slash + 1)}</div>
-      <div class="mt-[3px] flex flex-wrap items-center gap-1.5 text-[12px] text-muted-foreground">
-        {#if card.parent}
-          <span>↳ from <span class="font-semibold text-foreground">{localName(card.parent)}</span></span>
-        {:else if kind !== "base" && card.behindBase > 0}
-          <span title="{baseName} has {plural(card.behindBase, 'commit')} this branch doesn't have.">↓ {card.behindBase} behind {baseName}</span>
-        {/if}
-        {#if !s}
-          <span>{card.parent || (kind !== "base" && card.behindBase > 0) ? "· " : ""}only on the server</span>
-        {:else if !s.hasUpstream}
-          <span>{card.parent || (kind !== "base" && card.behindBase > 0) ? "· " : ""}only on your Mac</span>
-        {:else if !s.ahead && !s.behind}
-          <span>{card.parent || (kind !== "base" && card.behindBase > 0) ? "· " : ""}✓ synced with origin</span>
-        {/if}
-        {#if s?.ahead}<span class="chip blue" title="Commits only on your machine">↑ {s.ahead} to push</span>{/if}
-        {#if s?.behind}<span class="chip amber" title="New commits on the server you don't have">↓ {s.behind} behind origin</span>{/if}
-        {#if model.dashboard?.shelved.includes(card.local)}
-          <span class="chip blue" title="Unsaved changes Monti Git put aside when you switched away. They come back when you return.">WIP saved</span>
+      <div class="ml-auto flex shrink-0 gap-1.5">
+        <button class="done-btn" id="dashboard-card-delete-{card.ref}" disabled={isCurrent} bind:this={deleteEl}
+          title={isCurrent ? "You're on it: check out another branch first" : "Delete it here, or here and on origin. Git refuses if anything isn't merged."}
+          onclick={own(() => { confirmDelete = null; showShipped = true; })}><Trash2 size={12} />Delete…</button>
+        {#if !isOld}
+          <button class="done-btn quiet" id="dashboard-card-hide-{card.ref}" title="Move it to Hidden. Nothing is deleted; bring it back from its ⌄ menu."
+            onclick={own(() => model.setFeatureOld(card.local, true))}><EyeOff size={12} />Hide</button>
         {/if}
       </div>
     </div>
+  {:else}
+  <!-- vs parent: how far behind the branch it came from. -->
+  {#if !against}
+    <div></div>
+  {:else if behindAgainst && card.parent}
+    <button class="cell act" class:quiet={dismissed} id="dashboard-card-incoming-{card.ref}" onclick={own(() => (showUpdate = true))}
+      title="{against} got {plural(behindAgainst, 'new commit')} since this branch was cut. Click to bring them in or hide this notice.">
+      <span class="warn">{#key behindAgainst}<span class="num-in">↓ {behindAgainst} behind</span>{/key}</span><span class="hint">{against}</span><span class="do">Merge or rebase<ChevronDown size={11} strokeWidth={2.5} /></span>
+    </button>
+  {:else if behindAgainst}
+    <div class="cell">
+      <span class="warn">{#key behindAgainst}<span class="num-in">↓ {behindAgainst} behind</span>{/key}</span><span class="hint">{against}</span>
+    </div>
+  {:else}
+    <div class="cell"><span class="ok">✓ up to date</span><span class="hint">{against}</span></div>
+  {/if}
 
-    {#if card.last}
-      <div class="last" title="{card.last.subject} · {card.last.author}"><span class="font-semibold">Last commit:</span> {card.last.subject}</div>
-    {/if}
-
-    {#if isShipped}
-      {@render action(`dashboard-card-shipped-${card.ref}`, "✓", `Shipped to ${baseName}`, "All its commits are there. Clean up the branch?", "grey",
-        () => { confirmDelete = null; showShipped = true; }, "The work is merged everywhere: hide the branch or delete it.")}
-    {:else if card.parent && card.behindParent > 0}
-      {@render action(`dashboard-card-incoming-${card.ref}`, "↓", `${plural(card.behindParent, "commit")} behind ${localName(card.parent)}`,
-        "Merge or rebase to stay up to date", dismissed ? "grey" : "blue", () => (showUpdate = true),
-        `${localName(card.parent)} got ${plural(card.behindParent, "new commit")} since this branch was cut. Click to bring them in or hide this notice.`)}
-    {/if}
-    {#if card.uncommitted}
-      {@render action(`dashboard-card-uncommitted-${card.ref}`, "✎",
-        `${plural(card.uncommitted.files, "file")} changed, not committed`,
-        worktreeText, "blue", () => model.revealWorktree(),
-        "", card.uncommitted)}
-    {/if}
-    {#if isStuck}
-      {@render action(`dashboard-card-stuck-${card.ref}`, "!", stuckTitle, "Copy a prompt for your AI agent to fix it", "alert", openPrompt,
-        card.conflicts.length ? `Conflicting files:\n${card.conflicts.join("\n")}` : "")}
+  <!-- shipped: which environments have it. A × opens the PR prompt. -->
+  <div class="ship">
+    {#if kind !== "feature"}
+      <!-- Environments are where things ship to, not something that ships. -->
+      <span class="none" title="This is {kind === 'base' ? 'the base branch' : 'an environment'}: features ship into it, so nothing to track here">{kind === "base" ? "base branch" : "environment"}</span>
+    {:else if card.promotion.length}
+      <div class="flex flex-wrap gap-1">
+        {#each card.promotion as [target, missing] (target)}
+          {#if missing === 0}
+            <span class="env yes">✓ {localName(target)}</span>
+          {:else if kind === "feature"}
+            <button class="env" id="dashboard-card-pr-{card.ref}-{localName(target)}" onclick={own(() => (showPr = true))}
+              title="Not in {localName(target)} yet: {plural(missing, 'commit')} waiting to merge. Click to open a PR.">× {localName(target)}</button>
+          {:else}
+            <span class="env" title="Not in {localName(target)} yet: {plural(missing, 'commit')} waiting to merge.">× {localName(target)}</span>
+          {/if}
+        {/each}
+      </div>
     {/if}
   </div>
 
-  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <span class="absolute top-3.5 right-3.5" onclick={(e) => e.stopPropagation()}>
-    <Popover.Root bind:open={showActions}>
-      <Popover.Trigger class="menu" id="dashboard-card-menu-{card.ref}" title="Actions: check out, pull, copy the name…"><ChevronDown size={10} strokeWidth={3.5} /></Popover.Trigger>
-      <Popover.Content class="w-auto p-2.5">
-        <BranchActions name={card.ref} local={card.local} hash={card.last?.id} isBase={kind === "base"} {isCurrent} {model} dismiss={() => (showActions = false)}
-          featureIsOld={kind === "feature" && !isCurrent && !isPinned ? isOld : null}
-          onSquash={kind === "feature" && card.featureCommits.length > 1 && card.squashBase ? () => (showSquash = true) : null} />
-      </Popover.Content>
-    </Popover.Root>
-  </span>
-  <span class="graph">View in graph <ArrowRight size={12} /></span>
+  <!-- changes: uncommitted work. Only the checked-out branch can have any, the rest show a dash. -->
+  {#if card.uncommitted}
+    <button class="cell act changes" id="dashboard-card-commit-{card.ref}" onclick={own(() => model.revealWorktree())}
+      title="{worktreeText}. Click to open them in the graph to review and commit.">
+      <span class="warn flex items-center"><span class="pulse"></span>{#key card.uncommitted.files}<span class="num-in">{plural(card.uncommitted.files, "file")}</span>{/key}</span>
+      <span class="hint"><span class="add">+{card.uncommitted.added.toLocaleString()}</span> <span class="del">−{card.uncommitted.removed.toLocaleString()}</span></span>
+      <span class="do">Commit…</span>
+    </button>
+  {:else if model.dashboard?.shelved.includes(card.local)}
+    <button class="cell act changes" id="dashboard-card-wip-{card.ref}" onclick={own(() => model.checkout(card.local))}
+      title="Uncommitted changes Monti Git put aside when you switched away. They come back when you check this branch out.">
+      <span class="wip">WIP saved</span>
+      <span class="hint">back on checkout</span>
+      <span class="do">Check out</span>
+    </button>
+  {:else}
+    <div class="cell" title={isCurrent ? undefined : "Only the checked-out branch has uncommitted changes"}><span class="hint">{isCurrent ? "clean" : "—"}</span></div>
+  {/if}
+  {/if}
+
+  <!-- Hidden at rest, slides in on hover: options, check out, and the "view in graph" arrow (the whole card opens the graph too). -->
+  <div class="end">
+    <span class="reveal">
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+      <span onclick={(e) => e.stopPropagation()}>
+        <Popover.Root bind:open={showActions}>
+          <Popover.Trigger class="menu" onclick={() => (menuAt = null)} id="dashboard-card-menu-{card.ref}" title="More options (or right-click the card)"><Ellipsis size={14} strokeWidth={2.5} /></Popover.Trigger>
+          <Popover.Content class="w-auto p-2.5" customAnchor={menuAt} align={menuAt ? "start" : "center"}>
+            <BranchActions name={card.ref} local={card.local} hash={card.last?.id} isBase={kind === "base"} {isCurrent} {model} dismiss={() => (showActions = false)}
+              featureIsOld={kind === "feature" && !isCurrent && !isPinned ? isOld : null}
+              onSquash={kind === "feature" && card.featureCommits.length > 1 && card.squashBase ? () => (showSquash = true) : null}
+              onOpenPr={kind === "feature" ? () => (showPr = true) : null} onNewBranch={() => (showNewBranch = true)} />
+          </Popover.Content>
+        </Popover.Root>
+      </span>
+      {#if !isCurrent}
+        <button class="switch" id="dashboard-card-checkout-{card.ref}" title="Check out {card.local}" onclick={own(() => model.checkout(card.ref))}>
+          <GitBranch size={14} strokeWidth={2.5} />
+        </button>
+      {/if}
+    </span>
+    <span class="graph" title="View in graph"><ArrowRight size={14} /></span>
+  </div>
 </div>
 
 <Popover.Root bind:open={showUpdate}>
@@ -200,12 +245,24 @@
 
 <Popover.Root bind:open={showSquash}>
   <Popover.Content customAnchor={headerEl} class="w-auto p-2.5">
-    <SquashPanel {card} {model} dismiss={() => (showSquash = false)} />
+    <SquashPrompt {card} {model} dismiss={() => (showSquash = false)} />
+  </Popover.Content>
+</Popover.Root>
+
+<Popover.Root bind:open={showNewBranch}>
+  <Popover.Content customAnchor={headerEl} class="w-auto p-3">
+    <StartFeature {model} from={card.local} dismiss={() => (showNewBranch = false)} />
+  </Popover.Content>
+</Popover.Root>
+
+<Popover.Root bind:open={showPr}>
+  <Popover.Content customAnchor={headerEl} class="w-auto p-2.5">
+    <PrPrompt {card} {model} dismiss={() => (showPr = false)} />
   </Popover.Content>
 </Popover.Root>
 
 <Popover.Root bind:open={showShipped}>
-  <Popover.Content customAnchor={headerEl} class="w-[400px] p-2.5" id="dashboard-card-shipped-panel-{card.ref}">
+  <Popover.Content customAnchor={deleteEl ?? headerEl} align="end" class="w-[400px] p-2.5" id="dashboard-card-shipped-panel-{card.ref}">
     {#if !confirmDelete}
       <span class="px-1.5 text-[13px] font-semibold text-muted-foreground">{card.local} is shipped</span>
       <div class="flex flex-col gap-1">
@@ -227,8 +284,8 @@
         </span>
       </div>
       <div class="flex justify-end gap-2 px-1.5 pb-1">
-        <Button variant="secondary" size="sm" id="shipped-delete-cancel-{card.ref}" title="Go back without deleting" onclick={() => (confirmDelete = null)}>Cancel</Button>
-        <Button size="sm" id="shipped-delete-confirm-{card.ref}" title="Delete the branch" onclick={() => { model.deleteBranch(card.local, confirmDelete === "remote"); showShipped = false; }}>Delete</Button>
+        <Button variant="secondary" size="sm" id="shipped-delete-cancel-{card.ref}" onclick={() => (confirmDelete = null)}>Cancel</Button>
+        <Button size="sm" id="shipped-delete-confirm-{card.ref}" onclick={() => { model.deleteBranch(card.local, confirmDelete === "remote"); showShipped = false; }}>Delete</Button>
       </div>
     {/if}
   </Popover.Content>
@@ -248,28 +305,39 @@
 </Popover.Root>
 
 <style>
+  /* Same columns as the header row in Dashboard.svelte. */
+  :global(.card-columns) { display: grid; grid-template-columns: 62px minmax(0, 1fr) 124px 150px 150px; align-items: center; column-gap: 12px; padding: 0 12px; }
   .card {
     --green: oklch(0.72 0.17 150); --amber: #f5a524;
-    position: relative; display: flex; gap: 18px; padding: 18px; border-radius: 16px; cursor: pointer;
+    position: relative; padding: 15px 12px; border-radius: 14px; cursor: pointer;
     background: color-mix(in oklab, var(--quinary) 70%, transparent);
     box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.1);
-    transition: box-shadow 0.4s cubic-bezier(0.22, 1, 0.36, 1), padding-bottom 0.45s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease;
+    transition: padding 0.25s var(--ease), box-shadow 0.3s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s, opacity 0.2s ease;
   }
+  /* Checked out: the whole row in a subtle dark blue. */
+  .card.current { background: color-mix(in oklab, var(--primary) 13%, var(--background)); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 38%, transparent); }
   .card.shipped { opacity: 0.72; }
   .card.shipped:hover { opacity: 1; }
-  /* Hover: a bit taller at the bottom, so "View in graph" gets its own room. */
   .card:hover, .card:focus-visible {
-    padding-bottom: 42px; outline: none;
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 55%, transparent), 0 12px 32px rgb(0 0 0 / 0.22);
+    outline: none;
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 55%, transparent), 0 10px 26px rgb(0 0 0 / 0.2);
   }
-  .graph {
-    position: absolute; right: 18px; bottom: 14px; display: flex; align-items: center; gap: 4px;
-    font-size: 12px; font-weight: 600; color: var(--primary); opacity: 0; transform: translateY(6px);
-    transition: opacity 0.2s ease, transform 0.3s cubic-bezier(0.22, 1, 0.36, 1); pointer-events: none;
+  /* Floats over the card's right end on hover (the changes column is wide enough to leave it room): nothing shifts. */
+  .changes { justify-self: start; } /* hugs its text, so its hover box stays clear of the actions */
+  .end {
+    position: absolute; top: 0; bottom: 0; right: 12px; display: flex; align-items: center; gap: 6px; pointer-events: none; opacity: 0; transition: opacity 0.2s;
   }
-  .card:hover .graph, .card:focus-visible .graph {
-    opacity: 1; transform: none; transition: opacity 0.35s ease 0.12s, transform 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.12s;
+  .card:hover .end, .card:focus-within .end, .card:has(:global([data-state="open"])) .end { opacity: 1; pointer-events: auto; }
+  .reveal { display: flex; align-items: center; gap: 6px; opacity: 0; transform: translateX(6px); transition: opacity 0.2s, transform 0.25s cubic-bezier(0.22, 1, 0.36, 1); }
+  /* Also while its menu is open, or reached with the keyboard. */
+  .card:hover .reveal, .card:focus-within .reveal, .card:has(:global([data-state="open"])) .reveal { opacity: 1; transform: none; }
+  .switch {
+    display: grid; place-items: center; width: 28px; height: 28px; border-radius: 999px;
+    color: var(--primary); background: color-mix(in oklab, var(--primary) 14%, transparent); transition: color 0.15s, background 0.15s;
   }
+  .switch:hover { color: white; background: var(--primary); }
+  .graph { display: grid; place-items: center; width: 16px; height: 24px; color: var(--primary); opacity: 0; transform: translateX(-4px); transition: opacity 0.2s, transform 0.25s cubic-bezier(0.22, 1, 0.36, 1); }
+  .card:hover .graph, .card:focus-visible .graph { opacity: 1; transform: translateX(2px); }
   /* Cards ease in one after another when the dashboard opens. */
   @media (prefers-reduced-motion: no-preference) {
     .card { animation: enter 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
@@ -278,46 +346,59 @@
     .card:nth-child(n + 6) { animation-delay: 200ms; }
   }
   .age {
-    display: flex; flex-direction: column; align-items: center; justify-content: center; width: 72px; flex-shrink: 0;
-    border-radius: 14px; color: var(--muted-foreground); background: color-mix(in oklab, var(--muted-foreground) 14%, transparent); /* blue only when checked out */
+    display: flex; flex-direction: column; align-items: center; justify-content: center; height: 62px;
+    border-radius: 12px; color: var(--muted-foreground); background: color-mix(in oklab, var(--muted-foreground) 14%, transparent); /* blue only when checked out */
   }
-  .age b { font-size: 28px; font-weight: 800; line-height: 1; }
-  .age span { font-size: 10.5px; margin-top: 4px; opacity: 0.85; white-space: nowrap; }
+  .age b { font-size: 20px; font-weight: 800; line-height: 1; }
+  .age span { font-size: 9.5px; margin-top: 2px; opacity: 0.85; white-space: nowrap; }
   .age .ago { margin-top: 0; opacity: 0.6; }
-  .age.current { color: white; background: var(--primary); box-shadow: 0 8px 22px color-mix(in oklab, var(--primary) 35%, transparent); }
-  .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
-  .chip.blue { color: var(--primary); background: color-mix(in oklab, var(--primary) 15%, transparent); }
-  .chip.green { color: var(--green); background: color-mix(in oklab, var(--green) 14%, transparent); }
-  .chip.grey { color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.1); }
-  .chip.amber { color: var(--amber); background: color-mix(in oklab, var(--amber) 14%, transparent); }
-  .last {
-    font-size: 12px; line-height: 1.45; color: var(--muted-foreground); opacity: 0.9;
-    display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-  }
-  .action {
-    --tone: var(--primary);
-    align-self: flex-start; max-width: 100%; display: inline-flex; align-items: center; gap: 9px; padding: 6px 12px 6px 6px; border-radius: 10px;
-    background: color-mix(in oklab, var(--tone) 9%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone) 28%, transparent);
-    transition: background 0.15s, box-shadow 0.15s;
-  }
-  .action.grey { --tone: var(--muted-foreground); }
-  .action.alert { --tone: var(--amber); }
-  .action:hover { background: color-mix(in oklab, var(--tone) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone) 50%, transparent); }
-  .counts { font-variant-numeric: tabular-nums; }
+  .age.current { color: white; background: var(--primary); box-shadow: 0 6px 18px color-mix(in oklab, var(--primary) 35%, transparent); }
+  .eyebrow { display: flex; align-items: center; gap: 5px; margin-bottom: 2px; font-size: 10px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--primary); }
+  .eyebrow i { width: 6px; height: 6px; border-radius: 999px; background: var(--primary); box-shadow: 0 0 6px var(--primary); }
+  .name { font-size: 14px; line-height: 1.35; color: var(--muted-foreground); overflow-wrap: anywhere; }
+  .name b { color: var(--foreground); font-weight: 700; }
+  .sub { display: flex; align-items: center; min-height: 20px; margin-top: 5px; font-size: 12px; color: var(--tertiary); white-space: nowrap; }
+  .wip { color: color(display-p3 1 0.7 0.1); } /* same amber as the WIP row in the graph */
+  .ok { color: var(--green); } .warn { color: var(--amber); }
   .add { color: oklch(0.72 0.17 150); } .del { color: oklch(0.68 0.19 25); }
-  .icon {
-    display: grid; place-items: center; width: 22px; height: 22px; border-radius: 7px; flex-shrink: 0; align-self: flex-start;
-    font-size: 12px; font-weight: 800; color: var(--tone); background: color-mix(in oklab, var(--tone) 18%, transparent);
+  /* Status cell: status on top, a quiet second line; on hover an actionable cell swaps that line for its action. */
+  .cell { display: flex; height: 44px; flex-direction: column; justify-content: center; gap: 1px; padding: 0 10px; border-radius: 9px; font-size: 12px; font-weight: 600; white-space: nowrap; text-align: left; }
+  .cell .hint { font-size: 11px; font-weight: 500; color: var(--tertiary); overflow: hidden; text-overflow: ellipsis; }
+  .cell .do { display: none; font-size: 11px; font-weight: 600; color: var(--primary); }
+  .cell.act:hover { background: color-mix(in oklab, var(--primary) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 45%, transparent); }
+  .cell.act:hover .hint { display: none; }
+  .cell.act:hover .do { display: flex; align-items: center; gap: 3px; }
+  .cell.act:active { transform: translateY(1px); }
+  .cell.quiet .warn { color: var(--muted-foreground); } /* update notice hidden by the user */
+  /* Badge text lines up with the column label: 3px + the badge's own 7px = the cells' 10px. */
+  .ship { display: flex; min-height: 44px; flex-direction: column; justify-content: center; align-items: flex-start; gap: 4px; padding: 0 3px; }
+  .env { padding: 1px 7px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--tertiary); background: oklch(0.5 0 0 / 0.08); }
+  /* Finished row: one cell across vs parent, shipped and changes. */
+  /* On hover the row makes just enough room for the actions (… / check out / →) floating at its right end: 40px for
+     the changes column's text (it already has free space on its right), the full width for a finished row's buttons. */
+  .card:hover, .card:focus-within, .card:has(:global([data-state="open"])) { padding-right: 52px; }
+  .done { grid-column: span 3; display: flex; align-items: center; gap: 12px; padding: 0 10px; min-width: 0; transition: padding 0.25s var(--ease); }
+  .card:hover .done, .card:focus-within .done, .card:has(:global([data-state="open"])) .done { padding-right: 52px; }
+  .done-btn {
+    display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 9px; font-size: 12px; font-weight: 600;
+    color: var(--primary); background: color-mix(in oklab, var(--primary) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 35%, transparent);
   }
-  /* Folded to zero height; unfolds smoothly on hover (grid rows animate where height: auto can't). */
-  .detail {
-    display: grid; grid-template-rows: 0fr; opacity: 0;
-    transition: grid-template-rows 0.35s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.25s ease, margin-bottom 0.35s cubic-bezier(0.22, 1, 0.36, 1);
-  }
-  .detail > span { overflow: hidden; display: block; }
-  .action:hover .detail, .action:focus-visible .detail { grid-template-rows: 1fr; opacity: 1; margin-bottom: 2px; }
-  .action :global(.arrow) { color: var(--tone); transition: transform 0.15s; }
-  .action:hover :global(.arrow) { transform: translateX(3px); }
+  .done-btn:hover:not(:disabled) { color: white; background: var(--primary); }
+  .done-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .done-btn.quiet { color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.08); box-shadow: none; }
+  .done-btn.quiet:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.16); }
+  .none { padding-left: 7px; font-size: 11px; font-weight: 500; color: var(--tertiary); opacity: 0.7; }
+  .none::before { content: "— "; }
+  .env.yes { color: var(--green); background: color-mix(in oklab, var(--green) 14%, transparent); }
+  button.env:hover { color: white; background: var(--primary); }
+  .pull { flex-shrink: 0; padding: 0 8px; border-radius: 999px; font-weight: 600; color: var(--amber); background: color-mix(in oklab, var(--amber) 14%, transparent); }
+  .pull .do { display: none; }
+  .pull:hover { color: white; background: var(--primary); }
+  .pull:hover .label { display: none; }
+  .pull:hover .do { display: inline; }
+  .pulse { width: 7px; height: 7px; flex-shrink: 0; margin-right: 6px; border-radius: 999px; background: var(--amber); }
+  @media (prefers-reduced-motion: no-preference) { .pulse { animation: pulse 1.8s infinite; } }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--amber) 55%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
   .prompt {
     max-height: 300px; overflow: auto; white-space: pre-wrap; user-select: text; cursor: text;
     font: 11.5px/1.55 var(--font-mono, ui-monospace, monospace); padding: 12px 14px; border-radius: 10px;
@@ -329,7 +410,7 @@
   }
   .copy:disabled { opacity: 0.5; }
   :global(.menu) {
-    display: grid; place-items: center; width: 26px; height: 26px; border-radius: 999px; color: var(--muted-foreground);
+    display: grid; place-items: center; width: 28px; height: 28px; border-radius: 999px; color: var(--muted-foreground);
     background: oklch(0.5 0 0 / 0.07);
   }
   :global(.menu:hover), :global(.menu[data-state="open"]) { background: oklch(0.5 0 0 / 0.16); }

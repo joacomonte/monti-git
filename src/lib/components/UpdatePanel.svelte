@@ -54,18 +54,29 @@
 
 <div class="flex w-[420px] flex-col gap-3 p-1.5">
   {#if step === "choose"}
-    <span class="px-2 text-[13px] font-semibold text-muted-foreground">Bring in {parentName}'s {n} new commit{n === 1 ? "" : "s"}</span>
+    <div class="flex flex-col gap-1 px-2">
+      <span class="text-[13px] font-semibold">Bring in {parentName}'s {n} new commit{n === 1 ? "" : "s"}</span>
+      <span class="text-[12px] leading-snug text-muted-foreground">
+        Your teammates added {n} change{n === 1 ? "" : "s"} to {parentName} after you created this branch.
+        Bring them in so you work with the latest code and your PR doesn't hit surprises. Your own work isn't lost.
+      </span>
+    </div>
     <div class="flex flex-col gap-1">
-      <ActionRow title="Merge (recommended)" detail="Adds one merge commit. Safest: no force push needed." icon={GitMerge} color="#34c77b"
+      <ActionRow title="Merge (recommended)" detail="The easy, safe option. Copies {parentName}'s new changes into your branch with one extra commit. Nothing of yours is rewritten." icon={GitMerge} color="#34c77b"
+        example="{parentName} got 3 new commits: they come in with one extra “Merge” commit, and your commits stay exactly as they were."
         id="update-option-merge" onclick={() => run(false)} />
-      <ActionRow title="Rebase" detail={"Replays your commits on top for a straight history." + (isPushed ? " Needs a force push." : "")}
-        icon={ArrowUpDown} color="#8b7bff" id="update-option-rebase" onclick={() => run(true)} />
+      <ActionRow title="Rebase" detail={`As if you had created the branch today: your commits move on top of ${parentName}'s. Cleaner history, but your commits get rewritten.` + (isPushed ? " Since you already pushed, you'll need to force push after." : "")}
+        icon={ArrowUpDown} color="#8b7bff" id="update-option-rebase" onclick={() => run(true)}
+        example="your 4 commits get re-applied after {parentName}'s 3 new ones, as if you had branched off this morning. No merge commit." />
       {#if !model.isUpdateDismissed(card)}
-        <ActionRow title="Hide this notice" detail="Stays as a grey tag; turns blue again when {parentName} gets new commits." icon={EyeOff} grey
-          id="update-option-hide" onclick={() => { model.dismissUpdate(card); dismiss(); }} />
+        <ActionRow title="Hide this notice" detail="Not now. The number turns grey, and goes back to orange when {parentName} gets new changes." icon={EyeOff} grey
+          id="update-option-hide" onclick={() => { model.dismissUpdate(card); dismiss(); }}
+          example="you're in the middle of something and will update right before opening the PR." />
       {/if}
     </div>
-    {#if !isCurrent}<span class="px-2 text-[10px] text-tertiary">Done in a temporary copy: your current checkout isn't touched.</span>{/if}
+    <span class="px-2 text-[10.5px] text-tertiary">
+      If you and a teammate changed the same lines, it stops and puts everything back as it was: nothing breaks.{#if !isCurrent} You don't need to switch branches for this.{/if}
+    </span>
   {:else if step === "working"}
     <div class="flex items-center gap-2.5 text-[12px]">
       <LoaderCircle size={14} class="animate-spin" />{usedRebase ? `Rebasing onto ${parentName}…` : `Merging ${parentName}…`}

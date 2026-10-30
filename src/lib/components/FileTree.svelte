@@ -1,6 +1,7 @@
 <!-- Files of the selected commit: only the changed ones, or the whole repo with changes highlighted. -->
 <script lang="ts">
-  import { Check, ChevronRight, ChevronsDownUp, Copy, Folder, FolderOpen, List, ListTree, SquareArrowOutUpRight, Sparkles, Square, SquareCheck, SquareMinus } from "@lucide/svelte";
+  import { fade } from "svelte/transition";
+  import { Check, ChevronRight, ChevronsDownUp, Copy, Folder, FolderOpen, History, List, ListTree, SquareArrowOutUpRight, Sparkles, Square, SquareCheck, SquareMinus } from "@lucide/svelte";
   import { api, WORKTREE_ID } from "$lib/api";
   import { fileIcon } from "$lib/fileIcon";
   import { Switch } from "$lib/components/ui/switch";
@@ -212,7 +213,7 @@
 {#if menu}
   {@const m = menu}
   <!-- Right-click menu: same actions as the hover icons. Any click, Escape or scroll closes it. -->
-  <div use:portal class="context-menu enter-fade" role="menu" tabindex="-1" id="file-tree-menu" style:left="{Math.min(m.x, innerWidth - 280)}px" style:top="{Math.min(m.y, innerHeight - 140)}px"
+  <div use:portal class="context-menu enter-pop" out:fade={{ duration: 120 }} role="menu" tabindex="-1" id="file-tree-menu" style:left="{Math.min(m.x, innerWidth - 280)}px" style:top="{Math.min(m.y, innerHeight - 140)}px"
     onmousedown={(e) => e.stopPropagation()}>
     <button role="menuitem" class="menu-item" id="file-menu-copy" onclick={() => { copyPath(m.path); menu = null; }}>
       <Copy size={13} />Copy full path
@@ -222,7 +223,11 @@
       <Sparkles size={13} />Copy for AI<span class="menu-hint">repo · branch · hash</span>
     </button>
     {#if !m.deleted}
-      <button role="menuitem" class="menu-item" id="file-menu-reveal" onclick={() => { openFile(m.path, true); menu = null; }}>
+      <button role="menuitem" class="menu-item" id="file-menu-history" onclick={() => { model.setHistory(m.path); menu = null; }}
+      title="The graph shows only the commits that touched it">
+      <History size={13} />History
+    </button>
+    <button role="menuitem" class="menu-item" id="file-menu-reveal" onclick={() => { openFile(m.path, true); menu = null; }}>
         <FolderOpen size={13} />Show in {EXPLORER}
       </button>
       {#if !m.isFolder}

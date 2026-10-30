@@ -1,6 +1,9 @@
-<!-- Environments (base + qa/develop…), pinned, recent activity in a 2-column grid, then the hidden ones collapsed. -->
+<!-- Environments (base + qa/develop…), pinned, recent activity in one centered column, then the hidden ones collapsed. -->
 <script lang="ts">
-  import { ChevronRight, EyeOff, Pin, Plus, Server, Zap } from "@lucide/svelte";
+  import { fade } from "svelte/transition";
+  import { flip } from "svelte/animate";
+  import { cubicOut } from "svelte/easing";
+  import { ChevronRight, EyeOff, MapPin, Pin, Plus, Server, Zap } from "@lucide/svelte";
   import * as Popover from "$lib/components/ui/popover";
   import type { Component } from "svelte";
   import type { Card } from "$lib/api";
@@ -14,9 +17,9 @@
   let showOld = $state(false);
   let filter = $state<BranchFilter>("all");
   let pickingEnvironment = $state(false);
-  let pickingPin = $state(false);
   const localName = (ref: string) => (/^(origin|upstream)\//.test(ref) ? ref.slice(ref.indexOf("/") + 1) : ref);
   const ACTIVE_DAYS = 14; // same as ACTIVE_DAYS in src-tauri/src/dashboard.rs
+
 </script>
 
 {#snippet header(title: string, Icon: Component, count: number, info: string | null)}
@@ -29,10 +32,16 @@
 {/snippet}
 
 {#snippet grid(cards: Card[], old: boolean)}
-  <div class="grid grid-cols-[repeat(auto-fill,520px)] items-start gap-3">
-    {#each cards as card (card.ref)}<BranchCard {card} kind="feature" isOld={old} {model} />{/each}
+  <div class="flex flex-col gap-3">
+    <!-- Cards glide to their new place when the list changes (checkout, sync), and fade out when they leave. -->
+    {#each cards as card (card.ref)}
+      <div animate:flip={{ duration: 320, easing: cubicOut }} out:fade={{ duration: 150 }}><BranchCard {card} kind="feature" isOld={old} {model} /></div>
+    {/each}
   </div>
 {/snippet}
+
+<!-- The checked-out branch gets its own section on top, so the lists below leave it out. -->
+{#snippet section(cards: Card[], old: boolean)}{@render grid(cards.filter((c) => !model.isCurrent(c.ref)), old)}{/snippet}
 
 {#snippet empty(text: string)}
   <span class="-mt-2 px-1 text-[11px] text-tertiary opacity-70">{text}</span>
@@ -45,7 +54,7 @@
   {@const base = dashboard.base?.ref ?? null}
   {@const active = FILTERS.find((f) => f.id === filter)!}
   <div class="h-full overflow-auto" id="dashboard">
-    <div class="enter-stagger flex flex-col gap-[18px] p-4">
+    <div class="enter-stagger mx-auto flex max-w-[920px] flex-col gap-[18px] px-4 py-4">
       <!-- Quick filters over pinned, recent and hidden branches: where each one's work stands at a glance. -->
       <div class="flex flex-wrap items-center gap-1.5" id="dashboard-filters">
         {#each FILTERS as f (f.id)}
@@ -56,68 +65,67 @@
           </button>
         {/each}
       </div>
+      <!-- Column labels for every card below (same grid as .card-columns in BranchCard.svelte). -->
+      <div class="card-columns col-labels" id="dashboard-column-labels">
+        <span>Branch<InfoButton title="Branch" text="Full name, the last part in bold. Under it: origin (✓ Nothing to pull, or ↓ to pull when someone pushed; ↑ yours still to push)." id="dashboard-column-info-Branch" /></span>
+        <span>vs parent<InfoButton title="vs parent" text="Commits the branch it was cut from got since, that this one doesn't have. Ej: ↓ 2 behind main → merge or rebase to catch up." id="dashboard-column-info-vs-parent" /></span>
+        <span>shipped<InfoButton title="shipped" text="Environments that already have every commit of this branch. Ej: ✓ qa × production → it's tested, not released yet." id="dashboard-column-info-shipped" /></span>
+        <span>changes<InfoButton title="changes" text="Uncommitted work on the branch you're on: files and lines added/removed. Click it to review and commit. Other branches show — (git keeps uncommitted changes only where you're checked out)." id="dashboard-column-info-changes" /></span>
+      </div>
       {#if filter !== "all"}
         {@const matched = branches.filter((card) => active.matches(card, base))}
         {@render header(active.label, Zap, matched.length, active.help)}
         {#key filter}<div class="enter-fade">{@render grid(matched, false)}</div>{/key}
       {:else}
-      {@render header("Environments", Server, pinnedTop.length,
-        "Your long-lived branches: main and where code gets tested or deployed. Ej: main, qa, develop. Missing one? Mark it from a branch's ⌄ menu.")}
-      {#if !pinnedTop.length}
-        {@render empty("No base branch (main / production)")}
-      {:else}
-        <div class="grid grid-cols-[repeat(auto-fill,520px)] items-start gap-3">
-          {#each pinnedTop as card (card.ref)}
-            <BranchCard {card} kind={card === dashboard.base ? "base" : "environment"} {model} />
-          {/each}
-          {#if !dashboard.environments.length}
-            <!-- Next to the base when no qa/develop was found: a quiet link that opens the branch list to pick one. -->
-            <Popover.Root bind:open={pickingEnvironment}>
-              <Popover.Trigger class="add-env self-start" id="dashboard-add-environment"
-                title="Mark a branch as an environment (qa, develop, staging…): it shows up here, and features get a tick for it">
-                <Plus size={12} strokeWidth={2.5} />Add an environment
-              </Popover.Trigger>
-              <Popover.Content align="start" class="w-[260px] p-1.5">
-                <span class="px-2 pt-1 text-[12px] font-semibold text-muted-foreground">Which branch is an environment?</span>
-                <div class="flex max-h-[280px] flex-col gap-0.5 overflow-auto">
-                  {#each dashboard.local.filter((b) => b !== localName(base ?? "")) as branch (branch)}
-                    <button class="env-option" id="dashboard-environment-{branch}" title="Mark {branch} as an environment"
-                      onclick={() => { pickingEnvironment = false; model.toggleEnvironment(branch); }}>
-                      <Server size={12} class="shrink-0 text-tertiary" /><span class="truncate">{branch}</span>
-                    </button>
-                  {/each}
-                </div>
-              </Popover.Content>
-            </Popover.Root>
-          {/if}
-        </div>
-      {/if}
-
-      {@render header("Pinned", Pin, dashboard.pinned.length,
-        "Branches you pinned so they never get lost, however old. Ej: a long-running branch you always come back to. Unpin it from its ⌄ menu.")}
-      {#if dashboard.pinned.length}{@render grid(dashboard.pinned, false)}{:else}
-        <!-- Quiet link that opens the branch list to pin one. -->
-        <Popover.Root bind:open={pickingPin}>
-          <Popover.Trigger class="add-env self-start" id="dashboard-add-pin" title="Pin a branch: it stays here, however old it gets">
-            <Plus size={12} strokeWidth={2.5} />Pin a branch
+      {@const current = [...pinnedTop, ...branches].find((c) => model.isCurrent(c.ref))}
+      <div class="flex items-center gap-1">
+        {@render header("Environments", Server, pinnedTop.length,
+          "Your long-lived branches: main and where code gets tested or deployed. Ej: main, qa, develop. Add one with the + next to this title.")}
+        <!-- + next to the title: opens the branch list to mark one as an environment. -->
+        <Popover.Root bind:open={pickingEnvironment}>
+          <Popover.Trigger class="add-icon" id="dashboard-add-environment"
+            title="Add an environment (qa, develop, staging…): it shows up here, and features get a tick for it">
+            <Plus size={12} strokeWidth={2.5} />
           </Popover.Trigger>
           <Popover.Content align="start" class="w-[260px] p-1.5">
-            <span class="px-2 pt-1 text-[12px] font-semibold text-muted-foreground">Which branch do you want to keep here?</span>
+            <span class="px-2 pt-1 text-[12px] font-semibold text-muted-foreground">Which branch is an environment?</span>
             <div class="flex max-h-[280px] flex-col gap-0.5 overflow-auto">
-              {#each dashboard.local.filter((b) => b !== localName(base ?? "")) as branch (branch)}
-                <button class="env-option" id="dashboard-pin-{branch}" title="Pin {branch}"
-                  onclick={() => { pickingPin = false; model.togglePin(branch); }}>
-                  <Pin size={12} class="shrink-0 text-tertiary" /><span class="truncate">{branch}</span>
+              {#each dashboard.local.filter((b) => b !== localName(base ?? "") && !model.isEnvironment(b)) as branch (branch)}
+                <button class="env-option" id="dashboard-environment-{branch}" title="Mark {branch} as an environment"
+                  onclick={() => { pickingEnvironment = false; model.toggleEnvironment(branch); }}>
+                  <Server size={12} class="shrink-0 text-tertiary" /><span class="truncate">{branch}</span>
                 </button>
               {/each}
             </div>
           </Popover.Content>
         </Popover.Root>
+      </div>
+      {#if !pinnedTop.length}
+        {@render empty("No base branch (main / production)")}
+      {:else}
+        <div class="flex flex-col gap-3">
+          {#each pinnedTop as card (card.ref)}
+            <BranchCard {card} kind={card === dashboard.base ? "base" : "environment"} {model} />
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Environments always stay on top; when you're on one of them it's highlighted there instead of repeated here. -->
+      {#if current && !pinnedTop.includes(current)}
+        {@render header("You're on", MapPin, 1, null)}
+        <BranchCard card={current} kind="feature" isOld={dashboard.old.includes(current)} {model} />
+      {/if}
+
+      <!-- Only when something is pinned; pin from a card's ⌄ menu. -->
+      {#if dashboard.pinned.length}
+        {@render header("Pinned", Pin, dashboard.pinned.length,
+          "Branches you pinned so they never get lost, however old. Ej: a long-running branch you always come back to. Unpin it from its ⌄ menu.")}
+        {@render section(dashboard.pinned, false)}
       {/if}
 
       {@render header("Recent activity", Zap, dashboard.features.length,
         `Branches you worked on in the last ${ACTIVE_DAYS} days, plus the one you're on. Ej: touched yesterday → shows here. Too cluttered? Hide it from its ⌄ menu.`)}
-      {#if dashboard.features.length}{@render grid(dashboard.features, false)}{:else}{@render empty(`Nothing of yours touched in the last ${ACTIVE_DAYS} days`)}{/if}
+      {#if dashboard.features.length}{@render section(dashboard.features, false)}{:else}{@render empty(`Nothing of yours touched in the last ${ACTIVE_DAYS} days`)}{/if}
 
       {#if dashboard.old.length}
         <div class="flex items-center gap-1.5">
@@ -128,7 +136,7 @@
           <InfoButton title="Hidden" id="dashboard-info-hidden"
             text="Branches you haven't touched in {ACTIVE_DAYS} days, or hid yourself. Nothing is deleted. Ej: last month's merged feature. Bring one back from its ⌄ menu." />
         </div>
-        {#if showOld}{@render grid(dashboard.old, true)}{/if}
+        {#if showOld}{@render section(dashboard.old, true)}{/if}
       {/if}
       {/if}
     </div>
@@ -138,11 +146,8 @@
 {/if}
 
 <style>
-  :global(.add-env) {
-    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px;
-    font-size: 12px; font-weight: 500; color: var(--tertiary); border: 1px dashed oklch(0.5 0 0 / 0.25);
-  }
-  :global(.add-env:hover), :global(.add-env[data-state="open"]) { color: var(--foreground); border-color: color-mix(in oklab, var(--primary) 50%, transparent); }
+  :global(.add-icon) { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; color: var(--tertiary); }
+  :global(.add-icon:hover), :global(.add-icon[data-state="open"]) { color: var(--foreground); background: oklch(0.5 0 0 / 0.12); }
   .env-option { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border-radius: 8px; font-size: 13px; text-align: left; }
   .env-option:hover { background: oklch(0.5 0 0 / 0.1); }
   .filter {
@@ -157,4 +162,8 @@
     background: oklch(0.5 0 0 / 0.14);
   }
   .filter.on .n { background: rgb(255 255 255 / 0.22); }
+  .col-labels { position: sticky; top: 0; z-index: 2; margin: -8px 0 -10px; padding-top: 6px; padding-bottom: 6px; font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--tertiary); background: var(--background); }
+  .col-labels span:first-child { grid-column: 2; }
+  .col-labels span:not(:first-child) { padding-left: 10px; }
+  .col-labels span { display: flex; align-items: center; gap: 5px; }
 </style>

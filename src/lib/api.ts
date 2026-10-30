@@ -10,6 +10,7 @@ export type Commit = {
   date: number; // unix seconds
   refs: string[]; // raw %D decorations, e.g. "HEAD -> main", "origin/main", "tag: v1.0"
   subject: string;
+  shelved?: string; // stash row: the branch whose uncommitted work Monti Git put aside when leaving it
 };
 
 /** [target, color, flags]: target = commit index (negative = past the loaded page); flags: 1 behind, 2 current. */
@@ -39,6 +40,9 @@ export type CommitInfo = {
   id: string; author: string; authorEmail: string; authorDate: number; committer: string; committerEmail: string; committerDate: number;
   parents: string[]; refs: string[]; subject: string; body: string;
 };
+
+/** Who last touched each line: `lines[n - 1]` indexes `commits` for line n (see blame in src-tauri/src/lib.rs). */
+export type Blame = { lines: number[]; commits: { id: string; author: string; date: number; subject: string }[] };
 
 export type RepoEntry = { path: string; owner: string; lastActivity: number; folder: string | null }; // folder: the added folder it came from
 
@@ -72,6 +76,7 @@ export type Card = {
   featureCommits: Commit[];
   squashBase: string | null;
   alreadyIn: string[];
+  mergedBefore: string[]; // targets that got an earlier state of it (e.g. squash-merged) but not its newer commits
   behindParent: number;
   parentTip: string | null;
 };
@@ -95,12 +100,13 @@ export type WipMode = "shelve" | "commit" | "carry";
 export const api = {
   listRepos: (folders: string[], repos: string[]) => invoke<RepoEntry[]>("list_repos", { folders, repos }),
   isRepo: (path: string) => invoke<boolean>("is_repo", { path }),
-  loadHistory: (repo: string, limit: number, onlyMine: boolean, preferred: string | null, environments: string[], focus: string[]) =>
-    invoke<History>("load_history", { repo, limit, onlyMine, preferred, environments, focus }),
+  loadHistory: (repo: string, limit: number, onlyMine: boolean, preferred: string | null, environments: string[], focus: string[], path: string | null) =>
+    invoke<History>("load_history", { repo, limit, onlyMine, preferred, environments, focus, path }),
   searchCommits: (repos: string[], query: string) => invoke<SearchHit[]>("search_commits", { repos, query }),
   commitPlaces: (repo: string, id: string) => invoke<string[]>("commit_places", { repo, id }),
   commitInfo: (repo: string, id: string) => invoke<CommitInfo>("commit_info", { repo, id }),
   commitPatch: (repo: string, id: string) => invoke<string>("commit_patch", { repo, id }),
+  blame: (repo: string, path: string, rev: string | null) => invoke<Blame>("blame", { repo, path, rev }),
   loadChanges: (repo: string, base: string | null, target: string | null, all: boolean) =>
     invoke<Changes>("load_changes", { repo, base, target, all }),
   loadDiff: (repo: string, path: string, base: string | null, target: string | null, group: string[], whole: boolean) =>
@@ -116,11 +122,16 @@ export const api = {
   deleteBranch: (repo: string, branch: string, remote: boolean) => invoke<string>("delete_branch", { repo, branch, remote }),
   openFile: (repo: string, path: string, reveal: boolean) => invoke<void>("open_file", { repo, path, reveal }),
   updatePrompt: (repo: string, branch: string) => invoke<string>("update_prompt", { repo, branch }),
-  squash: (repo: string, branch: string, base: string, expectedTip: string, message: string) =>
-    invoke<void>("squash", { repo, branch, base, expectedTip, message }),
+  /** Fetches, then how `base` compares with origin/`base` (`remote` false: no copy there). */
+  baseStatus: (repo: string, base: string) => invoke<{ ahead: number; behind: number; remote: boolean }>("base_status", { repo, base }),
+  startFeature: (repo: string, name: string, base: string, wip: WipMode | null) =>
+    invoke<string>("start_feature", { repo, name, base, wip }),
   updateBranch: (repo: string, branch: string, parent: string, rebase: boolean, isCurrent: boolean) =>
     invoke<void>("update_branch", { repo, branch, parent, rebase, isCurrent }),
   forcePush: (repo: string, branch: string) => invoke<void>("force_push", { repo, branch }),
+  moveBranch: (repo: string, branch: string, expected: string | null, target: string) =>
+    invoke<void>("move_branch", { repo, branch, expected, target }),
+  branchTip: (repo: string, branch: string) => invoke<string | null>("branch_tip", { repo, branch }),
   discardFile: (repo: string, path: string) => invoke<void>("discard_file", { repo, path }),
   discardAll: (repo: string) => invoke<void>("discard_all", { repo }),
   discardHunk: (repo: string, path: string, index: number) => invoke<void>("discard_hunk", { repo, path, index }),

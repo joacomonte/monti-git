@@ -113,7 +113,7 @@
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="backdrop enter-fade" onclick={() => (open = false)} id="commit-search-backdrop">
-    <div class="panel enter" role="dialog" aria-label="Search commits" tabindex="-1" id="commit-search" onclick={(e) => e.stopPropagation()}>
+    <div class="panel enter-pop" role="dialog" aria-label="Search commits" tabindex="-1" id="commit-search" onclick={(e) => e.stopPropagation()}>
       <div class="flex items-center gap-2.5 border-b px-4 py-3">
         <Search size={16} class="shrink-0 text-tertiary" />
         <input bind:this={input} bind:value={query} oninput={typed} onkeydown={keydown} id="commit-search-input"
@@ -121,7 +121,7 @@
         <Tabs.Root value={scope} onValueChange={setScope} id="commit-search-scope">
           <Tabs.List>
             <Tabs.Trigger value="repo" id="commit-search-scope-repo" title="Only {repoName(model.repo ?? '')}" disabled={!model.repo}>This repo</Tabs.Trigger>
-            <Tabs.Trigger value="all" id="commit-search-scope-all" title="Every repo in the sidebar">All repos</Tabs.Trigger>
+            <Tabs.Trigger value="all" id="commit-search-scope-all">All repos</Tabs.Trigger>
           </Tabs.List>
         </Tabs.Root>
       </div>

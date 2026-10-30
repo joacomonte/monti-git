@@ -1,5 +1,26 @@
 [
   {
+    "version": "0.3.0",
+    "changes": [
+      { "kind": "new", "title": "A clearer dashboard", "detail": "Each branch is one row with aligned columns: how far behind its parent, which environments already have it, and your uncommitted changes. Environments stay on top, and the branch you're on gets its own spot.", "demo": "dashboard" },
+      { "kind": "new", "title": "Quick actions on hover", "detail": "Hover a branch to check it out in one click, open its options, or jump to it in the graph. Right-click anywhere on it for the options.", "demo": "hover-actions" },
+      { "kind": "new", "title": "Finished branches", "detail": "When every commit already reached every environment, the row says so and offers to delete or hide it.", "demo": "finished" },
+      { "kind": "new", "title": "New branch, step by step", "detail": "Pick the kind (feature, fix…), the ticket and a few words: it pulls the base first so you start from the latest code.", "demo": "new-branch" },
+      { "kind": "new", "title": "Squash with your AI agent", "detail": "Pick the commits, optionally write the message (or let the agent propose one), choose a backup and whether to push, then copy a prompt. Also from right-clicking a commit or a branch in the graph.", "demo": "squash" },
+      { "kind": "new", "title": "Open a PR with your AI agent", "detail": "Choose where it goes and copy a ready-made prompt for your agent.", "demo": "pr" },
+      { "kind": "new", "title": "Saved work you can see", "detail": "Changes put aside when you switch branches show up in the graph as their own dashed row, with files and lines, and in the branch's changes column.", "demo": "wip" },
+      { "kind": "new", "title": "Branch options in the graph", "detail": "Click a branch label in the graph to check it out or squash its commits.", "demo": "pill-menu" },
+      { "kind": "new", "title": "Notifications", "detail": "Get a system notification when someone pushes to your branch, its base gets new commits, or a branch starts conflicting.", "demo": "notifications" },
+      { "kind": "new", "title": "Update without waiting", "detail": "When a new version is out while you're using the app, press Restart to update right away.", "demo": "restart" },
+      { "kind": "improved", "title": "Options that explain themselves", "detail": "Hover a choice like Stash, Rebase or WIP commit to see a short real-life example of when to use it.", "demo": "examples" },
+      { "kind": "improved", "title": "Switching branches with uncommitted changes", "detail": "A clear dialog shows where you are and where you're going, and what each choice does.", "demo": "checkout-dialog" },
+      { "kind": "improved", "title": "Catching up with main, in plain words", "detail": "Merge or rebase, explained for anyone, with what happens to your commits." },
+      { "kind": "improved", "title": "Smoother everywhere", "detail": "Menus and dialogs pop in, Dashboard and Graph slide sideways like the tabs, and cards glide when the list changes." },
+      { "kind": "improved", "title": "Remembers \"Only this branch\"", "detail": "Once you turn it off, opening a branch from the dashboard keeps showing the whole graph." },
+      { "kind": "fixed", "title": "Copy path and the repo menu", "detail": "Copying a repo's path works again, now also from an icon next to the star." }
+    ]
+  },
+  {
     "version": "0.2.0",
     "changes": [
       { "kind": "new", "title": "Search every commit", "detail": "Press ⌘K and type a ticket like MOA-854: every commit that mentions it, in this repo or all of them, with the branches and environments it already reached. Click one to open it in the graph.", "demo": "search" },

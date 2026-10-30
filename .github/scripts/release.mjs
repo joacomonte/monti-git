@@ -8,6 +8,9 @@ const tag = process.env.GITHUB_REF_NAME;
 const repo = process.env.GITHUB_REPOSITORY;
 const changelog = JSON.parse(readFileSync("src/lib/changelog.json", "utf8"));
 const changes = changelog.find((r) => "v" + r.version === tag)?.changes ?? [];
+// Every new feature ships with an animated demo in "What's new" (src/lib/components/WhatsNewDemo.svelte).
+const undemoed = changes.filter((c) => c.kind === "new" && !c.demo).map((c) => c.title);
+if (undemoed.length) throw new Error(`"new" changes without a "demo" in changelog.json: ${undemoed.join(", ")}`);
 const notes = changes.map((c) => `- **${c.title}** (${c.kind}): ${c.detail}`).join("\n");
 
 if (process.argv[2] === "notes") {

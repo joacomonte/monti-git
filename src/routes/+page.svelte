@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Crosshair, LayoutGrid, Search, TriangleAlert, UserRound, Waypoints } from "@lucide/svelte";
+  import { Crosshair, History, LayoutGrid, Search, X, TriangleAlert, UserRound, Waypoints } from "@lucide/svelte";
   import CommitSearch from "$lib/components/CommitSearch.svelte";
   import * as Tabs from "$lib/components/ui/tabs";
   import CheckoutPrompt from "$lib/components/CheckoutPrompt.svelte";
@@ -15,11 +15,14 @@
   import UpdateGate from "$lib/components/UpdateGate.svelte";
   import WhatsNew from "$lib/components/WhatsNew.svelte";
   import { prefs, RepoModel } from "$lib/model.svelte";
+  import { fly } from "svelte/transition";
+  import { cubicOut } from "svelte/easing";
 
   const model = new RepoModel();
   let treeWidth = $state(prefs.get("treeWidth", 360)); // remembered pane sizes
   let diffHeight = $state(prefs.get("diffHeight", 380));
   let space = $state({ width: 1200, height: 800 });
+  let sliding = $state(false); // Dashboard ↔ Graph slide in progress
   $effect(() => prefs.set("treeWidth", treeWidth));
   $effect(() => prefs.set("diffHeight", diffHeight));
   let searching = $state(false); // ⌘K commit search open
@@ -59,7 +62,8 @@
         </button>
         <Tabs.Root bind:value={() => (model.showGraph ? "graph" : "dashboard"), (v) => model.setShowGraph(v === "graph")}
           class="absolute left-1/2 -translate-x-1/2" id="view-switch">
-          <Tabs.List class="h-10 w-[340px]">
+          <!-- h-11!: without the !, the list's own h-8 (orientation variant) wins. -->
+          <Tabs.List class="h-11! w-[340px]">
             <Tabs.Trigger value="dashboard" id="view-dashboard" class="text-[14px] [&_svg:not([class*='size-'])]:size-[17px]"
               title="Dashboard: an overview of your branches. Ej: what's in qa, what's pending.">
               <LayoutGrid /> Dashboard
@@ -72,24 +76,6 @@
         </Tabs.Root>
       {/if}
     </header>
-    {#if model.repo && !model.error && model.hasSources && !model.onboarding && model.showGraph}
-      <!-- Thin strip under the header with the graph's toggles (blue when on), short labels; the full explanation on hover. -->
-      <div class="flex h-[30px] shrink-0 items-center gap-0.5 border-b px-3" id="toolbar">
-        <button class="tool" class:on={model.onlyMine} aria-pressed={model.onlyMine} id="only-mine-toggle"
-          onclick={() => model.setOnlyMine(!model.onlyMine)}
-          title={`My branches only: ${model.onlyMine ? "on" : "off"}\nShows only branches whose last commit is yours, plus main and the environments (qa, develop…). Ej: hides your teammates' branches so the graph stays clean.`}>
-          <UserRound size={12} />My branches
-        </button>
-        <button class="tool" class:on={model.focus != null} aria-pressed={model.focus != null} id="focus-branch-toggle"
-          disabled={!model.focusTarget}
-          onclick={() => model.setFocus(model.focus ? null : model.focusTarget)}
-          title={model.focus ? `Only this branch: on · ${model.focus[0]}\nThe graph shows just this branch's own commits. Click to show everything again.`
-            : model.focusTarget ? `Only this branch: off\nShow just ${model.focusTarget}'s own commits, nothing else.`
-            : "Only this branch\nSelect a commit first: shows just its branch's own commits."}>
-          <Crosshair size={12} />Only this branch
-          </button>
-      </div>
-    {/if}
     {#if model.repo && model.pendingCheckout}<CheckoutPrompt target={model.pendingCheckout} {model} />{/if}
 
     <div class="min-h-0 flex-1" bind:clientWidth={space.width} bind:clientHeight={space.height}>
@@ -107,24 +93,59 @@
           <span class="text-[15px] font-semibold text-foreground">No repository</span>
           <span class="text-[12px]">Pick one in the sidebar</span>
         </div>
-      {:else if !model.showGraph}
-        {#key model.repo}<div class="enter h-full"><Dashboard {model} /></div>{/key}
+      {:else}
+        <!-- Dashboard ↔ Graph slide sideways like the tabs above, both in the same grid cell while they cross. Their own
+             entrance animations (cards rising) are skipped during the slide, so the motion stays purely horizontal. -->
+        {@const direction = model.showGraph ? 1 : -1}
+        <div class="views">
+          {#key model.showGraph}
+            <div class="view" class:sliding
+              in:fly={{ x: 80 * direction, duration: 380, easing: cubicOut }} out:fly={{ x: -80 * direction, duration: 380, easing: cubicOut }}
+              onintrostart={() => (sliding = true)} onintroend={() => (sliding = false)}>
+      {#if !model.showGraph}
+        {#key model.repo}<div class="enter-fade h-full"><Dashboard {model} /></div>{/key}
       {:else if model.commits.length === 0 && model.isLoading}
         <Loader title="Loading history" detail="Reading the last {model.limit} commits (git log)" />
       {:else}
         <!-- Graph and file tree on top, diff below; with nothing selected the graph takes the whole pane. -->
         <div class="enter-fade flex h-full flex-col">
+          <!-- Inside the graph view (so it slides with it): thin strip with the graph's toggles (blue when on), short labels; the full explanation on hover. -->
+          <div class="flex h-[30px] shrink-0 items-center gap-0.5 border-b px-3" id="toolbar">
+            <button class="tool" class:on={model.onlyMine} aria-pressed={model.onlyMine} id="only-mine-toggle"
+              onclick={() => model.setOnlyMine(!model.onlyMine)}
+              title={`My branches only: ${model.onlyMine ? "on" : "off"}\nShows only branches whose last commit is yours, plus main and the environments (qa, develop…). Ej: hides your teammates' branches so the graph stays clean.`}>
+              <UserRound size={12} />My branches
+            </button>
+            <button class="tool" class:on={model.focus != null} aria-pressed={model.focus != null} id="focus-branch-toggle"
+              disabled={!model.focusTarget}
+              onclick={() => model.toggleFocus()}
+              title={model.focus ? `Only this branch: on · ${model.focus[0]}\nThe graph shows just this branch's own commits. Click to show everything again.`
+                : model.focusTarget ? `Only this branch: off\nShow just ${model.focusTarget}'s own commits, nothing else.`
+                : "Only this branch\nSelect a commit first: shows just its branch's own commits."}>
+              <Crosshair size={12} />Only this branch
+            </button>
+            {#if model.historyPath}
+              <button class="tool on" id="file-history-clear" onclick={() => model.setHistory(null)}
+                title={`History of ${model.historyPath}: only the commits that touched it. Click to show every commit again.`}>
+                <History size={12} />History: {model.historyPath.split("/").pop()}<X size={11} />
+              </button>
+            {/if}
+          </div>
           <div class="flex min-h-0 flex-1">
             <div class="min-w-0 flex-1"><CommitList {model} /></div>
             {#if model.selected}
               <PaneDivider vertical bind:size={treeWidth} min={220} max={Math.max(220, space.width - 500)} />
-              <div style:width="{Math.min(treeWidth, Math.max(220, space.width - 500))}px" class="enter-fade shrink-0"><FileTree {model} /></div>
+              <div style:width="{Math.min(treeWidth, Math.max(220, space.width - 500))}px" class="enter-side shrink-0"><FileTree {model} /></div>
             {/if}
           </div>
           {#if model.selected && model.diffOpen}
             <PaneDivider vertical={false} bind:size={diffHeight} min={150} max={Math.max(150, space.height - 240)} />
-            <div style:height="{Math.min(diffHeight, Math.max(150, space.height - 240))}px" class="enter-fade shrink-0"><DiffPane {model} /></div>
+            <div style:height="{Math.min(diffHeight, Math.max(150, space.height - 240))}px" class="enter-up shrink-0"><DiffPane {model} /></div>
           {/if}
+        </div>
+      {/if}
+            </div>
+          {/key}
         </div>
       {/if}
     </div>
@@ -136,6 +157,9 @@
 <CommitSearch {model} bind:open={searching} />
 
 <style>
+  .views { display: grid; height: 100%; overflow: hidden; }
+  .view { grid-area: 1 / 1; min-height: 0; height: 100%; }
+  .sliding :global(*) { animation-duration: 0s !important; animation-delay: 0s !important; }
   .tool { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; font-weight: 500; color: var(--muted-foreground); }
   .tool:hover:not(:disabled) { color: var(--foreground); background: oklch(0.5 0 0 / 0.1); }
   .tool:disabled { opacity: 0.4; }

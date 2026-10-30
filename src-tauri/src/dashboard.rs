@@ -49,6 +49,7 @@ pub struct Card {
     feature_commits: Vec<Commit>, // active features: own commits on top of `parent`, newest first, no merges
     squash_base: Option<String>, // active features: merge-base with `parent`
     already_in: Vec<String>, // active features: base/environments that already have some of its own commits
+    merged_before: Vec<String>, // targets that got an earlier state of it (e.g. squash-merged) but not its newer commits
     behind_parent: u32,
     parent_tip: Option<String>, // a dismissed "update available" notice comes back when this moves
 }
@@ -93,6 +94,7 @@ fn parse_commits(log: &str) -> Vec<Commit> {
                 date: f[2].parse().unwrap_or(0),
                 refs: vec![],
                 subject: f[3].into(),
+                shelved: None,
             })
         })
         .collect()
@@ -111,7 +113,15 @@ fn summaries(repo: &Path) -> HashMap<String, Summary> {
             }
             // track: "ahead 2, behind 1", "behind 3", "gone" or empty.
             let n = |word: &str| f[2].split(", ").find_map(|p| p.strip_prefix(word)?.strip_prefix(' ')?.parse().ok()).unwrap_or(0);
-            Some((f[0].to_string(), Summary { date: f[1].parse().unwrap_or(0), ahead: n("ahead"), behind: n("behind"), has_upstream: !f[3].is_empty() }))
+            let date = f[1].parse().unwrap_or(0);
+            if f[3].is_empty() {
+                // Not tracking anything: still compare with origin's branch of the same name, if there is one.
+                let counts = ok(&["rev-list", "--left-right", "--count", &format!("refs/heads/{0}...refs/remotes/origin/{0}", f[0])], repo);
+                let mut c = counts.as_deref().unwrap_or("").split_whitespace().map(|x| x.parse().unwrap_or(0));
+                let (ahead, behind) = (c.next().unwrap_or(0), c.next().unwrap_or(0));
+                return Some((f[0].to_string(), Summary { date, ahead, behind, has_upstream: counts.is_some() }));
+            }
+            Some((f[0].to_string(), Summary { date, ahead: n("ahead"), behind: n("behind"), has_upstream: true }))
         })
         .collect()
 }
@@ -272,6 +282,30 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
         removed: status.keys().filter_map(|p| counts.get(p)).map(|c| c.1).sum(),
     };
 
+    // The branch's own commits not in `target` by ancestry (the same ones `missing` counts), oldest last.
+    let own_args = |target: &str, reference: &str| -> Vec<String> {
+        let mut args = vec![reference.to_string(), format!("^{target}")];
+        args.extend(base.iter().filter(|b| b.as_str() != target).map(|b| format!("^{b}")));
+        args
+    };
+    // Squash/rebase merged earlier, then got more commits: an older own commit (the tip when it was merged) is already in `target`.
+    // Cheap check first: `target` must have touched the branch's files since they split, else nothing of it can be there.
+    // shortcut: only the 10 newest own commits are tried; a branch merged longer ago than that isn't detected.
+    let merged_before = |target: &str, reference: &str| -> bool {
+        let Some(split) = ok(&["merge-base", target, reference], repo).map(|s| s.trim().to_string()) else { return false };
+        let files: Vec<String> = ok(&["diff", "--name-only", &split, reference], repo).unwrap_or_default().lines().take(50).map(String::from).collect();
+        let mut touched: Vec<&str> = vec!["diff", "--name-only", &split, target, "--"];
+        touched.extend(files.iter().map(String::as_str));
+        if files.is_empty() || ok(&touched, repo).is_none_or(|out| out.trim().is_empty()) {
+            return false;
+        }
+        let args = own_args(target, reference);
+        let mut list: Vec<&str> = vec!["rev-list", "--first-parent", "--max-count=10"];
+        list.extend(args.iter().map(String::as_str));
+        let commits = ok(&list, repo).unwrap_or_default();
+        commits.lines().skip(1).any(|commit| git::already_contains(target, commit, repo)) // skip the tip: `missing` > 0 says it isn't in
+    };
+
     let card = |reference: &str, targets: &[String], detail: Detail| -> Card {
         let light = detail == Detail::Light;
         let last = parse_commits(&ok(&["log", "-1", "--format=%H%x1f%an%x1f%at%x1f%s", reference, "--"], repo).unwrap_or_default()).pop();
@@ -281,7 +315,8 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
             summary: summaries.get(&local_name(reference)).cloned(),
             last,
             // Only this branch's own work: a feature cut from the base would otherwise count every base commit the environment doesn't have.
-            promotion: if light { vec![] } else {
+            // Hidden (Light) cards too, so the quick filters can sort them.
+            promotion: {
                 targets
                     .iter()
                     .map(|t| {
@@ -303,9 +338,11 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
             feature_commits: vec![],
             squash_base: None,
             already_in: vec![],
+            merged_before: vec![],
             behind_parent: 0,
             parent_tip: None,
         };
+        card.merged_before = card.promotion.iter().filter(|(t, missing)| *missing > 0 && merged_before(t, reference)).map(|(t, _)| local_name(t)).collect();
         // Hidden cards (Light) still say where they came from; only Full ones compare against it.
         if detail != Detail::None {
             card.parent = parent_of(reference, &card.local);
@@ -364,9 +401,61 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
         environments: parallel(&environments, |r| card(r, &base_targets, Detail::None)),
         pinned: parallel(&pins, |r| card(r, &targets, Detail::Full)),
         features: parallel(&active, |r| card(r, &targets, Detail::Full)),
-        old: parallel(&old, |r| card(r, &[], Detail::Light)),
+        old: parallel(&old, |r| card(r, &targets, Detail::Light)),
         shelved: shelved(repo),
         local: local.clone(),
         current,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::testutil::Repo;
+    use std::collections::HashMap;
+
+    /// main and qa, and one feature per way of merging: plain merge, squash, cherry-pick (like a rebase merge),
+    /// squash then more commits, and never merged.
+    #[test]
+    fn promotion_sees_every_kind_of_merge() {
+        let repo = Repo::new("promotion");
+        repo.commit("a.txt", "1", "init");
+        repo.git(&["branch", "qa"]);
+        let feature = |name: &str, file: &str| {
+            repo.git(&["checkout", "-q", "-b", name, "main"]);
+            repo.commit(file, "one", &format!("{name} 1"));
+            repo.commit(file, "one\ntwo", &format!("{name} 2"));
+        };
+        let into_both = |how: &dyn Fn()| {
+            for target in ["qa", "main"] {
+                repo.git(&["checkout", "-q", target]);
+                how();
+            }
+        };
+        feature("feat/merged", "m.txt");
+        into_both(&|| { repo.git(&["merge", "-q", "--no-ff", "-m", "merge", "feat/merged"]); });
+        feature("feat/squashed", "s.txt");
+        into_both(&|| { repo.git(&["merge", "-q", "--squash", "feat/squashed"]); repo.git(&["commit", "-q", "-m", "squash"]); });
+        feature("feat/picked", "p.txt");
+        into_both(&|| { repo.git(&["cherry-pick", "feat/picked~1", "feat/picked"]); });
+        feature("feat/after", "f.txt");
+        into_both(&|| { repo.git(&["merge", "-q", "--squash", "feat/after"]); repo.git(&["commit", "-q", "-m", "squash after"]); });
+        repo.git(&["checkout", "-q", "feat/after"]);
+        repo.commit("f.txt", "one\ntwo\nthree", "feat/after 3");
+        feature("feat/open", "o.txt");
+        repo.git(&["checkout", "-q", "main"]);
+
+        let dashboard = super::load(repo.path(), None, &[], None, &HashMap::new());
+        let card = |name: &str| dashboard.features.iter().chain(&dashboard.old).find(|c| c.local == name).unwrap_or_else(|| panic!("no card {name}"));
+        let missing = |name: &str| card(name).promotion.iter().map(|(t, n)| (t.clone(), *n)).collect::<HashMap<_, _>>();
+
+        assert_eq!(dashboard.environments.iter().map(|c| c.local.as_str()).collect::<Vec<_>>(), ["qa"]);
+        for merged in ["feat/merged", "feat/squashed", "feat/picked"] {
+            assert_eq!(missing(merged), HashMap::from([("qa".into(), 0), ("main".into(), 0)]), "{merged} should be in qa and main");
+        }
+        assert!(missing("feat/open").values().all(|n| *n == 2), "feat/open is nowhere");
+        assert!(missing("feat/after").values().all(|n| *n > 0), "feat/after has a commit after the squash");
+        assert_eq!(card("feat/after").merged_before, ["qa", "main"]);
+        assert!(card("feat/open").merged_before.is_empty());
+        assert!(card("feat/squashed").merged_before.is_empty());
     }
 }

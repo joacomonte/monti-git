@@ -28,7 +28,7 @@
 </script>
 
 {#snippet option(kind: "repo" | "folder", Icon: Component, color: string, title: string, detail: string, delay: number)}
-  <button class="option enter flex flex-1 flex-col items-start gap-3 rounded-[16px] p-5 text-left" id="onboarding-add-{kind}" title={detail}
+  <button class="option enter flex flex-1 flex-col items-start gap-3 rounded-[16px] p-5 text-left" id="onboarding-add-{kind}"
     style:animation-delay="{delay}ms" style:--tint={color} onclick={() => add(kind)}>
     <span class="tile grid size-10 place-items-center rounded-[12px]"><Icon size={19} strokeWidth={2.2} /></span>
     <span class="flex flex-col gap-1">

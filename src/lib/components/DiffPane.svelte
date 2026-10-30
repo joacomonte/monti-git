@@ -2,13 +2,30 @@
 <script lang="ts">
   import { ChevronLeft, ChevronRight, FileSearch } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button";
-  import type { Side } from "$lib/api";
+  import { api, WORKTREE_ID, type Blame, type Side } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import DiscardButton from "./DiscardButton.svelte";
 
   let { model }: { model: RepoModel } = $props();
   const index = $derived(model.fileFilter ? model.changedOrder.indexOf(model.fileFilter) : -1);
   const counts = $derived(model.fileFilter ? model.counts[model.fileFilter] : undefined);
+  // Blame of the file as of the selected commit, for the tooltip on each line of the "after" side.
+  let blame = $state.raw<Blame | null>(null);
+  $effect(() => {
+    const repo = model.repo, path = model.fileFilter, newest = model.selected ? model.commits[model.selected[0]] : null;
+    blame = null;
+    if (!repo || !path || !newest) return;
+    const rev = newest.id === WORKTREE_ID ? null : newest.id;
+    api.blame(repo, path, rev).then((result) => { if (model.fileFilter === path) blame = result; }, () => {}); // deleted / binary: no blame
+  });
+  function blameOf(line: number) {
+    const commit = blame?.commits[blame.lines[line - 1]];
+    if (!commit) return undefined;
+    if (/^0+$/.test(commit.id)) return "Not committed yet";
+    const days = Math.floor((Date.now() / 1000 - commit.date) / 86400);
+    const when = days < 1 ? "today" : days < 30 ? `${days}d ago` : days < 365 ? `${Math.floor(days / 30)}mo ago` : `${Math.floor(days / 365)}y ago`;
+    return `${commit.author} · ${when} · ${commit.id.slice(0, 7)}\n${commit.subject}`;
+  }
   const single = $derived(model.diffRows.every((row) => !row.left)); // a file shown whole (or a new one): no "before" column
 
   /** ⌥← / ⌥→: previous/next changed file. */
@@ -73,7 +90,7 @@
             {#each single ? [row.right] : [row.left, row.right] as side, i}
               {@const i2 = single ? 1 : i} <!-- 1 = the "after" side -->
               {@const tint = i2 === 0 ? "var(--del)" : "var(--add)"}
-              <div class="flex flex-1 py-px" class:border-r={i2 === 0}
+              <div class="flex flex-1 py-px" class:border-r={i2 === 0} title={i2 === 1 && side ? blameOf(side.number) : undefined}
                 style:background={row.isChange ? (side ? `color-mix(in srgb, ${tint} 12%, transparent)` : "var(--quinary)") : undefined}>
                 <span class="w-11 shrink-0 pr-2 text-right text-tertiary">{side?.number ?? ""}</span>
                 {#if side}

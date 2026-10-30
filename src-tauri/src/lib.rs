@@ -5,6 +5,8 @@ mod git;
 mod graph;
 mod library;
 mod search;
+#[cfg(test)]
+mod testutil;
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -76,6 +78,50 @@ fn commit_patch(repo: String, id: String) -> Result<String, String> {
     git::run(&["-c", "log.showSignature=false", "show", "--format=", "--stat", "--patch", "--no-color", &id], Path::new(&repo))
 }
 
+#[derive(Serialize)]
+struct Blame {
+    lines: Vec<usize>, // per line of the file (1-based line n at n-1): index into `commits`
+    commits: Vec<BlameCommit>,
+}
+
+#[derive(Serialize)]
+struct BlameCommit {
+    id: String,
+    author: String,
+    date: i64,
+    subject: String,
+}
+
+/// Who last touched each line of `path` as of `rev` (None = the working tree, uncommitted lines included).
+#[tauri::command(async)]
+fn blame(repo: String, path: String, rev: Option<String>) -> Result<Blame, String> {
+    let mut args = vec!["blame", "--line-porcelain"];
+    args.extend(rev.as_deref());
+    args.extend(["--", &path]);
+    let out = git::run(&args, Path::new(&repo))?;
+    let mut blame = Blame { lines: vec![], commits: vec![] };
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut current = 0;
+    for line in out.lines() {
+        if line.starts_with('\t') {
+            blame.lines.push(current); // the line's text ends its record
+        } else if let Some(value) = line.strip_prefix("author ") {
+            blame.commits[current].author = value.into();
+        } else if let Some(value) = line.strip_prefix("author-time ") {
+            blame.commits[current].date = value.parse().unwrap_or(0);
+        } else if let Some(value) = line.strip_prefix("summary ") {
+            blame.commits[current].subject = value.into();
+        } else if line.len() >= 40 && line[..40].chars().all(|c| c.is_ascii_hexdigit()) && line.as_bytes().get(40) == Some(&b' ') {
+            let id = &line[..40];
+            current = *index.entry(id.to_string()).or_insert_with(|| {
+                blame.commits.push(BlameCommit { id: id.into(), author: String::new(), date: 0, subject: String::new() });
+                blame.commits.len() - 1
+            });
+        }
+    }
+    Ok(blame)
+}
+
 #[tauri::command(async)]
 fn search_commits(repos: Vec<String>, query: String) -> Vec<search::Hit> {
     search::commits(&repos, &query)
@@ -102,8 +148,10 @@ struct History {
 
 #[tauri::command(async)]
 /// `focus` ([branch] or [branch, base]): only that branch's own line (first parents, minus what's already in
-/// `base`), nothing else, not even HEAD; wins over `only_mine`.
-fn load_history(repo: String, limit: usize, only_mine: bool, preferred: Option<String>, environments: Vec<String>, focus: Vec<String>) -> Result<History, String> {
+/// `base`), nothing else, not even HEAD; wins over `only_mine`. `path`: only the commits that touched that file.
+fn load_history(
+    repo: String, limit: usize, only_mine: bool, preferred: Option<String>, environments: Vec<String>, focus: Vec<String>, path: Option<String>,
+) -> Result<History, String> {
     let repo = Path::new(&repo);
     let main = git::main_ref(repo, preferred.as_deref());
     // Only mine: my branches plus the base branch and the environments (qa, develop…), so the graph keeps its spine.
@@ -114,7 +162,7 @@ fn load_history(repo: String, limit: usize, only_mine: bool, preferred: Option<S
         let own = |exclude: bool| {
             let mut args = vec!["--first-parent".to_string(), focus[0].clone()];
             args.extend(focus.get(1).filter(|_| exclude).map(|base| format!("^{base}")));
-            git::log(repo, Some(&args), false, limit)
+            git::log(repo, Some(&args), false, path.as_deref(), limit)
         };
         // Already fully in its base (merged): its own line from the tip down instead of nothing.
         let mut commits = own(true)?;
@@ -129,15 +177,22 @@ fn load_history(repo: String, limit: usize, only_mine: bool, preferred: Option<S
         commits
     } else {
         let refs = only_mine.then(|| git::my_branches(repo).into_iter().chain(main.clone()).chain(environments).collect::<Vec<_>>());
-        git::log(repo, refs.as_deref(), true, limit)?
+        git::log(repo, refs.as_deref(), true, path.as_deref(), limit)?
     };
     let has_more = commits.len() >= limit;
-    // Focused on a branch that isn't checked out: no "Uncommitted changes" row.
-    let worktree = git::worktree_commit(repo).filter(|w| !focused || commits.iter().any(|c| Some(&c.id) == w.parents.first()));
+    // Focused on a branch that isn't checked out, or a file's history: no "Uncommitted changes" row.
+    let worktree =
+        git::worktree_commit(repo).filter(|w| path.is_none() && (!focused || commits.iter().any(|c| Some(&c.id) == w.parents.first())));
     if let Some(worktree) = worktree {
         // Right above the checked-out commit, not at the very top of the graph.
         let head = commits.iter().position(|c| Some(&c.id) == worktree.parents.first()).unwrap_or(0);
         commits.insert(head, worktree);
+    }
+    // Saved WIP of other branches: right above the commit it was saved on, when that commit is shown.
+    for shelved in git::shelved_commits(repo).into_iter().filter(|_| path.is_none()) {
+        if let Some(at) = commits.iter().position(|c| Some(&c.id) == shelved.parents.first()) {
+            commits.insert(at, shelved);
+        }
     }
     let chain = git::main_chain(repo, main.as_deref());
     let rows = graph::compute(&commits, &chain);
@@ -267,13 +322,29 @@ fn update_prompt(repo: String, branch: String) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
-fn squash(repo: String, branch: String, base: String, expected_tip: String, message: String) -> Result<(), String> {
-    actions::squash(&branch, &base, &expected_tip, &message, Path::new(&repo))
+fn update_branch(repo: String, branch: String, parent: String, rebase: bool, is_current: bool) -> Result<(), String> {
+    actions::update(&branch, &parent, rebase, is_current, Path::new(&repo))
 }
 
 #[tauri::command(async)]
-fn update_branch(repo: String, branch: String, parent: String, rebase: bool, is_current: bool) -> Result<(), String> {
-    actions::update(&branch, &parent, rebase, is_current, Path::new(&repo))
+fn base_status(repo: String, base: String) -> actions::BaseStatus {
+    actions::base_status(&base, Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn start_feature(repo: String, name: String, base: String, wip: Option<actions::WipMode>) -> Result<String, String> {
+    actions::start_feature(&name, &base, wip, Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn move_branch(repo: String, branch: String, expected: Option<String>, target: String) -> Result<(), String> {
+    actions::move_branch(&branch, expected.as_deref(), &target, Path::new(&repo))
+}
+
+/// Commit a local branch points at, None if there's no such branch.
+#[tauri::command(async)]
+fn branch_tip(repo: String, branch: String) -> Option<String> {
+    git::run(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], Path::new(&repo)).ok().map(|s| s.trim().to_string())
 }
 
 #[tauri::command(async)]
@@ -328,9 +399,10 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![list_repos, load_history, load_changes, load_diff, load_dashboard, branch_chain,
-            sync, changed_file_count, checkout, pull, update_prompt, delete_branch, squash, update_branch, force_push, discard_file, discard_all, discard_hunk,
-            stage, unstage, last_commit_message, commit, is_repo, open_file, search_commits, commit_places, commit_info, commit_patch])
+            sync, changed_file_count, checkout, pull, update_prompt, delete_branch, update_branch, force_push, discard_file, discard_all, discard_hunk,
+            stage, unstage, last_commit_message, commit, is_repo, open_file, search_commits, commit_places, commit_info, commit_patch, blame, move_branch, branch_tip, base_status, start_feature])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -1,5 +1,11 @@
 <!-- "What's new" after an update: every change between the version the user last saw and this one, from
-     src/lib/changelog.json. A fresh install shows nothing; it only remembers the version. -->
+     src/lib/changelog.json. A fresh install shows nothing; it only remembers the version. Reopened anytime from the
+     version label in the sidebar, which carries a dot until this version's notes have been read ("Got it"). -->
+<script module lang="ts">
+  /** Shared with the sidebar's version label: its dot, and the click that reopens this version's notes. */
+  export const whatsNew = $state({ unread: false, open: () => {} });
+</script>
+
 <script lang="ts">
   import { Sparkles, TrendingUp, Wrench } from "@lucide/svelte";
   import { getVersion } from "@tauri-apps/api/app";
@@ -28,8 +34,15 @@
     return false;
   };
 
+  const notesOf = (version: string) => (changelog as Release[]).filter((r) => r.version === version);
+
   getVersion().then((version) => {
     current = version;
+    whatsNew.unread = prefs.get<string | null>("notesRead", null) !== version && notesOf(version).length > 0;
+    whatsNew.open = () => {
+      from = null;
+      releases = notesOf(version);
+    };
     const seen = prefs.get<string | null>("lastSeenVersion", null);
     prefs.set("lastSeenVersion", version);
     // Nothing saved: a fresh install shows nothing; someone updating from 0.1.5 (before this screen existed) has other
@@ -40,7 +53,11 @@
     releases = (changelog as Release[]).filter((r) => !newer(r.version, version) && (seen == null ? r.version === version : newer(r.version, seen)));
   });
 
-  const close = () => (releases = []);
+  function close() {
+    releases = [];
+    prefs.set("notesRead", current);
+    whatsNew.unread = false;
+  }
   // Position of each release's first change across the whole list, for the staggered entrance.
   const starts = $derived(releases.map((_, i) => releases.slice(0, i).reduce((n, r) => n + r.changes.length, 0)));
 </script>

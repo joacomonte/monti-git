@@ -25,9 +25,11 @@ export const FILTERS: { id: BranchFilter; label: string; help: string; matches: 
   },
   {
     id: "changed", label: "Changed after merge", help: "It was merged somewhere, but got new commits or uncommitted changes after that",
-    // Partly in a target (`alreadyIn`: some of its commits are there, `promotion`: not all), or fully in one with uncommitted work on top.
+    // Partly in a target (`alreadyIn`: some of its commits are there, `promotion`: not all), merged earlier with squash/rebase
+    // (`mergedBefore`), or fully in one with uncommitted work on top.
     matches: (card) =>
       card.promotion.some(([t, missing]) => missing > 0 && card.alreadyIn.includes(localName(t))) ||
+      card.mergedBefore.length > 0 ||
       (card.uncommitted != null && card.promotion.some(([, missing]) => missing === 0)),
   },
 ];

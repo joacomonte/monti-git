@@ -190,6 +190,10 @@ pub fn branch_names(commits: &[Commit], main: Option<&str>, main_chain: &HashSet
             names.insert(commit.id.clone(), "uncommitted changes".into());
             continue;
         }
+        if let Some(branch) = &commit.shelved {
+            names.insert(commit.id.clone(), format!("WIP saved from {branch}"));
+            continue;
+        }
         let branches: Vec<&str> =
             commit.refs.iter().filter(|r| !r.starts_with("tag: ") && *r != "HEAD").map(|r| r.trim_start_matches("HEAD -> ")).collect();
         // Prefer the local name; a remote-only branch shows without "origin/".
@@ -221,6 +225,7 @@ mod tests {
             date: 0,
             refs: refs.iter().map(|s| s.to_string()).collect(),
             subject: subject.into(),
+            shelved: None,
         }
     }
 

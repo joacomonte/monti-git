@@ -20,11 +20,12 @@
     height: number;
     width: number;
     isWorktree: boolean; // uncommitted changes: dashed line to HEAD, hollow dot
+    isShelved?: boolean; // WIP saved when leaving a branch: amber dashed fork, hollow square (real commits are circles)
     isMerge: boolean;
     names: (string | null)[];
     highlight: Set<number>; // commit indices of the branch shown from the dashboard: its line glows, everything else dims
   };
-  let { index, row, height, width, isWorktree, isMerge, names, highlight }: Props = $props();
+  let { index, row, height, width, isWorktree, isShelved = false, isMerge, names, highlight }: Props = $props();
 
   const x = (lane: number) => PAD + lane * LANE + LANE / 2;
   const mid = $derived(height / 2);
@@ -60,7 +61,9 @@
       const lane = row.after[i];
       // Only the uncommitted row's own link to HEAD is dashed; lanes passing through stay solid.
       const focus = focusing ? highlight.has(index) && highlight.has(parent) : null;
-      if (lane) out.push(seg(path(x(row.column), mid, x(i), height), lane, row.isCurrent && p === 0, focus, isWorktree));
+      if (!lane) return;
+      const s = seg(path(x(row.column), mid, x(i), height), lane, row.isCurrent && p === 0, focus, isWorktree || isShelved);
+      out.push(isShelved ? { ...s, color: SHELVED, glow: false, width: 2 } : s);
     });
     return out;
   });
@@ -71,6 +74,7 @@
   const r = $derived(isMerge ? 3.5 : isFocused ? 7 : 5.5); // merges recede, real commits stand out
   const dotOpacity = $derived(focusing && !isFocused ? 0.25 : 1);
   const dot = $derived(laneColor(row.color));
+  const SHELVED = "color(display-p3 1 0.7 0.1)";
 </script>
 
 <svg {width} {height} class="block overflow-hidden">
@@ -78,7 +82,9 @@
     <path d={s.d} stroke={s.color} stroke-width={s.width} fill="none" stroke-dasharray={s.dashed ? "3 3" : undefined} opacity={s.opacity}
       style:filter={s.glow ? `drop-shadow(0 0 ${s.width > 2 ? 3 : 2}px ${s.color})` : undefined} />
   {/each}
-  {#if isMerge || isWorktree}
+  {#if isShelved}
+    <rect x={x(row.column) - 5} y={mid - 5} width="10" height="10" rx="2" fill="var(--background)" stroke={SHELVED} stroke-width="2" stroke-dasharray="3 2" opacity={dotOpacity} />
+  {:else if isMerge || isWorktree}
     <circle cx={x(row.column)} cy={mid} {r} fill="var(--background)" stroke={dot} stroke-width={isMerge ? 1.5 : 2} stroke-opacity={dotOpacity} />
   {:else}
     <circle cx={x(row.column)} cy={mid} {r} fill={dot} fill-opacity={dotOpacity} />

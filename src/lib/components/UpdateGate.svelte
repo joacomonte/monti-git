@@ -1,39 +1,45 @@
 <!-- Auto-update from GitHub Releases. At launch the app waits behind a splash until the check answers: a new version
      downloads and installs there (animated, with progress) and the app restarts already updated. One found while the
-     app is open (checked every 30 min and on window focus) only shows a toast, so nothing restarts under the user's hands. -->
+     app is open (checked every 30 min and on window focus) only shows a toast, so nothing restarts under the user's hands:
+     it installs on the next launch, or right away from the toast's Restart button. -->
 <script lang="ts">
   import { Sparkles, X } from "@lucide/svelte";
   import { relaunch } from "@tauri-apps/plugin-process";
-  import { check } from "@tauri-apps/plugin-updater";
+  import { check, type Update } from "@tauri-apps/plugin-updater";
   import type { Snippet } from "svelte";
 
   let { children }: { children: Snippet } = $props();
   let phase = $state<"checking" | "installing" | "ready">(import.meta.env.DEV ? "ready" : "checking"); // dev never updates
   let version = $state("");
   let progress = $state<number | null>(null); // 0…1 once the download reports its size
-  let available = $state<string | null>(null); // version found while open
+  let available = $state.raw<Update | null>(null); // found while open
 
   // Offline, slow network or no release yet: start the app anyway and try again later.
   const find = () => check({ timeout: 4000 }).catch((e) => { console.warn("update check failed:", e); return null; });
 
+  /** Downloads and installs behind the splash (with progress), then restarts into the new version. */
+  async function install(update: Update) {
+    version = update.version;
+    phase = "installing";
+    let total = 0;
+    let done = 0;
+    try {
+      await update.downloadAndInstall((e) => {
+        if (e.event === "Started") total = e.data.contentLength ?? 0;
+        else if (e.event === "Progress" && total) progress = Math.min(1, (done += e.data.chunkLength) / total);
+      });
+      await relaunch();
+    } catch (e) {
+      console.warn("update install failed:", e);
+      phase = "ready";
+    }
+  }
+
   $effect(() => {
     if (import.meta.env.DEV) return;
-    find().then(async (update) => {
-      if (!update) return (phase = "ready");
-      version = update.version;
-      phase = "installing";
-      let total = 0;
-      let done = 0;
-      try {
-        await update.downloadAndInstall((e) => {
-          if (e.event === "Started") total = e.data.contentLength ?? 0;
-          else if (e.event === "Progress" && total) progress = Math.min(1, (done += e.data.chunkLength) / total);
-        });
-        await relaunch();
-      } catch (e) {
-        console.warn("update install failed:", e);
-        phase = "ready";
-      }
+    find().then((update) => {
+      if (update) install(update);
+      else phase = "ready";
     });
     // While open: every 30 min and whenever the window comes back to the front (at most once a minute).
     let last = Date.now();
@@ -41,7 +47,7 @@
       if (Date.now() - last < 60 * 1000) return;
       last = Date.now();
       const update = await find();
-      if (update) available = update.version;
+      if (update) available = update;
     };
     const timer = setInterval(recheck, 30 * 60 * 1000);
     window.addEventListener("focus", recheck);
@@ -89,7 +95,8 @@
 {#if available && phase === "ready"}
   <div class="enter fixed right-4 bottom-4 z-50 flex items-center gap-2.5 rounded-xl border bg-popover px-3.5 py-2.5 text-[12px] shadow-lg" id="update-toast">
     <Sparkles size={14} class="shrink-0 text-primary" />
-    <span>Monti Git {available} is out. It installs next time you open the app.</span>
+    <span>Monti Git {available.version} is out.</span>
+    <button class="restart" id="update-toast-restart" onclick={() => available && install(available)}>Restart to update</button>
     <button class="grid size-5 place-items-center text-muted-foreground" title="Dismiss" id="update-toast-dismiss" onclick={() => (available = null)}>
       <X size={11} strokeWidth={3} />
     </button>
@@ -97,6 +104,8 @@
 {/if}
 
 <style>
+  .restart { height: 26px; padding: 0 11px; border-radius: 8px; font-size: 12px; font-weight: 600; color: white; background: var(--primary); }
+  .restart:hover { background: color-mix(in oklab, var(--primary) 85%, black); }
   .installing .branch { stroke-dasharray: 1; animation: draw 1.6s ease-in-out infinite; }
   .installing .tip { transform-box: fill-box; transform-origin: center; animation: pulse 1.6s ease-in-out infinite; }
   .indeterminate { animation: slide 1.2s ease-in-out infinite; }

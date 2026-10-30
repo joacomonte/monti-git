@@ -13,6 +13,8 @@ pub struct Commit {
     pub date: i64, // unix seconds
     pub refs: Vec<String>, // raw %D decorations, e.g. "HEAD -> main", "origin/main", "tag: v1.0"
     pub subject: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shelved: Option<String>, // stash row: the branch whose WIP Monti Git put aside
 }
 
 pub const WORKTREE_ID: &str = "WORKTREE";
@@ -88,7 +90,8 @@ fn ok(args: &[&str], repo: &Path) -> Option<String> {
 
 /// `refs`: only these branches (plus HEAD); None = every branch, remote and tag.
 /// `refs` may hold any rev-list arguments (e.g. `--first-parent`, `^base`); `with_head` also lists HEAD's history.
-pub fn log(repo: &Path, refs: Option<&[String]>, with_head: bool, limit: usize) -> Result<Vec<Commit>, String> {
+/// `path`: only commits that touched it, parents rewritten to the previous such commit so the lines stay connected.
+pub fn log(repo: &Path, refs: Option<&[String]>, with_head: bool, path: Option<&str>, limit: usize) -> Result<Vec<Commit>, String> {
     // \x1f between fields, \x1e between records: neither can appear in a subject line.
     let max = format!("--max-count={limit}");
     let mut args = vec!["-c", "log.showSignature=false", "log"];
@@ -100,7 +103,11 @@ pub fn log(repo: &Path, refs: Option<&[String]>, with_head: bool, limit: usize) 
     if with_head {
         args.push("HEAD");
     }
+    if path.is_some() {
+        args.push("--parents");
+    }
     args.extend(["--topo-order", &max, "--format=%H%x1f%P%x1f%an%x1f%at%x1f%D%x1f%s%x1e", "--"]);
+    args.extend(path);
     let output = run(&args, repo)?;
     Ok(output
         .split('\u{1e}')
@@ -116,6 +123,7 @@ pub fn log(repo: &Path, refs: Option<&[String]>, with_head: bool, limit: usize) 
                 date: f[3].parse().unwrap_or(0),
                 refs: if f[4].is_empty() { vec![] } else { f[4].split(", ").map(String::from).collect() },
                 subject: f[5].into(),
+                shelved: None,
             })
         })
         .collect())
@@ -135,7 +143,34 @@ pub fn worktree_commit(repo: &Path) -> Option<Commit> {
         date: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
         refs: vec![],
         subject: if changed == 1 { "1 changed file".into() } else { format!("{changed} changed files") },
+        shelved: None,
     })
+}
+
+/// The changes Monti Git put aside when leaving a branch (a "monti-git: <branch>" stash, see actions.rs), as rows
+/// forking off the commit they were saved on. Subject: "4 files · +120 −30".
+pub fn shelved_commits(repo: &Path) -> Vec<Commit> {
+    let list = ok(&["stash", "list", "--format=%H%x09%P%x09%ct%x09%gs"], repo).unwrap_or_default();
+    list.lines()
+        .filter_map(|line| {
+            let f: Vec<&str> = line.splitn(4, '\t').collect();
+            let branch = f.get(3)?.split_once(": monti-git: ")?.1; // "On <branch>: monti-git: <branch>"
+            let base = f[1].split(' ').next()?;
+            // " 4 files changed, 120 insertions(+), 30 deletions(-)": untracked files included.
+            let stat = ok(&["stash", "show", "--include-untracked", "--shortstat", f[0]], repo).unwrap_or_default();
+            let count = |word: &str| stat.split(", ").find(|p| p.contains(word)).and_then(|p| p.split_whitespace().next()?.parse::<u32>().ok()).unwrap_or(0);
+            let files = count("file");
+            Some(Commit {
+                id: f[0].into(),
+                parents: vec![base.into()],
+                author: String::new(),
+                date: f[2].parse().unwrap_or(0),
+                refs: vec![],
+                subject: format!("{files} file{} · +{} −{}", if files == 1 { "" } else { "s" }, count("insertion"), count("deletion")),
+                shelved: Some(branch.into()),
+            })
+        })
+        .collect()
 }
 
 /// The ref behind `main_chain`: the one chosen for this repo, else main, else production (local first, then origin/).
@@ -271,4 +306,51 @@ pub fn commits_touching(path: &str, hashes: &[String], repo: &Path) -> Vec<Strin
     let (Some(newest), Some(oldest)) = (hashes.first(), hashes.last()) else { return vec![] };
     let range = format!("{oldest}^..{newest}");
     ok(&["log", "--format=%H", &range, "--", path], repo).unwrap_or_default().lines().map(String::from).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::testutil::Repo;
+
+    #[test]
+    fn shelved_stash_becomes_a_row_off_its_commit() {
+        let repo = Repo::new("shelved");
+        repo.commit("a.txt", "one\n", "init");
+        let head = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+        std::fs::write(repo.path().join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(repo.path().join("new.txt"), "x\n").unwrap();
+        repo.git(&["stash", "push", "--include-untracked", "-m", "monti-git: main"]);
+        repo.git(&["stash", "push", "-m", "someone else's"]); // not ours: ignored (nothing to stash, so a no-op anyway)
+        let rows = super::shelved_commits(repo.path());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].shelved.as_deref(), Some("main"));
+        assert_eq!(rows[0].parents, [head]);
+        assert_eq!(rows[0].subject, "2 files · +2 −0");
+    }
+
+    #[test]
+    fn conflicts_and_containment() {
+        let repo = Repo::new("conflicts");
+        repo.commit("a.txt", "base\n", "init");
+        repo.git(&["checkout", "-q", "-b", "mine"]);
+        repo.commit("a.txt", "mine\n", "mine");
+        repo.git(&["checkout", "-q", "-b", "theirs", "main"]);
+        repo.commit("a.txt", "theirs\n", "theirs");
+        repo.commit("b.txt", "new\n", "other file");
+        assert_eq!(super::conflicts("mine", "theirs", repo.path()), ["a.txt"]);
+        assert!(super::conflicts("main", "theirs", repo.path()).is_empty()); // fast-forward: nothing to resolve
+        assert!(super::already_contains("theirs", "main", repo.path()));
+        assert!(!super::already_contains("main", "theirs", repo.path()));
+    }
+
+    #[test]
+    fn log_of_a_file_keeps_its_line_connected() {
+        let repo = Repo::new("file-log");
+        repo.commit("a.txt", "1", "a 1");
+        repo.commit("b.txt", "1", "b only");
+        repo.commit("a.txt", "2", "a 2");
+        let commits = super::log(repo.path(), None, true, Some("a.txt"), 50).unwrap();
+        assert_eq!(commits.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["a 2", "a 1"]);
+        assert_eq!(commits[0].parents, [commits[1].id.clone()]); // rewritten past "b only"
+    }
 }
