@@ -170,13 +170,13 @@
           <span role="button" tabindex="0" class="copy shrink-0" class:on={copiedPath === repo.path} id="copy-path-{nameOf(repo.path)}"
             title="Copy full path: {repo.path}"
             onclick={(e) => { e.stopPropagation(); copyPath(repo.path); }}>
-            {#if copiedPath === repo.path}<Check size={10} />{:else}<Copy size={10} />{/if}
+            {#if copiedPath === repo.path}<Check size={13} />{:else}<Copy size={13} />{/if}
           </span>
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <span role="button" tabindex="0" class="star shrink-0" class:on={isFavorite} id="favorite-toggle-{nameOf(repo.path)}"
             title={isFavorite ? "Remove from Favorites" : "Add to Favorites: keeps this repo at the top of the list."}
             onclick={(e) => { e.stopPropagation(); model.toggleFavorite(repo.path); }}>
-            <Star size={10} fill={isFavorite ? "currentColor" : "none"} />
+            <Star size={14} fill={isFavorite ? "currentColor" : "none"} />
           </span>
         </button>
       {/each}
@@ -269,11 +269,14 @@
   .undo:disabled { opacity: 0.45; }
   .repo:hover { background: var(--quinary); }
   .repo.active { background: color-mix(in oklch, var(--primary) 20%, transparent); }
-  .star { display: none; color: var(--tertiary); }
-  .star.on { display: block; color: rgb(234 179 8 / 0.7); }
+  /* 13–14px with real contrast: at 10px and tertiary grey they vanished on non-retina Windows screens. */
+  .star, .copy { padding: 3px; margin: -3px 0; border-radius: 5px; }
+  .star { display: none; color: var(--muted-foreground); }
+  .star:hover { color: rgb(234 179 8); background: oklch(0.5 0 0 / 0.15); }
+  .star.on { display: block; color: rgb(234 179 8); }
   .repo:hover .star { display: block; }
-  .copy { display: none; color: var(--tertiary); }
-  .copy:hover { color: var(--foreground); }
+  .copy { display: none; color: var(--muted-foreground); }
+  .copy:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.15); }
   .copy.on { display: block; color: oklch(0.72 0.17 150); }
   .repo:hover .copy { display: block; }
   .item { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 6px; text-align: left; }

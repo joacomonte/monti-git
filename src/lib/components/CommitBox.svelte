@@ -1,16 +1,18 @@
 <!-- Commit form above the file tree, on the uncommitted-changes row. Commits only what's checked (staged) in the tree;
      the placeholders show the previous commit's message as an example. -->
 <script lang="ts">
-  import { ChevronDown, CloudUpload } from "@lucide/svelte";
+  import { ChevronDown, CloudUpload, Sparkles } from "@lucide/svelte";
   import { api } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import * as Popover from "$lib/components/ui/popover";
+  import MessagePrompt from "./MessagePrompt.svelte";
 
   let { model }: { model: RepoModel } = $props();
   let title = $state("");
   let description = $state("");
   let previous = $state({ title: "", description: "" });
   let showMenu = $state(false);
+  let showAi = $state(false);
 
   const stagedCount = $derived(Object.keys(model.changes).filter((p) => model.staged.has(p)).length);
   const total = $derived(Object.keys(model.changes).length);
@@ -56,6 +58,8 @@
     <span class="flex-1 truncate text-[11px] text-muted-foreground" id="commit-staged-count">
       {stagedCount ? `${stagedCount} of ${total} file${total === 1 ? "" : "s"} staged` : "Check files below to stage them"}
     </span>
+    <button class="ai-message" id="commit-message-for-ai" onclick={() => (showAi = true)}><Sparkles size={12} />Message for AI</button>
+    {#if showAi}<MessagePrompt {model} onclose={() => (showAi = false)} />{/if}
     <!-- Split button: Commit, and Commit & Push in the ⌄ menu. -->
     <div class="split flex h-7 shrink-0 overflow-hidden rounded-md" class:disabled={!canCommit}>
       <button class="px-3 text-[12px] font-semibold" id="commit-button" disabled={!canCommit} onclick={() => commit(false)}
@@ -76,6 +80,11 @@
 </div>
 
 <style>
+  .ai-message {
+    display: flex; flex-shrink: 0; align-items: center; gap: 5px; height: 28px; padding: 0 9px; border-radius: 6px;
+    font-size: 11.5px; font-weight: 600; color: var(--muted-foreground); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.22);
+  }
+  .ai-message:hover { color: white; background: #8b5cf6; box-shadow: none; }
   .split { color: white; background: var(--primary); }
   .split.disabled { opacity: 0.45; }
   .split > :global(button:not(:disabled):hover) { background: color-mix(in oklab, var(--primary) 85%, black); }

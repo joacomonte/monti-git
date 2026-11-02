@@ -10,12 +10,7 @@
   let branches = $state<string[] | null>(null);
   let expanded = $state(false); // long description fully shown
   let copied = $state(false);
-  let open = $state(prefs.get("commitDetailsOpen", false)); // only the title until "see more…"; remembered
-
-  function setOpen(value: boolean) {
-    open = value;
-    prefs.set("commitDetailsOpen", value);
-  }
+  let open = $state(false); // title and description only, until "see more…"; collapsed again on every commit
 
   const FIELDS = [
     { key: "body", label: "Description" },
@@ -43,6 +38,7 @@
     info = null;
     branches = null;
     expanded = false;
+    open = false;
     api.commitInfo(repo, id).then((result) => { if (result.id === id) info = result; });
     api.commitPlaces(repo, id).then((names) => { if (model.repo === repo) branches = names; });
   });
@@ -82,15 +78,16 @@
         </Popover.Content>
       </Popover.Root>{/if}
     </div>
-    {#if !open}
-      <button class="see" id="commit-details-see-more" onclick={() => setOpen(true)}>see more…</button>
-    {:else}
+    <!-- The description shows even when collapsed, with its own Show more. -->
     {#if shows("body") && info.body}
       <p class="body select-text" class:clamp={!expanded}>{info.body}</p>
       {#if info.body.split("\n").length > 4 || info.body.length > 280}
         <button class="more" id="commit-details-more" onclick={() => (expanded = !expanded)}>{expanded ? "Show less" : "Show more"}</button>
       {/if}
     {/if}
+    {#if !open}
+      <button class="see" id="commit-details-see-more" onclick={() => (open = true)}>see more…</button>
+    {:else}
     <div class="meta">
       {#if shows("hash")}
         <span class="k">Hash</span>
@@ -130,7 +127,7 @@
         <span>{files} {files === 1 ? "file" : "files"} <span class="text-green-500/80">+{totals[0]}</span> <span class="text-red-500/80">−{totals[1]}</span></span>
       {/if}
     </div>
-    <button class="see" id="commit-details-see-less" onclick={() => setOpen(false)}>see less</button>
+    <button class="see" id="commit-details-see-less" onclick={() => (open = false)}>see less</button>
     {/if}
   {:else}
     <span class="dim text-[12px]">Loading commit…</span>

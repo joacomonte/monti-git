@@ -13,6 +13,6 @@
     display: block; margin-top: 6px; padding: 6px 9px; border-radius: 7px; text-align: left; white-space: normal;
     font-size: 11.5px; font-weight: 400; font-style: italic; line-height: 1.45; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.08);
   }
-  :global(:is(button, [role="switch"]):is(:hover, :focus-visible)) .example { grid-template-rows: 1fr; }
+  :global(:is(button, [role="switch"]):is(:hover, :focus-visible)) .example { grid-template-rows: 1fr; transition-delay: 1.5s; }
   @media (prefers-reduced-motion: reduce) { .example { transition: none; } }
 </style>

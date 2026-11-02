@@ -62,6 +62,7 @@ export class RepoModel {
   hasMore = $state(false);
   isLoading = $state(false);
   onlyMine = $state(prefs.get("onlyMine", true)); // hide other people's branches; on by default
+  branchesOnly = $state(prefs.get("branchesOnly", false)); // one row per branch tip, commits collapsed: a quick look
   focus = $state.raw<string[] | null>(null); // "Only this branch": the branch and its base, the rest of the graph hidden
   historyPath = $state<string | null>(null); // a file's history: the graph shows only the commits that touched it
   private cache = new Map<string, Snapshot>();
@@ -69,7 +70,8 @@ export class RepoModel {
   /** Table rows, one per commit. */
   visible = $derived(this.commits.map((_, i): Range => [i, i]));
 
-  graphLanes = $derived(Math.max(1, ...this.rows.map((r) => Math.max(r.before.length, r.after.length))));
+  // column + 1: a tip whose lane ends on its own row (collapsed view) sits past both lane lists.
+  graphLanes = $derived(Math.max(1, ...this.rows.map((r) => Math.max(r.before.length, r.after.length, r.column + 1))));
 
   /** Something is already on screen and a reload is checking it for news: the thin bar at the top. */
   get isRefreshing() {
@@ -139,7 +141,7 @@ export class RepoModel {
     const preferred = prefs.get<Record<string, string>>("mainBranches", {})[repo] ?? null;
     try {
       this.historyEnvironments = this.environmentRefs();
-      const history = await api.loadHistory(repo, this.limit, this.onlyMine, preferred, this.historyEnvironments, this.focus ?? [], this.historyPath);
+      const history = await api.loadHistory(repo, this.limit, this.onlyMine, this.branchesOnly, preferred, this.historyEnvironments, this.focus ?? [], this.historyPath);
       if (this.repo !== repo) return; // switched repos meanwhile: the newer load owns the state
       this.commits = history.commits;
       this.rows = history.rows;
@@ -201,6 +203,13 @@ export class RepoModel {
     this.setShowGraph(true);
     this.limit = PAGE;
     await this.reload();
+  }
+
+  setBranchesOnly(on: boolean) {
+    this.branchesOnly = on;
+    prefs.set("branchesOnly", on);
+    this.limit = PAGE;
+    this.reload();
   }
 
   setOnlyMine(on: boolean) {

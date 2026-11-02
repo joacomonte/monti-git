@@ -359,7 +359,8 @@
   .name b { color: var(--foreground); font-weight: 700; }
   .sub { display: flex; align-items: center; min-height: 20px; margin-top: 5px; font-size: 12px; color: var(--tertiary); white-space: nowrap; }
   .wip { color: color(display-p3 1 0.7 0.1); } /* same amber as the WIP row in the graph */
-  .ok { color: var(--green); } .warn { color: var(--amber); }
+  /* Nothing to do → no color; color is kept for what needs attention, and for the branch you're on. */
+  .ok { color: var(--muted-foreground); } .card.current .ok { color: var(--green); } .warn { color: var(--amber); }
   .add { color: oklch(0.72 0.17 150); } .del { color: oklch(0.68 0.19 25); }
   /* Status cell: status on top, a quiet second line; on hover an actionable cell swaps that line for its action. */
   .cell { display: flex; height: 44px; flex-direction: column; justify-content: center; gap: 1px; padding: 0 10px; border-radius: 9px; font-size: 12px; font-weight: 600; white-space: nowrap; text-align: left; }
@@ -381,7 +382,7 @@
   .card:hover .done, .card:focus-within .done, .card:has(:global([data-state="open"])) .done { padding-right: 52px; }
   .done-btn {
     display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 9px; font-size: 12px; font-weight: 600;
-    color: var(--primary); background: color-mix(in oklab, var(--primary) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 35%, transparent);
+    color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.08); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.18);
   }
   .done-btn:hover:not(:disabled) { color: white; background: var(--primary); }
   .done-btn:disabled { opacity: 0.45; cursor: not-allowed; }

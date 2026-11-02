@@ -100,8 +100,8 @@ export type WipMode = "shelve" | "commit" | "carry";
 export const api = {
   listRepos: (folders: string[], repos: string[]) => invoke<RepoEntry[]>("list_repos", { folders, repos }),
   isRepo: (path: string) => invoke<boolean>("is_repo", { path }),
-  loadHistory: (repo: string, limit: number, onlyMine: boolean, preferred: string | null, environments: string[], focus: string[], path: string | null) =>
-    invoke<History>("load_history", { repo, limit, onlyMine, preferred, environments, focus, path }),
+  loadHistory: (repo: string, limit: number, onlyMine: boolean, branchesOnly: boolean, preferred: string | null, environments: string[], focus: string[], path: string | null) =>
+    invoke<History>("load_history", { repo, limit, onlyMine, branchesOnly, preferred, environments, focus, path }),
   searchCommits: (repos: string[], query: string) => invoke<SearchHit[]>("search_commits", { repos, query }),
   commitPlaces: (repo: string, id: string) => invoke<string[]>("commit_places", { repo, id }),
   commitInfo: (repo: string, id: string) => invoke<CommitInfo>("commit_info", { repo, id }),

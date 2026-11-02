@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.4.0",
+    "changes": [
+      { "kind": "new", "title": "Commit message by your AI agent", "detail": "Right-click \"Uncommitted changes\" or use \"Message for AI\" next to Commit: pick a new commit, amend the last one (keeping or rewriting its message) or squash the branch into one, choose how long, and copy a prompt that follows your repo's conventions.", "demo": "ai-message" },
+      { "kind": "new", "title": "Commits collapsed", "detail": "A graph toggle that shows one row per branch with its commit count, for a quick look at every branch. Click \"N commits\" to open one.", "demo": "collapsed" },
+      { "kind": "improved", "title": "Where each branch lives", "detail": "Branches in the graph say \"Only local\" when they aren't on the server yet, a cloud when they are, and \"Checked out\" on the one you're on." },
+      { "kind": "improved", "title": "Copy metadata for AI", "detail": "Right-click a commit or click a branch label to copy the repo, branch and commit hash for your agent." },
+      { "kind": "improved", "title": "Color only where it matters", "detail": "\"Nothing to pull\" and \"Finished\" are grey now, so what needs your attention stands out." },
+      { "kind": "improved", "title": "Calmer details", "detail": "Commit details start collapsed (the description still shows), and the hover examples wait a moment before opening." },
+      { "kind": "fixed", "title": "Favorites star on Windows", "detail": "The star to add a repo to Favorites was too small and faint to see; it's bigger and clearer now." }
+    ]
+  },
+  {
     "version": "0.3.0",
     "changes": [
       { "kind": "new", "title": "A clearer dashboard", "detail": "Each branch is one row with aligned columns: how far behind its parent, which environments already have it, and your uncommitted changes. Environments stay on top, and the branch you're on gets its own spot.", "demo": "dashboard" },

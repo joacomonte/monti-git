@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Crosshair, History, LayoutGrid, Search, X, TriangleAlert, UserRound, Waypoints } from "@lucide/svelte";
+  import { Crosshair, GitBranch, History, LayoutGrid, Search, X, TriangleAlert, UserRound, Waypoints } from "@lucide/svelte";
   import CommitSearch from "$lib/components/CommitSearch.svelte";
   import * as Tabs from "$lib/components/ui/tabs";
   import CheckoutPrompt from "$lib/components/CheckoutPrompt.svelte";
@@ -123,6 +123,12 @@
                 : model.focusTarget ? `Only this branch: off\nShow just ${model.focusTarget}'s own commits, nothing else.`
                 : "Only this branch\nSelect a commit first: shows just its branch's own commits."}>
               <Crosshair size={12} />Only this branch
+            </button>
+            <button class="tool" class:on={model.branchesOnly} aria-pressed={model.branchesOnly} id="branches-only-toggle"
+              disabled={model.focus != null || model.historyPath != null}
+              onclick={() => model.setBranchesOnly(!model.branchesOnly)}
+              title={`Commits collapsed: ${model.branchesOnly ? "on" : "off"}\nOne row per branch with its commit count, the rest collapsed: a quick look at every branch. Click "N commits" to open one.`}>
+              <GitBranch size={12} />Commits collapsed
             </button>
             {#if model.historyPath}
               <button class="tool on" id="file-history-clear" onclick={() => model.setHistory(null)}

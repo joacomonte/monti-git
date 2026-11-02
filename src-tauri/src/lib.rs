@@ -150,7 +150,8 @@ struct History {
 /// `focus` ([branch] or [branch, base]): only that branch's own line (first parents, minus what's already in
 /// `base`), nothing else, not even HEAD; wins over `only_mine`. `path`: only the commits that touched that file.
 fn load_history(
-    repo: String, limit: usize, only_mine: bool, preferred: Option<String>, environments: Vec<String>, focus: Vec<String>, path: Option<String>,
+    repo: String, limit: usize, only_mine: bool, branches_only: bool, preferred: Option<String>, environments: Vec<String>, focus: Vec<String>,
+    path: Option<String>,
 ) -> Result<History, String> {
     let repo = Path::new(&repo);
     let main = git::main_ref(repo, preferred.as_deref());
@@ -176,7 +177,12 @@ fn load_history(
         }
         commits
     } else {
-        let refs = only_mine.then(|| git::my_branches(repo).into_iter().chain(main.clone()).chain(environments).collect::<Vec<_>>());
+        let mut refs = only_mine.then(|| git::my_branches(repo).into_iter().chain(main.clone()).chain(environments).collect::<Vec<_>>());
+        // Branches only: just the commits a branch or tag points at, each linked to the next one down (rewritten parents).
+        if branches_only && path.is_none() {
+            let all = ["--branches", "--remotes", "--tags"].map(String::from).to_vec();
+            refs = Some(["--simplify-by-decoration", "--parents"].map(String::from).into_iter().chain(refs.unwrap_or(all)).collect());
+        }
         git::log(repo, refs.as_deref(), true, path.as_deref(), limit)?
     };
     let has_more = commits.len() >= limit;

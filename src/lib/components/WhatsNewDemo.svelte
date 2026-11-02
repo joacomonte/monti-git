@@ -138,6 +138,18 @@
     <div class="choice ch1"><span class="sq blue"></span>Stash them <em class="rec">Recommended</em></div>
     <div class="choice ch2"><span class="sq green"></span>Save as a WIP commit</div>
     <div class="choice ch3"><span class="sq amber"></span>Take them with me</div>
+  {:else if name === "ai-message"}
+    <!-- Where the changes go, how long, copied: the agent writes the commit message. -->
+    <div class="route"><em class="to">✨ Message for AI</em></div>
+    <div class="choice ch1"><span class="sq blue"></span>New commit</div>
+    <div class="choice ch2"><span class="sq amber"></span>Amend the last commit</div>
+    <div class="choice ch3"><span class="sq pink"></span>Squash into one</div>
+    <div class="toast">Prompt copied ✓ <span class="hint">feat(scope): … in your repo's style</span></div>
+  {:else if name === "collapsed"}
+    <!-- Every branch on one line with its commit count; local-only work stands out. -->
+    <div class="crow c1"><span class="cdot" style:background="#ff3b6b"></span><em class="cpill head">feat/notifications</em><em class="chip ok">✓ Checked out</em><em class="chip warn">Only local</em><em class="count">4 commits ›</em></div>
+    <div class="crow c2"><span class="cdot" style:background="#34c77b"></span><em class="cpill">fix/paginado</em><em class="chip cloud">☁</em><em class="count">1 commit ›</em></div>
+    <div class="crow c3"><span class="cdot" style:background="#4f8cff"></span><em class="cpill">main</em><em class="chip cloud">☁</em></div>
   {/if}
 </div>
 
@@ -342,6 +354,22 @@
   .rec { padding: 0 5px; border-radius: 99px; font-size: 9px; color: var(--primary); background: color-mix(in oklab, var(--primary) 15%, transparent); }
   .ch1 { animation-name: col1, ch-pick; animation-duration: 5s, 5s; } .ch2 { animation-name: col2; } .ch3 { animation-name: col3; }
   @keyframes ch-pick { 0%, 55% { box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.15); } 62%, 90% { box-shadow: inset 0 0 0 1px #4f8cff; background: rgb(79 140 255 / 0.08); } }
+
+
+  /* ai-message (reuses the checkout-dialog rows) */
+  .sq.pink { background: #ec5fa8; }
+
+  /* collapsed */
+  .crow { display: flex; align-items: center; gap: 6px; height: 26px; }
+  .cdot { width: 9px; height: 9px; flex-shrink: 0; border-radius: 99px; }
+  .cpill { padding: 1px 7px; border-radius: 99px; font-weight: 600; background: oklch(0.5 0 0 / 0.14); }
+  .cpill.head { color: white; background: #b0204a; }
+  .chip { padding: 0 6px; border-radius: 99px; font-size: 9.5px; font-weight: 700; }
+  .chip.ok { color: #34c77b; background: rgb(52 199 123 / 0.14); }
+  .chip.warn { color: #f5a524; background: rgb(245 165 36 / 0.14); }
+  .chip.cloud { color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.14); }
+  .count { margin-left: auto; padding: 0 7px; border-radius: 99px; font-size: 9.5px; font-weight: 600; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.12); }
+  .crow.c1 { animation-name: col1; } .crow.c2 { animation-name: col2; } .crow.c3 { animation-name: col3; }
 
   @media (prefers-reduced-motion: reduce) { .demo * { animation: none !important; } }
 </style>

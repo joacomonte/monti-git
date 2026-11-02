@@ -1,13 +1,14 @@
 <!-- Virtualized commit list: only the rows on screen are in the DOM. Rows touch so the graph lines stay continuous. -->
 <script lang="ts">
   import { fade } from "svelte/transition";
-  import { Archive, ArrowLeftRight, Copy, FileText, Layers, Sparkles } from "@lucide/svelte";
+  import { Archive, ArrowLeftRight, ChevronRight, Copy, Layers, Sparkles } from "@lucide/svelte";
   import { api, WORKTREE_ID, type Card, type Commit, type Row } from "$lib/api";
   import type { Range, RepoModel } from "$lib/model.svelte";
   import GraphCell, { LANE, PAD, laneColor } from "./GraphCell.svelte";
   import RefBadge from "./RefBadge.svelte";
   import SquashPrompt from "./SquashPrompt.svelte";
   import ActionRow from "./ActionRow.svelte";
+  import MessagePrompt from "./MessagePrompt.svelte";
 
   let { model }: { model: RepoModel } = $props();
 
@@ -30,12 +31,19 @@
   let squashing = $state<Card | null>(null);
 
   /** Options for a branch pill in the graph: check out (if it isn't already) and squash (if it has commits to squash). */
-  let branchMenu = $state<{ name: string; canCheckout: boolean; card: Card | null; x: number; y: number } | null>(null);
+  let branchMenu = $state<{ name: string; commit: Commit; canCheckout: boolean; card: Card | null; x: number; y: number } | null>(null);
   function squashable(ref: string): Card | null {
     const d = model.dashboard;
     const name = ref.replace("HEAD -> ", "").replace(/^(origin|upstream)\//, "");
     const card = d ? [...d.pinned, ...d.features, ...d.old].find((c) => c.local === name) : null;
     return card?.squashBase && card.featureCommits.length > 1 ? card : null;
+  }
+
+  /** Branches only: the dashboard card of a pill's branch, for its "N commits" (own commits vs its base). */
+  function cardOf(ref: string): Card | null {
+    const d = model.dashboard;
+    const name = ref.replace("HEAD -> ", "").replace(/^(origin|upstream)\//, "");
+    return (d ? [d.base, ...d.environments, ...d.pinned, ...d.features, ...d.old].find((c) => c?.local === name) : null) ?? null;
   }
 
   /** Moves the node to <body>, so the fixed menu isn't clipped by the scrolling list. */
@@ -47,38 +55,30 @@
   async function copy(item: string, text: Promise<string> | string) {
     await navigator.clipboard.writeText(await text);
     copied = item;
-    setTimeout(() => { menu = null; copied = null; }, 500);
+    setTimeout(() => { menu = null; branchMenu = null; copied = null; }, 500);
   }
 
-  /** Enough for an agent with git access: it can `git show` the rest. */
-  const minimal = (c: Commit) => `Repo: ${model.repo}\nCommit: ${c.id}`;
+  let writingMessage = $state(false); // right-click on the uncommitted row: the "Message for AI" dialog
 
-  /** Everything: where it is, who and when, the message, files changed and the full diff. */
-  async function full(c: Commit) {
-    const repo = model.repo!;
-    const [info, places, patch] = await Promise.all([api.commitInfo(repo, c.id), api.commitPlaces(repo, c.id), api.commitPatch(repo, c.id)]);
-    const date = (s: number) => new Date(s * 1000).toISOString().replace("T", " ").slice(0, 16);
-    return [
-      `Repo: ${repo}`,
-      `Commit: ${info.id}`,
-      `Branches containing it: ${places.join(", ") || "none"}`,
-      `Author: ${info.author} <${info.authorEmail}>, ${date(info.authorDate)}`,
-      info.committer !== info.author || info.committerDate !== info.authorDate ? `Committer: ${info.committer} <${info.committerEmail}>, ${date(info.committerDate)}` : null,
-      `Parents: ${info.parents.join(", ") || "none (first commit)"}`,
-      `Title: ${info.subject}`,
-      info.body ? `Description:\n${info.body}` : null,
-      `\nFiles changed and full diff:\n\`\`\`diff\n${patch.trim()}\n\`\`\``,
-    ].filter((line) => line != null).join("\n");
+  /** Repo, branch and hash: enough for an agent with git access, it can `git show` the rest. The branch: the one given
+   *  (a clicked pill), else the feature branch the commit belongs to, else one pointing at it, else one containing it. */
+  async function metadata(c: Commit, branch?: string) {
+    const name = branch ?? branchOf(c)?.local ?? badges(c.refs).find((b) => !b.ref.startsWith("tag: "))?.ref.replace("HEAD -> ", "")
+      ?? (await api.commitPlaces(model.repo!, c.id))[0];
+    return [`Repo: ${model.repo}`, name ? `Branch: ${name}` : null, `Commit: ${c.id}`].filter((line) => line != null).join("\n");
   }
+
 
   let scrollTop = $state(0);
   let viewHeight = $state(600);
   let scroller: HTMLDivElement;
 
   const width = $derived(model.graphLanes * LANE + PAD * 2);
+  /** Branches only: a branch row is just its pills, count, date and author, on one line (no subject). */
+  const bare = (c: Commit) => model.branchesOnly && !model.focus && c.id !== WORKTREE_ID && !c.shelved;
   const heightOf = (r: Range) => {
     const c = model.commits[r[0]];
-    return r[0] === r[1] && isQuietMerge(c) ? QUIET : isTall(c) ? ROW : LINE;
+    return r[0] === r[1] && isQuietMerge(c) ? QUIET : isTall(c) && !bare(c) ? ROW : LINE;
   };
   /** Subject text tinted with its branch line's color, mixed with the foreground so it stays readable. */
   const tint = (r: Range) => `color-mix(in oklab, ${laneColor(rowFor(r).color)} 28%, var(--foreground))`;
@@ -193,7 +193,7 @@
         style:top="{offsets[start + k]}px"
         style:height="{heightOf(range)}px"
         onclick={() => click(range)}
-        oncontextmenu={(e) => { if (commit.id === WORKTREE_ID || commit.shelved) return; e.preventDefault(); menu = { commit, x: e.clientX, y: e.clientY }; }}
+        oncontextmenu={(e) => { if (commit.id === WORKTREE_ID) { e.preventDefault(); writingMessage = true; return; } if (commit.shelved) return; e.preventDefault(); menu = { commit, x: e.clientX, y: e.clientY }; }}
         role="option"
         aria-selected={isSelected(range)}
         tabindex="-1"
@@ -230,14 +230,24 @@
                   {@const card = squashable(badge.ref)}
                   {@const canCheckout = !badge.ref.startsWith("tag: ") && !badge.ref.startsWith("HEAD -> ")}
                   <RefBadge ref={badge.ref} isSynced={badge.isSynced} color={laneColor(rowFor(range).color)}
-                    onclick={card || canCheckout ? (e) => { e.stopPropagation(); const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); branchMenu = { name: badge.ref.replace("HEAD -> ", ""), canCheckout, card, x: r.left, y: r.bottom + 4 }; } : undefined} />
+                    onclick={!badge.ref.startsWith("tag: ") ? (e) => { e.stopPropagation(); menu = null; const name = badge.ref.replace("HEAD -> ", ""); if (branchMenu?.name === name && branchMenu.commit.id === commit.id) { branchMenu = null; return; } const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); branchMenu = { name, commit, canCheckout, card, x: r.left, y: r.bottom + 4 }; } : undefined} />
                 {/each}
                 <span class="shrink-0 text-[12.5px] text-tertiary" title={new Date(commit.date * 1000).toLocaleString()}>{when(commit.date)}</span>
+                {#if model.branchesOnly && !model.focus}
+                  {@const own = badges(commit.refs).map((b) => cardOf(b.ref)).find((c) => c && c.featureCommits.length)}
+                  {#if own}
+                    <!-- Opens the branch focused ("Only this branch"); turning that off comes back here. -->
+                    <button class="expand" id="branch-expand-{own.local}"
+                      onclick={(e) => { e.stopPropagation(); model.setFocus(own.ref, own.parent ?? model.dashboard?.base?.ref ?? null); }}>
+                      {own.featureCommits.length} commit{own.featureCommits.length === 1 ? "" : "s"}<ChevronRight size={12} />
+                    </button>
+                  {/if}
+                {/if}
                 <!-- Author right-aligned, same column as on one-line rows. -->
                 <span class="ml-auto truncate pl-2 text-[12.5px] text-tertiary" title={commit.author}>{commit.author}</span>
               </div>
             {/if}
-            {#if !commit.shelved}<div class="truncate text-[12.5px]" style:color={tint(range)}>{commit.subject}</div>{/if}
+            {#if !commit.shelved && !bare(commit)}<div class="truncate text-[12.5px]" style:color={tint(range)}>{commit.subject}</div>{/if}
           </div>
         {/if}
       </div>
@@ -248,7 +258,7 @@
 <svelte:window onmousedown={() => { menu = null; branchMenu = null; }} onkeydown={(e) => { if (e.key === "Escape") { menu = null; branchMenu = null; squashing = null; } }}
   onwheel={() => { menu = null; branchMenu = null; }} onblur={() => { menu = null; branchMenu = null; }} />
 {#if branchMenu}
-  {@const { name, canCheckout, card } = branchMenu}
+  {@const { name, commit, canCheckout, card } = branchMenu}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div use:portal class="context-menu enter-pop" out:fade={{ duration: 120 }} role="menu" tabindex="-1" id="branch-pill-menu" onmousedown={(e) => e.stopPropagation()}
     style:left="{Math.min(branchMenu.x, innerWidth - 340)}px" style:top="{Math.min(branchMenu.y, innerHeight - 140)}px">
@@ -262,20 +272,21 @@
         detail="Combine {card.local}'s {card.featureCommits.length} commits into one; copies a prompt for your agent"
         example={'"wip", "fix typo", "fix again" become one clean commit: "feat: export csv".'} />
     {/if}
+    <ActionRow title={copied === "pill-metadata" ? "Copied ✓" : "Copy metadata for AI"} icon={Sparkles} color="#a78bfa" id="branch-pill-menu-copy-metadata"
+      onclick={() => copy("pill-metadata", metadata(commit, name))}
+      detail="Repo, branch and commit hash: enough for an agent with git to look at it itself" />
   </div>
 {/if}
+{#if writingMessage}<MessagePrompt {model} onclose={() => (writingMessage = false)} />{/if}
 {#if menu}
   {@const c = menu.commit}
   {@const branch = branchOf(c)}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div use:portal class="context-menu enter-pop" out:fade={{ duration: 120 }} role="menu" tabindex="-1" id="commit-menu" onmousedown={(e) => e.stopPropagation()}
-    style:left="{Math.min(menu.x, innerWidth - 340)}px" style:top="{Math.min(menu.y, innerHeight - (branch && branch.featureCommits.length > 1 ? 250 : 190))}px">
-    <ActionRow title={copied === "minimal" ? "Copied ✓" : "Copy for AI"} icon={Sparkles} color="#a78bfa" id="commit-menu-copy-minimal" onclick={() => copy("minimal", minimal(c))}
-      detail="Repo and hash: enough for an agent with git to look at it itself"
+    style:left="{Math.min(menu.x, innerWidth - 340)}px" style:top="{Math.min(menu.y, innerHeight - (branch && branch.featureCommits.length > 1 ? 190 : 130))}px">
+    <ActionRow title={copied === "metadata" ? "Copied ✓" : "Copy metadata for AI"} icon={Sparkles} color="#a78bfa" id="commit-menu-copy-metadata" onclick={() => copy("metadata", metadata(c))}
+      detail="Repo, branch and commit hash: enough for an agent with git to look at it itself"
       example={'paste it in Claude Code and ask "why did this break the build?": it runs git show by itself.'} />
-    <ActionRow title={copied === "full" ? "Copied ✓" : "Copy for AI (full)"} icon={FileText} color="#4f8cff" id="commit-menu-copy-full" onclick={() => copy("full", full(c))}
-      detail="Everything: branches, author, dates, message, files and the whole diff"
-      example="the agent works in another repo with no access to this one, and you want it to port this change there." />
     <ActionRow title={copied === "hash" ? "Copied ✓" : "Copy hash"} icon={Copy} grey id="commit-menu-copy-hash" onclick={() => copy("hash", c.id)}
       detail={c.id.slice(0, 7)} />
     {#if branch && branch.featureCommits.length > 1}
@@ -299,6 +310,11 @@
 {/if}
 
 <style>
+  .expand {
+    display: flex; flex-shrink: 0; align-items: center; gap: 2px; height: 22px; padding: 0 6px 0 9px; border-radius: 99px;
+    font-size: 11.5px; font-weight: 600; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.12);
+  }
+  .expand:hover { color: white; background: var(--primary); }
   .context-menu {
     position: fixed; z-index: 1000; width: 320px; padding: 6px; border-radius: 10px;
     background: var(--popover); color: var(--popover-foreground);
