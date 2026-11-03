@@ -64,7 +64,7 @@ export class RepoModel {
   hasMore = $state(false);
   isLoading = $state(false);
   onlyMine = $state(prefs.get("onlyMine", true)); // hide other people's branches; on by default
-  branchesOnly = $state(prefs.get("branchesOnly", false));
+  branchesOnly = $state(prefs.get("branchesOnly", true)); // "Commits collapsed", on by default
   focus = $state.raw<string[] | null>(null); // "Only this branch": the branch and its base, the rest of the graph hidden
   historyPath = $state<string | null>(null); // a file's history: the graph shows only the commits that touched it
   private cache = new Map<string, Snapshot>();
@@ -321,6 +321,7 @@ export class RepoModel {
   counts = $state.raw<Record<string, [number, number]>>({});
   staged = $state.raw(new Set<string>()); // uncommitted-changes row: files in the index (checked in the tree)
   tree = $state.raw<FileNode[]>([]);
+  treePaths = $state.raw<string[]>([]); // every file the tree lists, for the tree search
   changedDirs = $state.raw(new Set<string>()); // folders containing a change, highlighted and expanded
   expandedDirs = $state.raw(new Set<string>());
   changedOrder = $state.raw<string[]>([]); // changed files in tree order, for ⌥←/⌥→
@@ -340,6 +341,7 @@ export class RepoModel {
     this.diffRows = [];
     this.fileCommits = [];
     this.tree = [];
+    this.treePaths = [];
   }
 
   /** base/target of the selection: a group diffs its oldest commit's parent against its newest. */
@@ -347,6 +349,15 @@ export class RepoModel {
     const newest = this.commits[range[0]];
     const base = (range[0] === range[1] ? newest : this.commits[range[1]]).parents[0] ?? null;
     return { base, target: newest.id === WORKTREE_ID ? null : newest.id };
+  }
+
+  /** Tree search by content, on the selection: diff lines, or whole files (only the changed ones unless the tree shows all). */
+  async searchLines(query: string, diffOnly: boolean): Promise<Record<string, number>> {
+    if (!this.repo || !this.selected) return {};
+    const { base, target } = this.span(this.selected);
+    const paths = this.showAllFiles ? null : Object.keys(this.changes).filter((p) => this.changes[p] !== "D");
+    if (paths && !paths.length) return {};
+    return api.searchLines(this.repo, base, target, query, paths, diffOnly);
   }
 
   setShowAllFiles(all: boolean) {
@@ -365,6 +376,7 @@ export class RepoModel {
     this.counts = result.counts;
     this.staged = new Set(result.staged);
     this.tree = fileTree(result.paths);
+    this.treePaths = result.paths;
     const dirs = new Set<string>();
     for (const path of Object.keys(result.changes)) {
       const parts = path.split("/").slice(0, -1);

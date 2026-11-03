@@ -332,6 +332,50 @@ fn load_changes(repo: String, base: Option<String>, target: Option<String>, all:
     Changes { changes, counts, paths, staged }
 }
 
+/// File tree search by content: path -> lines containing `query` (case-insensitive, literal).
+/// `diff_only`: only the added/removed lines of the selection. Otherwise whole files at `target`, limited to `paths` if given.
+#[tauri::command(async)]
+fn search_lines(repo: String, base: Option<String>, target: Option<String>, query: String, paths: Option<Vec<String>>, diff_only: bool) -> HashMap<String, u32> {
+    let repo = Path::new(&repo);
+    let mut hits = HashMap::new();
+    if diff_only {
+        let needle = query.to_lowercase();
+        // shortcut: untracked files aren't in `git diff`, so the uncommitted row misses them here.
+        let args: Vec<&str> = match (&base, &target) {
+            (_, None) => vec!["diff", "-U0", "--no-color", "HEAD"],
+            (Some(b), Some(t)) => vec!["diff", "-U0", "--no-color", b, t],
+            (None, Some(t)) => vec!["show", "-U0", "--no-color", "--format=", t],
+        };
+        let out = git::run(&[&["-c", "core.quotePath=false"][..], &args].concat(), repo).unwrap_or_default();
+        let mut path = String::new();
+        for line in out.lines() {
+            if let Some(p) = line.strip_prefix("+++ b/") { path = p.to_string(); continue; }
+            if line.starts_with("+++ ") || line.starts_with("--- ") { continue; }
+            if let Some(p) = line.strip_prefix("diff --git a/") { path = p.split(" b/").next().unwrap_or_default().to_string(); continue; }
+            if (line.starts_with('+') || line.starts_with('-')) && line[1..].to_lowercase().contains(&needle) {
+                *hits.entry(path.clone()).or_insert(0) += 1;
+            }
+        }
+        return hits;
+    }
+    let mut args = vec!["-c", "core.quotePath=false", "grep", "-c", "-I", "-i", "-F", "-e", &query];
+    match &target {
+        Some(t) => args.push(t),
+        None => args.push("--untracked"),
+    }
+    args.push("--");
+    if let Some(paths) = &paths { args.extend(paths.iter().map(String::as_str)); }
+    let prefix = target.as_ref().map(|t| format!("{t}:")).unwrap_or_default();
+    // "rev:path:count" (no "rev:" for the working tree); git grep exits 1 when nothing matches.
+    for line in git::run(&args, repo).unwrap_or_default().lines() {
+        let line = line.strip_prefix(&prefix).unwrap_or(line);
+        if let Some((path, count)) = line.rsplit_once(':') {
+            if let Ok(count) = count.parse() { hits.insert(path.to_string(), count); }
+        }
+    }
+    hits
+}
+
 #[derive(Serialize)]
 struct FileDiff {
     rows: Vec<diff::DiffRow>,
@@ -484,7 +528,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![list_repos, load_history, load_changes, load_diff, branch_status, merged_into, git_logs,
+        .invoke_handler(tauri::generate_handler![list_repos, load_history, load_changes, load_diff, search_lines, branch_status, merged_into, git_logs,
             sync, changed_file_count, checkout, pull, delete_branch, update_branch, force_push, discard_file, discard_all, discard_hunk,
             stage, unstage, last_commit_message, commit, is_repo, open_file, search_commits, commit_places, commit_info, commit_patch, blame, move_branch, branch_tip, base_status, start_feature])
         .run(tauri::generate_context!())

@@ -1,7 +1,7 @@
 <!-- Virtualized commit list: only the rows on screen are in the DOM. Rows touch so the graph lines stay continuous. -->
 <script lang="ts">
   import { fade } from "svelte/transition";
-  import { Archive, Check, ChevronRight, GitCommitHorizontal, PenLine, CircleCheck, Cloud, CloudOff, Copy, GitBranch, Sparkles, Trash2 } from "@lucide/svelte";
+  import { Archive, Check, ChevronRight, Laptop, CircleCheck, Cloud, CloudOff, Copy, GitBranch, Sparkles, Trash2 } from "@lucide/svelte";
   import { api, WORKTREE_ID, type Card, type Commit, type Row } from "$lib/api";
   import { type Range, type RepoModel } from "$lib/model.svelte";
   import GraphCell, { LANE, PAD, laneColor } from "./GraphCell.svelte";
@@ -93,7 +93,7 @@
 
   // Quick copy button on a branch row: the options open with "Metadata for AI" right under the pointer, so it's one more click.
   let copyMenu = $state<{ commit: Commit; branch: string; x: number; y: number } | null>(null);
-  let writingMessage = $state<"pick" | "new" | "amend" | null>(null); // the "Message for AI" dialog: from right-click ("pick") or a quick button
+  let writingMessage = $state<"pick" | null>(null); // the "Message for AI" dialog, from right-click on the uncommitted row
 
   /** Repo, branch and hash: enough for an agent with git access, it can `git show` the rest. The branch: the one given
    *  (a clicked pill), else the feature branch the commit belongs to, else one pointing at it, else one containing it. */
@@ -338,7 +338,8 @@
                       style:--lane={laneColor(rowFor(range).color)} aria-busy={isPending(badge.ref)}>
                       <button class="bname" id="branch-card-{name}" onclick={openMenu}>
                         {#if isHead}<CircleCheck size={13} strokeWidth={2.5} />{:else}<GitBranch size={13} strokeWidth={2.5} />{/if}<span class="truncate">{name}</span>
-                        {#if badge.isSynced || /^(origin|upstream)\//.test(badge.ref)}<span class="cloud" title="On the server at this commit: nothing to push or pull."><Cloud size={12} strokeWidth={2.5} /></span>{/if}
+                        {#if badge.isSynced || /^(origin|upstream)\//.test(badge.ref)}<span class="cloud" title="On the server at this commit: nothing to push or pull."><Cloud size={12} strokeWidth={2.5} /></span>
+                        {:else}<span class="local" title="Only on this computer at this commit: not pushed yet, or the server has a different version."><Laptop size={11} strokeWidth={2.5} />Only local</span>{/if}
                       </button>
                       {#if own && hasStatus(own)}{@render status(own)}
                       {:else if isPending(badge.ref)}<div class="status"><span class="skel"></span><span class="skel w-[54px]"></span></div>{/if}
@@ -350,7 +351,6 @@
                         {own.firstParentCount} commit{own.firstParentCount === 1 ? "" : "s"}<ChevronRight size={11} />
                       </button>
                     {:else if isPending(badge.ref)}<span class="skel ml-1 w-[64px]"></span>{/if}
-                    <RefBadge ref={badge.ref} isSynced={badge.isSynced} chipsOnly />
                   {:else}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <span class="contents" onmouseenter={() => { if (!badge.ref.startsWith("tag: ")) spot = rowFor(range).color; }} onmouseleave={() => (spot = null)}>
@@ -368,15 +368,8 @@
             {#if !commit.shelved && !bare(commit)}<div class="truncate text-[12.5px]" style:color={tint(range)}>{commit.subject}</div>{/if}
           </div>
         {/if}
-        <!-- Quick actions on hover, far right: commit / amend for the uncommitted row, copy for AI for a branch row. -->
-        {#if commit.id === WORKTREE_ID}
-          <div class="quick">
-            <button id="quick-commit" title="Commit message by your AI agent, for a new commit" onclick={(e) => { e.stopPropagation(); writingMessage = "new"; }}>
-              <GitCommitHorizontal size={13} />Commit</button>
-            <button id="quick-amend" title="Amend the last commit, with your AI agent" onclick={(e) => { e.stopPropagation(); writingMessage = "amend"; }}>
-              <PenLine size={13} />Amend</button>
-          </div>
-        {:else if !commit.shelved && badges(commit.refs).some((b) => !b.ref.startsWith("tag: "))}
+        <!-- Quick action on hover, far right: copy for AI for a branch row (commit / amend live in the commit box on the right). -->
+        {#if !commit.shelved && badges(commit.refs).some((b) => !b.ref.startsWith("tag: "))}
           {@const branch = badges(commit.refs).find((b) => !b.ref.startsWith("tag: "))!.ref.replace("HEAD -> ", "")}
           <div class="quick">
             <button class="icon-only" id="quick-copy-{commit.id}" title="Copy: branch name, hash, or metadata for AI"
@@ -456,7 +449,7 @@
       onFocus={() => openFocus(name)} />
   </div>
 {/if}
-{#if writingMessage}<MessagePrompt {model} start={writingMessage === "pick" ? null : writingMessage} onclose={() => (writingMessage = null)} />{/if}
+{#if writingMessage}<MessagePrompt {model} onclose={() => (writingMessage = null)} />{/if}
 {#if menu}
   {@const c = menu.commit}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -541,6 +534,7 @@
   .swap .del { opacity: 0; pointer-events: none; }
   .swap.deletable:hover .label { opacity: 0; }
   .swap.deletable:hover .del { opacity: 1; pointer-events: auto; }
+  .local { display: flex; flex-shrink: 0; align-items: center; gap: 4px; margin-left: 6px; font-size: 11.5px; font-weight: 600; color: #f5a524; }
   .st.alert, .bcard.head .st.alert { color: #f5a524; font-weight: 600; }
   /* Behind stays grey on other branches; amber only on the checked-out one or the selected row. */
   .bcard:not(.head) .st.warn { color: var(--muted-foreground); }

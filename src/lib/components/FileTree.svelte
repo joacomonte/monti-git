@@ -1,11 +1,11 @@
 <!-- Files of the selected commit: only the changed ones, or the whole repo with changes highlighted. -->
 <script lang="ts">
   import { fade } from "svelte/transition";
-  import { Check, ChevronRight, ChevronsDownUp, Copy, Folder, FolderOpen, History, List, ListTree, SquareArrowOutUpRight, Sparkles, Square, SquareCheck, SquareMinus } from "@lucide/svelte";
+  import { Check, ChevronRight, ChevronsDownUp, Copy, Folder, FolderOpen, History, List, ListTree, LoaderCircle, Search, SquareArrowOutUpRight, Sparkles, Square, SquareCheck, SquareMinus, X } from "@lucide/svelte";
   import { api, WORKTREE_ID } from "$lib/api";
   import { Switch } from "$lib/components/ui/switch";
   import * as Tabs from "$lib/components/ui/tabs";
-  import { prefs, type FileNode, type RepoModel } from "$lib/model.svelte";
+  import { fileTree, prefs, type FileNode, type RepoModel } from "$lib/model.svelte";
   import CommitBox from "./CommitBox.svelte";
   import CommitDetails from "./CommitDetails.svelte";
   import DiscardButton from "./DiscardButton.svelte";
@@ -22,6 +22,36 @@
   let viewHeight = $state(0);
   let menu = $state<{ path: string; isFolder: boolean; deleted: boolean; x: number; y: number } | null>(null);
 
+  // Search: file names, lines (diff lines or whole files) or both. Lines run in git, debounced.
+  type SearchMode = "names" | "lines" | "both";
+  let query = $state("");
+  let mode = $state<SearchMode>(prefs.get("treeSearchMode", "both"));
+  let diffOnly = $state(prefs.get("treeSearchDiffOnly", true)); // only with "Show changes only": changed lines vs whole changed files
+  let lineHits = $state.raw<Record<string, number>>({});
+  let searchingLines = $state(false);
+  const words = $derived(query.trim().toLowerCase().split(/\s+/).filter(Boolean));
+  const searching = $derived(words.length > 0);
+  $effect(() => {
+    const q = query.trim(), wantsLines = mode !== "names", onlyDiff = diffOnly && !model.showAllFiles;
+    void model.treePaths; // new selection or tree mode: search again
+    lineHits = {};
+    if (!wantsLines || q.length < 2) { searchingLines = false; return; }
+    searchingLines = true;
+    let stale = false;
+    const timer = setTimeout(async () => {
+      const hits = await model.searchLines(q, onlyDiff).catch(() => ({}));
+      if (!stale) { lineHits = hits; searchingLines = false; }
+    }, 250);
+    return () => { stale = true; clearTimeout(timer); };
+  });
+  const nameMatches = (path: string) => words.every((w) => path.toLowerCase().includes(w));
+  const visibleTree = $derived(searching
+    ? fileTree(model.treePaths.filter((p) => (mode !== "lines" && nameMatches(p)) || (mode !== "names" && p in lineHits)))
+    : model.tree);
+
+  function setMode(value: SearchMode) { mode = value; prefs.set("treeSearchMode", value); }
+  function setDiffOnly(value: boolean) { diffOnly = value; prefs.set("treeSearchDiffOnly", value); }
+
   /** The tree flattened to the rows on screen (children of collapsed folders skipped; flat: every file, no folders). */
   const rows = $derived.by(() => {
     const out: { node: FileNode; depth: number }[] = [];
@@ -29,10 +59,10 @@
       for (const node of nodes) {
         if (flat && node.children) add(node.children, 0);
         else out.push({ node, depth });
-        if (!flat && node.children && model.expandedDirs.has(node.path)) add(node.children, depth + 1);
+        if (!flat && node.children && (searching || model.expandedDirs.has(node.path))) add(node.children, depth + 1);
       }
     };
-    add(model.tree, 0);
+    add(visibleTree, 0);
     return out;
   });
 
@@ -140,6 +170,26 @@
         hint="Throws away every uncommitted change, back to the last commit. New files get deleted too." />
     {/if}
   </div>
+  <div class="flex items-center gap-1.5 px-2 pb-1.5">
+    <label class="search">
+      {#if searchingLines}<LoaderCircle size={12} class="shrink-0 animate-spin" />{:else}<Search size={12} class="shrink-0" />{/if}
+      <input id="file-tree-search" placeholder={mode === "names" ? "Search file names" : mode === "lines" ? "Search lines" : "Search files and lines"}
+        bind:value={query} onkeydown={(e) => e.key === "Escape" && (query = "")} />
+      {#if query}<button id="file-tree-search-clear" title="Clear" onclick={() => (query = "")}><X size={12} /></button>{/if}
+    </label>
+    <div class="seg" role="radiogroup" id="file-tree-search-mode">
+      {#each [["names", "Names"], ["lines", "Lines"], ["both", "Both"]] as [value, label] (value)}
+        <button role="radio" aria-checked={mode === value} class:on={mode === value} id="file-tree-search-{value}" onclick={() => setMode(value as SearchMode)}>{label}</button>
+      {/each}
+    </div>
+    {#if mode !== "names" && !model.showAllFiles}
+      <div class="seg" role="radiogroup" id="file-tree-search-scope" title="Lines: only the ones added or removed here, or anywhere in the changed files">
+        <button role="radio" aria-checked={diffOnly} class:on={diffOnly} id="file-tree-search-diff" onclick={() => setDiffOnly(true)}>Diff</button>
+        <button role="radio" aria-checked={!diffOnly} class:on={!diffOnly} id="file-tree-search-whole" onclick={() => setDiffOnly(false)}>Whole file</button>
+      </div>
+    {/if}
+  </div>
+  {#if searching && !rows.length && !searchingLines}<span class="px-3 py-2 text-[12px] text-muted-foreground">No matches</span>{/if}
   <div class="flex-1 overflow-auto px-1.5 pb-2" id="file-tree" role="tree" bind:clientHeight={viewHeight}
     onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}>
     <div style:height="{rows.length * ROW}px" style:padding-top="{first * ROW}px" class="box-border">
@@ -198,6 +248,9 @@
           <span class="discard"><DiscardButton title="Discard file" id="discard-file-{node.path}" onconfirm={() => model.discardFile(node.path)}
             hint="Discard this file: throws away your changes to it, back to the last commit. Ej: you edited it by mistake." /></span>
         {/if}
+        {#if searching && lineHits[node.path]}
+          <span class="hits" title="{lineHits[node.path]} matching line{lineHits[node.path] === 1 ? '' : 's'}">{lineHits[node.path]}</span>
+        {/if}
         {#if model.counts[node.path]}
           {@const [added, removed] = model.counts[node.path]}
           <span class="flex shrink-0 gap-1 text-[10px] font-medium tabular-nums">
@@ -243,6 +296,13 @@
 
 <style>
   .file:hover { background: var(--quinary); }
+  .search { display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 7px; color: var(--tertiary); background: oklch(0.5 0 0 / 0.08); }
+  .search input { flex: 1; min-width: 0; font-size: 12px; color: var(--foreground); background: none; outline: none; }
+  .search button:hover { color: var(--foreground); }
+  .seg { display: flex; flex-shrink: 0; gap: 1px; padding: 2px; border-radius: 7px; background: oklch(0.5 0 0 / 0.08); }
+  .seg button { height: 22px; padding: 0 7px; border-radius: 5px; font-size: 11px; font-weight: 600; color: var(--muted-foreground); }
+  .seg button.on { color: var(--foreground); background: oklch(0.5 0 0 / 0.16); }
+  .hits { flex-shrink: 0; padding: 0 5px; border-radius: 99px; font-size: 10px; font-weight: 600; color: var(--primary); background: color-mix(in oklab, var(--primary) 16%, transparent); }
   .name-first { flex-shrink: 0; max-width: 75%; } /* flat list: the file name wins over its dimmed folder */
   /* Same look as DiscardButton's labeled state, so the actions on the right match. */
   .tool { display: flex; flex-shrink: 0; align-items: center; gap: 4px; height: 18px; padding: 0 7px; font-size: 10px; font-weight: 600; color: var(--muted-foreground); }

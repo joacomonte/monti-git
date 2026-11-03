@@ -102,6 +102,9 @@ export const api = {
   blame: (repo: string, path: string, rev: string | null) => invoke<Blame>("blame", { repo, path, rev }),
   loadChanges: (repo: string, base: string | null, target: string | null, all: boolean) =>
     invoke<Changes>("load_changes", { repo, base, target, all }),
+  /** Tree search by content: path -> matching lines. See search_lines in src-tauri/src/lib.rs. */
+  searchLines: (repo: string, base: string | null, target: string | null, query: string, paths: string[] | null, diffOnly: boolean) =>
+    invoke<Record<string, number>>("search_lines", { repo, base, target, query, paths, diffOnly }),
   loadDiff: (repo: string, path: string, base: string | null, target: string | null, group: string[], whole: boolean) =>
     invoke<FileDiff>("load_diff", { repo, path, base, target, group, whole }),
   branchStatus: (repo: string, refs: string[], base: string, targets: string[]) =>
