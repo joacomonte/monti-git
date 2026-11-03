@@ -1,7 +1,7 @@
 <!-- "Update from main" (UpdatePanel in Dashboard.swift): pick merge (recommended) or rebase, run it, then show the
      result. Conflicts abort cleanly and list the files; a rebase of a pushed branch offers the force push. -->
 <script lang="ts">
-  import { ArrowUpDown, CircleCheck, EyeOff, GitMerge, LoaderCircle, TriangleAlert } from "@lucide/svelte";
+  import { ArrowUpDown, CircleCheck, GitMerge, LoaderCircle, TriangleAlert } from "@lucide/svelte";
   import type { Card } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import { Button } from "$lib/components/ui/button";
@@ -68,11 +68,6 @@
       <ActionRow title="Rebase" detail={`As if you had created the branch today: your commits move on top of ${parentName}'s. Cleaner history, but your commits get rewritten.` + (isPushed ? " Since you already pushed, you'll need to force push after." : "")}
         icon={ArrowUpDown} color="#8b7bff" id="update-option-rebase" onclick={() => run(true)}
         example="your 4 commits get re-applied after {parentName}'s 3 new ones, as if you had branched off this morning. No merge commit." />
-      {#if !model.isUpdateDismissed(card)}
-        <ActionRow title="Hide this notice" detail="Not now. The number turns grey, and goes back to orange when {parentName} gets new changes." icon={EyeOff} grey
-          id="update-option-hide" onclick={() => { model.dismissUpdate(card); dismiss(); }}
-          example="you're in the middle of something and will update right before opening the PR." />
-      {/if}
     </div>
     <span class="px-2 text-[10.5px] text-tertiary">
       If you and a teammate changed the same lines, it stops and puts everything back as it was: nothing breaks.{#if !isCurrent} You don't need to switch branches for this.{/if}

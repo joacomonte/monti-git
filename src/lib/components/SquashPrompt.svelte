@@ -5,7 +5,7 @@
   import { untrack } from "svelte";
   import { fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
-  import { api, type Card } from "$lib/api";
+  import { allCards, api, type Card } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import Example from "./Example.svelte";
 
@@ -53,7 +53,7 @@
   const currentName = untrack(() => model.dashboard?.current ?? null);
   const dirtyFiles = untrack(() => {
     const d = model.dashboard;
-    const current = d ? [d.base, ...d.environments, ...d.pinned, ...d.features, ...d.old].find((c) => c && model.isCurrent(c.ref)) : null;
+    const current = d ? allCards(d).find((c) => model.isCurrent(c.ref)) : null;
     return current?.uncommitted?.files ?? 0;
   });
   const tip = untrack(() => card.last?.id ?? null);

@@ -135,7 +135,7 @@
     {/if}
     {#if model.isWorktreeSelected && model.changedOrder.length}
       <DiscardButton title="Discard all" label id="discard-all" onconfirm={() => model.discardAll()}
-        hint="Discard all: throws away every uncommitted change, back to the last commit. New files get deleted too." />
+        hint="Throws away every uncommitted change, back to the last commit. New files get deleted too." />
     {/if}
   </div>
   <div class="flex-1 overflow-auto px-1.5 pb-2" id="file-tree" role="tree" bind:clientHeight={viewHeight}

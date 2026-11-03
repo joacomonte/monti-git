@@ -57,7 +57,100 @@ pub fn already_contains(ours: &str, theirs: &str, repo: &Path) -> bool {
     out.status.success() && ok(&["rev-parse", &format!("{ours}^{{tree}}")], repo).is_some_and(|tree| tree.trim() == merged)
 }
 
+/// One git command the app ran, for the Logs panel: what, where, how it went and everything it printed.
+#[derive(Serialize, Clone)]
+pub struct LogEntry {
+    id: u64,
+    at: u64, // unix ms
+    repo: String,
+    args: Vec<String>,
+    ok: bool,
+    code: Option<i32>,
+    ms: u64,
+    stdout: String,
+    stderr: String,
+    write: bool, // changes the repo (checkout, pull, commit…), vs a read (log, rev-list, status…)
+    truncated: bool,
+}
+
+/// Session-only, newest last. Reads and changes kept apart so the hundreds of reads per refresh never push changes out.
+static LOG: std::sync::Mutex<(std::collections::VecDeque<LogEntry>, std::collections::VecDeque<LogEntry>)> =
+    std::sync::Mutex::new((std::collections::VecDeque::new(), std::collections::VecDeque::new()));
+static NEXT_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+const LOG_KEEP: usize = 500;
+
+// shortcut: classifies by subcommand (plus a few read-only flags), upgrade if a write shows up as a read or vice versa.
+fn is_write(args: &[&str]) -> bool {
+    let mut rest = args.iter().copied();
+    let sub = loop {
+        match rest.next() {
+            Some("-c" | "-C") => { rest.next(); }
+            Some(a) if a.starts_with('-') => {}
+            other => break other.unwrap_or_default(),
+        }
+    };
+    let rest: Vec<&str> = rest.collect();
+    let reads_only = |flags: &[&str]| rest.is_empty() || rest.iter().any(|a| flags.iter().any(|f| a == f || a.starts_with(&format!("{f}="))));
+    match sub {
+        "checkout" | "switch" | "pull" | "fetch" | "push" | "commit" | "merge" | "rebase" | "reset" | "apply" | "restore" | "clean"
+        | "cherry-pick" | "revert" | "update-ref" | "rm" | "add" | "mv" => true,
+        "branch" => !reads_only(&["--list", "--format", "-a", "-r", "--show-current", "--contains", "--merged", "--no-merged", "-v", "-vv"]),
+        "stash" => !matches!(rest.first(), Some(&"list" | &"show")),
+        "worktree" => matches!(rest.first(), Some(&"add" | &"remove" | &"prune")),
+        "tag" => !reads_only(&["--list", "-l", "--contains", "--points-at"]),
+        "remote" => matches!(rest.first(), Some(&"add" | &"remove" | &"rename" | &"set-url" | &"prune")),
+        _ => false,
+    }
+}
+
+fn record(args: &[&str], repo: &Path, started: std::time::Instant, out: &std::process::Output) {
+    let write = is_write(args);
+    let cap = if write { 256 * 1024 } else { 8 * 1024 }; // reads (whole logs, diffs) can be megabytes
+    let mut truncated = false;
+    let mut text = |bytes: &[u8]| {
+        let s = String::from_utf8_lossy(bytes);
+        if s.len() <= cap { return s.into_owned(); }
+        truncated = true;
+        let mut end = cap;
+        while !s.is_char_boundary(end) { end -= 1; }
+        s[..end].to_string()
+    };
+    let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
+    let entry = LogEntry {
+        id: NEXT_LOG.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64),
+        repo: repo.to_string_lossy().into_owned(),
+        args: args.iter().map(|a| a.to_string()).collect(),
+        ok: out.status.success(),
+        code: out.status.code(),
+        ms: started.elapsed().as_millis() as u64,
+        stdout,
+        stderr,
+        write,
+        truncated,
+    };
+    let mut log = LOG.lock().unwrap();
+    let list = if write { &mut log.0 } else { &mut log.1 };
+    list.push_back(entry);
+    if list.len() > LOG_KEEP { list.pop_front(); }
+}
+
+/// Commands logged after `since` (an id), oldest first.
+pub fn logs(since: u64) -> Vec<LogEntry> {
+    let log = LOG.lock().unwrap();
+    let mut out: Vec<LogEntry> = log.0.iter().chain(log.1.iter()).filter(|e| e.id > since).cloned().collect();
+    out.sort_by_key(|e| e.id);
+    out
+}
+
 fn spawn(args: &[&str], repo: &Path, input: Option<&str>) -> Result<std::process::Output, String> {
+    let started = std::time::Instant::now();
+    let out = spawn_raw(args, repo, input)?;
+    record(args, repo, started, &out);
+    Ok(out)
+}
+
+fn spawn_raw(args: &[&str], repo: &Path, input: Option<&str>) -> Result<std::process::Output, String> {
     let mut command = Command::new("git");
     command
         .args(args)
@@ -352,5 +445,23 @@ mod tests {
         let commits = super::log(repo.path(), None, true, Some("a.txt"), 50).unwrap();
         assert_eq!(commits.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["a 2", "a 1"]);
         assert_eq!(commits[0].parents, [commits[1].id.clone()]); // rewritten past "b only"
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::is_write;
+
+    #[test]
+    fn classifies_reads_and_changes() {
+        assert!(is_write(&["checkout", "main"]));
+        assert!(is_write(&["-c", "core.quotePath=false", "push", "--force-with-lease"]));
+        assert!(is_write(&["branch", "-d", "x"]));
+        assert!(is_write(&["stash", "push", "-u"]));
+        assert!(!is_write(&["-c", "log.showSignature=false", "log", "--branches"]));
+        assert!(!is_write(&["branch", "--format=%(refname)"]));
+        assert!(!is_write(&["branch"]));
+        assert!(!is_write(&["stash", "list"]));
+        assert!(!is_write(&["rev-list", "--count", "a..b"]));
     }
 }

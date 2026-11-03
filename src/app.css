@@ -97,16 +97,12 @@
   .chip:hover { transform: translateY(-1px); }
   .repo svg:first-child, .file img { transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1); }
   .repo:hover svg:first-child, .file:hover img { transform: translateX(2px); }
-  .enter-stagger > * { animation: enter 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-  .enter-stagger > :nth-child(2) { animation-delay: 30ms; } .enter-stagger > :nth-child(3) { animation-delay: 60ms; }
-  .enter-stagger > :nth-child(4) { animation-delay: 90ms; } .enter-stagger > :nth-child(n + 5) { animation-delay: 120ms; }
   .enter { animation: enter 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
   .enter-fade { animation: enter-fade 0.25s var(--ease) both; }
-  /* Menus and dialogs pop in; panes slide in from where they open; numbers that change fade in. */
+  /* Menus and dialogs pop in; panes slide in from where they open. */
   .enter-pop { animation: enter-pop 0.24s var(--ease) both; }
   .enter-up { animation: enter-up 0.3s var(--ease) both; }
   .enter-side { animation: enter-side 0.3s var(--ease) both; }
-  .num-in { display: inline-block; animation: enter-up 0.3s var(--ease) both; }
 }
 @keyframes enter-pop { from { opacity: 0; transform: translateY(-4px) scale(0.96); } }
 @keyframes enter-up { from { opacity: 0; transform: translateY(8px); } }

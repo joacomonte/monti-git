@@ -1,7 +1,8 @@
 // App state, ported from RepoModel in ContentView.swift. Prefs keep the Swift UserDefaults key names.
 import { open as pickFolders } from "@tauri-apps/plugin-dialog";
+import { FILTERS, type BranchFilter } from "$lib/branchFilters";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { api, WORKTREE_ID, type Card, type Commit, type Dashboard, type DiffRow, type Row, type WipMode } from "./api";
+import { allCards, api, featureCards, WORKTREE_ID, type Card, type Commit, type Dashboard, type DiffRow, type Row, type WipMode } from "./api";
 
 export const prefs = {
   get<T>(key: string, fallback: T): T {
@@ -43,11 +44,10 @@ export function fileTree(paths: Iterable<string>, prefix = ""): FileNode[] {
 const PAGE = 300;
 
 /** What a repo looked like when we left it, so coming back shows it at once while `reload()` refreshes it. */
-/** `view`: where the user was (dashboard or graph, commit, file, focus), restored on coming back to compare across repos. */
+/** `view`: where the user was (tab, commit, file, focus), restored on coming back to compare across repos. */
 type Snapshot = Pick<RepoModel, "commits" | "rows" | "names" | "limit" | "hasMore" | "dashboard"> & {
   view: {
     showGraph: boolean; selectedId: string | null; fileFilter: string | null; diffOpen: boolean; focus: string[] | null; historyPath: string | null;
-    highlightChain: Set<string>;
   };
 };
 
@@ -62,7 +62,8 @@ export class RepoModel {
   hasMore = $state(false);
   isLoading = $state(false);
   onlyMine = $state(prefs.get("onlyMine", true)); // hide other people's branches; on by default
-  branchesOnly = $state(prefs.get("branchesOnly", false)); // one row per branch tip, commits collapsed: a quick look
+  branchesOnly = $state(prefs.get("branchesOnly", false));
+  graphFilter = $state<BranchFilter>(prefs.get("graphFilter", "all")); // the graph's quick filter (Shipped, Not merged…) // one row per branch tip, commits collapsed: a quick look
   focus = $state.raw<string[] | null>(null); // "Only this branch": the branch and its base, the rest of the graph hidden
   historyPath = $state<string | null>(null); // a file's history: the graph shows only the commits that touched it
   private cache = new Map<string, Snapshot>();
@@ -85,15 +86,14 @@ export class RepoModel {
 
   open(path: string) {
     if (this.repo && this.repo !== path && !this.error) {
-      const { commits, rows, names, limit, hasMore, dashboard, showGraph, fileFilter, diffOpen, focus, historyPath, highlightChain } = this;
+      const { commits, rows, names, limit, hasMore, dashboard, showGraph, fileFilter, diffOpen, focus, historyPath } = this;
       const selectedId = this.selected ? commits[this.selected[0]].id : null;
-      this.cache.set(this.repo, { commits, rows, names, limit, hasMore, dashboard, view: { showGraph, selectedId, fileFilter, diffOpen, focus, historyPath, highlightChain } });
+      this.cache.set(this.repo, { commits, rows, names, limit, hasMore, dashboard, view: { showGraph, selectedId, fileFilter, diffOpen, focus, historyPath } });
     }
     this.repo = path;
     prefs.set("lastRepo", path); // reopened on next launch
     this.selected = null;
     this.error = null;
-    this.highlightChain = new Set();
     this.focus = null;
     this.historyPath = null;
     this.syncStatus = "";
@@ -109,13 +109,12 @@ export class RepoModel {
     this.hasMore = cached?.hasMore ?? false;
     this.dashboard = cached?.dashboard ?? null;
     // Same view as when we left this repo, shown from the cache right away while reload() refreshes it in the
-    // background. First visit: the dashboard.
+    // background. First visit: the graph.
     const view = cached?.view;
-    this.showGraph = view?.showGraph ?? false;
+    this.showGraph = view?.showGraph ?? true;
     if (view) {
       this.focus = view.focus;
       this.historyPath = view.historyPath;
-      this.highlightChain = view.highlightChain;
       this.fileFilter = view.fileFilter;
       this.diffOpen = view.diffOpen;
     }
@@ -141,7 +140,8 @@ export class RepoModel {
     const preferred = prefs.get<Record<string, string>>("mainBranches", {})[repo] ?? null;
     try {
       this.historyEnvironments = this.environmentRefs();
-      const history = await api.loadHistory(repo, this.limit, this.onlyMine, this.branchesOnly, preferred, this.historyEnvironments, this.focus ?? [], this.historyPath);
+      this.historyBranches = this.filteredRefs();
+      const history = await api.loadHistory(repo, this.limit, this.onlyMine, this.branchesOnly, preferred, this.historyEnvironments, this.focus ?? [], this.historyPath, this.historyBranches);
       if (this.repo !== repo) return; // switched repos meanwhile: the newer load owns the state
       this.commits = history.commits;
       this.rows = history.rows;
@@ -180,13 +180,8 @@ export class RepoModel {
     return name && name !== "uncommitted changes" ? name : null;
   }
 
-  // Last choice on the "Only this branch" toggle: opening a branch from the dashboard follows it.
-  focusOnOpen = $state(prefs.get("focusOnOpen", true));
-
-  /** The header toggle: flips the focus and remembers it for the next branch opened from the dashboard. */
+  /** The header toggle: "Only this branch" on/off. */
   async toggleFocus() {
-    this.focusOnOpen = this.focus == null;
-    prefs.set("focusOnOpen", this.focusOnOpen);
     await this.setFocus(this.focus ? null : this.focusTarget);
   }
 
@@ -203,6 +198,13 @@ export class RepoModel {
     this.setShowGraph(true);
     this.limit = PAGE;
     await this.reload();
+  }
+
+  setGraphFilter(filter: BranchFilter) {
+    this.graphFilter = filter;
+    prefs.set("graphFilter", filter);
+    this.limit = PAGE;
+    this.reload();
   }
 
   setBranchesOnly(on: boolean) {
@@ -344,63 +346,17 @@ export class RepoModel {
 
   dashboard = $state.raw<Dashboard | null>(null);
   isLoadingDashboard = $state(false);
-  showGraph = $state(false); // every launch opens on the dashboard
-  highlightChain = $state.raw(new Set<string>()); // commits of the branch shown from the dashboard: its graph line glows
-  dismissedUpdates = $state.raw<Record<string, string>>({}); // branch -> parent tip when its "new commits" notice was hidden
+  showGraph = $state(true); // the graph is the app; the Dashboard tab is a placeholder for what comes next
   scrollRow = $state<{ row: number } | null>(null); // table row to bring into view; a new object every request
 
   setShowGraph(value: boolean) {
     this.showGraph = value;
-    if (!value) this.highlightChain = new Set();
   }
 
   /** A remote-only base ("origin/main") counts as current when its local twin is checked out. */
   isCurrent(name: string) {
     const current = this.dashboard?.current;
     return current != null && (name === current || name.endsWith("/" + current));
-  }
-
-  isUpdateDismissed(card: Card) {
-    return card.parentTip != null && this.dismissedUpdates[card.local] === card.parentTip;
-  }
-
-  dismissUpdate(card: Card) {
-    if (!this.repo || !card.parentTip) return;
-    this.dismissedUpdates = { ...this.dismissedUpdates, [card.local]: card.parentTip };
-    prefs.set("dismissedUpdates", { ...prefs.get("dismissedUpdates", {}), [this.repo]: this.dismissedUpdates });
-  }
-
-  /** Base, environments, pins and hide/show are saved per repo; changing one only reloads the dashboard. */
-  private savePref<T>(key: string, value: T) {
-    if (!this.repo) return;
-    prefs.set(key, { ...prefs.get(key, {}), [this.repo]: value });
-    this.loadDashboard();
-  }
-
-  get pinnedBranches(): string[] {
-    return this.repo ? (prefs.get<Record<string, string[]>>("pinnedBranches", {})[this.repo] ?? []) : [];
-  }
-
-  togglePin(branch: string) {
-    const pins = this.pinnedBranches;
-    this.savePref("pinnedBranches", pins.includes(branch) ? pins.filter((p) => p !== branch) : [...pins, branch]);
-  }
-
-  isEnvironment(local: string) {
-    return this.dashboard?.environments.some((c) => c.local === local) ?? false;
-  }
-
-  /** Saves the whole list on the first change, so from then on this repo's environments are exactly the user's pick. */
-  toggleEnvironment(local: string) {
-    const list = this.dashboard?.environments.map((c) => c.local) ?? [];
-    this.savePref("environmentBranches", list.includes(local) ? list.filter((l) => l !== local) : [...list, local]);
-  }
-
-  /** Dashboard feature pref: shown in Recent activity or Hidden. */
-  setFeatureOld(branch: string, old: boolean) {
-    if (!this.repo) return;
-    const states = prefs.get<Record<string, Record<string, string>>>("featureStates", {})[this.repo] ?? {};
-    this.savePref("featureStates", { ...states, [branch]: old ? "old" : "active" });
   }
 
   /** Same "mainBranches" store as the graph's base: the whole repo reloads. */
@@ -415,7 +371,6 @@ export class RepoModel {
     if (!repo) return;
     const mine = <T>(key: string, fallback: T) => prefs.get<Record<string, T>>(key, {})[repo] ?? fallback;
     this.isLoadingDashboard = true;
-    this.dismissedUpdates = mine("dismissedUpdates", {});
     const dashboard = await api.loadDashboard(repo, mine<string | null>("mainBranches", null), mine("pinnedBranches", []),
       mine<string[] | null>("environmentBranches", null), mine("featureStates", {}));
     if (this.repo !== repo) return;
@@ -425,38 +380,22 @@ export class RepoModel {
     this.isLoadingDashboard = false;
     // "My branches only" keeps the environments, which come from the dashboard: reload once if they arrived late or changed.
     if (this.onlyMine && this.environmentRefs().join() !== this.historyEnvironments.join()) this.reload();
+    // Same for the graph's quick filter: which branches match comes from the dashboard.
+    else if (this.filteredRefs().join() !== this.historyBranches.join()) this.reload();
   }
 
   private dashboardRepo: string | null = null; // whose `dashboard` that is: compare only within one repo
   private historyEnvironments: string[] = [];
+  private historyBranches: string[] = [];
+  /** The graph's quick filter: refs of the branches that match; none = no filter. */
+  private filteredRefs() {
+    const d = this.dashboard;
+    const filter = FILTERS.find((f) => f.id === this.graphFilter);
+    if (!d || !filter || filter.id === "all" || this.historyPath) return []; // a file's history ignores it (its chips hide)
+    return featureCards(d).filter((card) => filter.matches(card, d.base?.ref ?? null)).map((card) => card.ref);
+  }
   private environmentRefs() {
     return this.dashboard?.environments.map((c) => c.ref) ?? [];
-  }
-
-  /** Scrolls the graph to a branch's tip (a remote-only base matches its origin/ ref). */
-  reveal(name: string) {
-    this.setShowGraph(true);
-    const local = /^(origin|upstream)\//.test(name) ? name.slice(name.indexOf("/") + 1) : name;
-    const index = this.commits.findIndex((c) => c.refs.some((r) => r === name || r === local || r === "HEAD -> " + local));
-    const row = this.visible.findIndex(([first, last]) => first <= index && index <= last);
-    if (index >= 0 && row >= 0) this.scrollRow = { row };
-    return index >= 0 ? row : -1;
-  }
-
-  /** Dashboard card: opens the graph at the branch tip with the branch's own line lit up (first-parent commits
-   *  from the tip down to where it was cut). Cards without a cut point (main, environments) just scroll there. */
-  async showInGraph(card: Card) {
-    const repo = this.repo;
-    if (!repo) return;
-    const chain = card.squashBase ? await api.branchChain(repo, card.squashBase, card.ref) : [];
-    // Only this branch and its base, unless the user turned that off last time (the toggle in the header).
-    if (this.focusOnOpen) await this.setFocus(card.ref, card.parent ?? this.dashboard?.base?.ref ?? null);
-    else if (this.focus) await this.setFocus(null);
-    if (card.last) await this.loadUntil(card.last.id);
-    if (this.repo !== repo) return;
-    const row = this.reveal(card.ref);
-    if (row >= 0) this.select(this.visible[row]);
-    this.highlightChain = new Set(chain);
   }
 
   /** An older commit may sit past the loaded page: keep loading history until it shows up (or there is no more). */
@@ -491,7 +430,7 @@ export class RepoModel {
     this.scrollRow = { row };
   }
 
-  /** Dashboard "uncommitted changes" banner: opens the graph on the working-tree row, with its files. */
+  /** Opens the graph on the working-tree row, with its files. */
   revealWorktree() {
     this.setShowGraph(true);
     const row = this.visible.findIndex(([first]) => this.commits[first].id === WORKTREE_ID);
@@ -564,13 +503,18 @@ export class RepoModel {
   syncFailure = $state<{ title: string; reasons: string[]; log: string } | null>(null); // stays until dismissed
   pendingCheckout = $state<string | null>(null); // dirty tree: a dialog asks what to do with the changes
   pendingChangeCount = $state(0);
+  /** The action running (or just finished), for the bottom toast (ActionToast): what it is, what it does, how it went. */
+  toast = $state<{ id: number; title: string; details: string[]; state: "busy" | "done" | "failed"; result: string; started: number } | null>(null);
 
   /** Runs one git action with the shared busy flag and status line, then reloads. True if it worked. */
-  private async act(busy: string, failed: string, work: (repo: string) => Promise<string>) {
+  private async act(busy: string, failed: string, work: (repo: string) => Promise<string>, details: string[] = []) {
     const repo = this.repo;
     if (!repo || this.isSyncing) return false;
     this.isSyncing = true;
     this.syncStatus = busy;
+    this.actStarted = Date.now();
+    const toast = { id: Date.now(), title: busy, details, state: "busy" as const, result: "", started: Date.now() };
+    this.toast = toast;
     let done = false;
     try {
       this.syncStatus = await work(repo);
@@ -579,6 +523,10 @@ export class RepoModel {
       this.syncStatus = `${failed}: ${String(error).split("\n")[0] || "unknown error"}`;
     }
     this.isSyncing = false;
+    if (this.toast?.id === toast.id) {
+      this.toast = { ...toast, state: done ? "done" : "failed", result: this.syncStatus };
+      setTimeout(() => { if (this.toast?.id === toast.id) this.toast = null; }, done ? 3500 : 9000);
+    }
     if (this.repo === repo) this.reload();
     return done;
   }
@@ -587,8 +535,9 @@ export class RepoModel {
 
   activity = $state<Activity[]>(prefs.get("activity", []));
 
+  private actStarted = 0; // start of the last act()/rewrite(), stamped on its Activity entry
   private record(repo: string, text: string, undo?: Undo) {
-    this.activity = [{ at: Date.now(), repo, text, undo }, ...this.activity].slice(0, 50);
+    this.activity = [{ at: Date.now(), started: this.actStarted || undefined, repo, text, undo }, ...this.activity].slice(0, 50);
     prefs.set("activity", this.activity);
   }
 
@@ -601,7 +550,7 @@ export class RepoModel {
     const done = await this.act("Undoing…", "Undo failed", async (repo) => {
       await api.moveBranch(repo, undo.branch, undo.expected, undo.target);
       return `Undone: ${entry.text}`;
-    });
+    }, [`Moving ${undo.branch} back to ${undo.target.slice(0, 7)}`, "Only if it hasn't moved since and isn't on the remote"]);
     if (!done) return;
     this.activity = this.activity.map((e) => (e === entry ? { ...e, undone: true } : e));
     prefs.set("activity", this.activity);
@@ -626,7 +575,7 @@ export class RepoModel {
         this.syncFailure = { title: "Sync failed", reasons: ["Couldn't reach the remote or run git."], log: String(error) };
         throw error;
       }
-    })) this.record(repo!, this.syncStatus);
+    }, ["Fetching every remote", "Fast-forwarding branches that are behind", "Skipping anything that isn't a clean fast-forward"])) this.record(repo!, this.syncStatus);
   }
 
   /** Quiet background sync (every few minutes and on focus): same safe fast-forwards as `sync`, without the status
@@ -670,7 +619,14 @@ export class RepoModel {
   async runCheckout(name: string, wip: WipMode | null) {
     this.pendingCheckout = null;
     const repo = this.repo, previous = this.dashboard?.current;
-    if (!(await this.act(`Checking out ${name}…`, "Checkout failed", (repo) => api.checkout(repo, name, wip)))) return;
+    if (!(await this.act(`Checking out ${name}…`, "Checkout failed", (repo) => api.checkout(repo, name, wip), [
+      ...(wip === "shelve" ? ["Shelving your changes for the branch you're leaving"] : wip === "commit" ? ["Saving your changes as a WIP commit on the branch you're leaving"]
+        : wip === "carry" ? ["Stashing your changes to bring them along"] : []),
+      "Fetching from origin",
+      `Switching to ${name}`,
+      "Fast-forwarding it to its latest (never merges)",
+      ...(wip === "carry" ? ["Applying your changes on it"] : []),
+    ]))) return;
     const back = previous && previous !== name.replace(/^(origin|upstream)\//, "");
     this.record(repo!, `Checked out ${name}`, back ? { kind: "checkout", branch: previous } : undefined);
   }
@@ -678,14 +634,16 @@ export class RepoModel {
   /** Fetch + fast-forward one branch without switching to it. */
   async pull(name: string) {
     const repo = this.repo;
-    if (await this.act(`Pulling ${name}…`, "Pull failed", (repo) => api.pull(repo, name))) this.record(repo!, this.syncStatus);
+    if (await this.act(`Pulling ${name}…`, "Pull failed", (repo) => api.pull(repo, name),
+      ["Fetching from origin", `Fast-forwarding ${name}, without switching`, "Never merges or overwrites"])) this.record(repo!, this.syncStatus);
   }
 
   /** Shipped branch clean-up: local only, or local + its remote. Undo brings back the local one. */
   async deleteBranch(name: string, remote: boolean) {
     const repo = this.repo;
     const tip = repo ? await api.branchTip(repo, name) : null;
-    if (!(await this.act(`Deleting ${name}…`, "Delete failed", (repo) => api.deleteBranch(repo, name, remote)))) return;
+    if (!(await this.act(`Deleting ${name}…`, "Delete failed", (repo) => api.deleteBranch(repo, name, remote),
+      [`Deleting the local branch (git refuses if it isn't merged)`, ...(remote ? [`Deleting origin/${name}`] : [])]))) return;
     this.record(repo!, this.syncStatus, tip ? { kind: "move", branch: name, expected: null, target: tip } : undefined);
   }
 
@@ -693,6 +651,7 @@ export class RepoModel {
   private async rewrite(branch: string, text: string, work: (repo: string) => Promise<unknown>) {
     const repo = this.repo;
     if (!repo) return;
+    this.actStarted = Date.now();
     const before = await api.branchTip(repo, branch);
     try {
       await work(repo);
@@ -706,7 +665,8 @@ export class RepoModel {
   /** "Start feature": new branch from an up-to-date `base`, checked out. False if git refused (status line says why). */
   async startFeature(name: string, base: string, wip: WipMode | null) {
     const repo = this.repo, previous = this.dashboard?.current;
-    const done = await this.act(`Creating ${name}…`, "Couldn't create the branch", (repo) => api.startFeature(repo, name, base, wip));
+    const done = await this.act(`Creating ${name}…`, "Couldn't create the branch", (repo) => api.startFeature(repo, name, base, wip),
+      [`Bringing ${base} up to date with origin`, `Creating ${name} from it`, `Checking out ${name}`]);
     if (done) this.record(repo!, `Started ${name} from ${base}`, previous ? { kind: "checkout", branch: previous } : undefined);
     return done;
   }
@@ -766,7 +726,7 @@ export class RepoModel {
       const status = await api.commit(repo, message, push);
       if (branch) after = await api.branchTip(repo, branch);
       return status;
-    });
+    }, ["Committing what's staged", ...(push ? [`Pushing ${branch ?? "the branch"} to origin`] : [])]);
     if (done) {
       const subject = message.split("\n")[0];
       // Undo keeps the changes (staged); none once pushed: that would rewrite shared history.
@@ -791,17 +751,16 @@ export class RepoModel {
 
 /** Puts things back: switch to the branch you were on, or move a branch back (`expected` null: recreate it). */
 type Undo = { kind: "checkout"; branch: string } | { kind: "move"; branch: string; expected: string | null; target: string };
-export type Activity = { at: number; repo: string; text: string; undo?: Undo; undone?: boolean };
+export type Activity = { at: number; started?: number; repo: string; text: string; undo?: Undo; undone?: boolean }; // started: when its git commands began (Logs panel groups them)
 
 /** System notifications for what changed between two loads of the same repo's dashboard; transitions only, so each
  *  event notifies once: a branch starts having conflicts, your branch's remote gets commits you don't have,
  *  your branch's base gets new ones. */
 async function notifyChanges(repo: string, before: Dashboard, after: Dashboard) {
-  const cards = (d: Dashboard) => [d.base, ...d.environments, ...d.pinned, ...d.features, ...d.old].filter((c): c is Card => c != null);
-  const old = new Map(cards(before).map((c) => [c.ref, c]));
+  const old = new Map(allCards(before).map((c) => [c.ref, c]));
   const name = repo.split(/[\\/]/).pop();
   const messages: string[] = [];
-  for (const card of cards(after)) {
+  for (const card of allCards(after)) {
     const was = old.get(card.ref);
     if (!was) continue;
     if (card.conflicts.length && !was.conflicts.length) messages.push(`${card.local} now conflicts with its remote (${card.conflicts.length} files)`);

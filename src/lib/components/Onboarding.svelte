@@ -19,7 +19,7 @@
 
   function finish(list = added) {
     model.onboarding = false;
-    model.setShowGraph(false);
+    model.setShowGraph(true);
     if (!model.repo && list.length) model.open((list.find((r) => model.favorites.includes(r.path)) ?? list[0]).path);
   }
 

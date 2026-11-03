@@ -1,4 +1,4 @@
-// Where a feature's work stands across the environments, for the dashboard's quick filters and the card's "Shipped".
+// Where a feature's work stands across the environments, for the graph's quick filters and its "Finished" status.
 // `promotion` holds, per target (environments + base), how many of its own commits haven't reached it yet.
 import type { Card } from "$lib/api";
 

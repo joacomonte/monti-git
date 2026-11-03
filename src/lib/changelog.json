@@ -1,5 +1,18 @@
 [
   {
+    "version": "1.0.0",
+    "changes": [
+      { "kind": "new", "title": "Logs", "detail": "Top right: every git command the app ran, with its output, filters (changes, reads, errors, repo) and Undo for your actions. While something runs, a small progress toast shows the steps and then tucks itself into Logs.", "demo": "logs" },
+      { "kind": "new", "title": "Quick actions on hover", "detail": "Hover \"Uncommitted changes\" for Commit and Amend, or a branch row for Copy: branch name, hash or metadata for your AI agent.", "demo": "quick-actions" },
+      { "kind": "new", "title": "Branch cards", "detail": "In Commits collapsed every branch is a card of the same height with its status inside: behind, finished, PR, \"merged into qa\". A placeholder holds the space while it loads, so nothing jumps.", "demo": "branch-cards" },
+      { "kind": "improved", "title": "The graph is the app", "detail": "The Dashboard is gone; the graph opens by default and its branch menu (click or right-click a branch) has Check out, Pull, New branch, PR, Squash and Copy." },
+      { "kind": "improved", "title": "Calmer colors", "detail": "Lines and cards are grey except the branch you're on, which gets a solid gradient card. A new branch's line fades into its color where it forks." },
+      { "kind": "improved", "title": "Only this branch, when you need it", "detail": "It appears when you open a branch's commits, with a floating chip on top to go back where you were." },
+      { "kind": "improved", "title": "Less noise", "detail": "Filters with 0 branches hide, tooltips that repeated the button are gone, and the sidebar footer has the version and GitHub." },
+      { "kind": "fixed", "title": "Branch menu actions", "detail": "Check out and other actions from the branch menu sometimes did nothing; they run now." }
+    ]
+  },
+  {
     "version": "0.4.0",
     "changes": [
       { "kind": "new", "title": "Commit message by your AI agent", "detail": "Right-click \"Uncommitted changes\" or use \"Message for AI\" next to Commit: pick a new commit, amend the last one (keeping or rewriting its message) or squash the branch into one, choose how long, and copy a prompt that follows your repo's conventions.", "demo": "ai-message" },

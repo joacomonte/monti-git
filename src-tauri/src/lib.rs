@@ -151,7 +151,7 @@ struct History {
 /// `base`), nothing else, not even HEAD; wins over `only_mine`. `path`: only the commits that touched that file.
 fn load_history(
     repo: String, limit: usize, only_mine: bool, branches_only: bool, preferred: Option<String>, environments: Vec<String>, focus: Vec<String>,
-    path: Option<String>,
+    path: Option<String>, branches: Vec<String>,
 ) -> Result<History, String> {
     let repo = Path::new(&repo);
     let main = git::main_ref(repo, preferred.as_deref());
@@ -177,7 +177,12 @@ fn load_history(
         }
         commits
     } else {
-        let mut refs = only_mine.then(|| git::my_branches(repo).into_iter().chain(main.clone()).chain(environments).collect::<Vec<_>>());
+        // A quick filter (Shipped, Not merged…): just those branches, plus the base and the environments as the spine.
+        let mut refs = if !branches.is_empty() {
+            Some(branches.into_iter().chain(main.clone()).chain(environments).collect::<Vec<_>>())
+        } else {
+            only_mine.then(|| git::my_branches(repo).into_iter().chain(main.clone()).chain(environments).collect::<Vec<_>>())
+        };
         // Branches only: just the commits a branch or tag points at, each linked to the next one down (rewritten parents).
         if branches_only && path.is_none() {
             let all = ["--branches", "--remotes", "--tags"].map(String::from).to_vec();
@@ -288,11 +293,16 @@ fn load_dashboard(
     dashboard::load(Path::new(&repo), preferred.as_deref(), &pinned, environments.as_deref(), &states)
 }
 
-/// First-parent commits of a branch from its tip down to where it was cut (`base`), for the graph highlight.
+/// Behind/merged facts for branches the dashboard has no card for, only the ones visible in the graph.
 #[tauri::command(async)]
-fn branch_chain(repo: String, base: String, reference: String) -> Vec<String> {
-    let log = git::run(&["rev-list", "--first-parent", &format!("{base}..{reference}")], Path::new(&repo)).unwrap_or_default();
-    log.lines().map(String::from).chain([base]).collect()
+fn branch_status(repo: String, refs: Vec<String>, base: String, targets: Vec<String>) -> Vec<dashboard::Lite> {
+    dashboard::lite(Path::new(&repo), &refs, &base, &targets)
+}
+
+/// The Logs panel: git commands run since `since` (an id), with their output.
+#[tauri::command(async)]
+fn git_logs(since: u64) -> Vec<git::LogEntry> {
+    git::logs(since)
 }
 
 // Actions that change the repo (see actions.rs). Errors come back as git's stderr.
@@ -320,11 +330,6 @@ fn pull(repo: String, name: String) -> Result<String, String> {
 #[tauri::command(async)]
 fn delete_branch(repo: String, branch: String, remote: bool) -> Result<String, String> {
     actions::delete_branch(&branch, remote, Path::new(&repo))
-}
-
-#[tauri::command(async)]
-fn update_prompt(repo: String, branch: String) -> Result<String, String> {
-    actions::update_prompt(&branch, Path::new(&repo))
 }
 
 #[tauri::command(async)]
@@ -406,8 +411,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![list_repos, load_history, load_changes, load_diff, load_dashboard, branch_chain,
-            sync, changed_file_count, checkout, pull, update_prompt, delete_branch, update_branch, force_push, discard_file, discard_all, discard_hunk,
+        .invoke_handler(tauri::generate_handler![list_repos, load_history, load_changes, load_diff, load_dashboard, branch_status, git_logs,
+            sync, changed_file_count, checkout, pull, delete_branch, update_branch, force_push, discard_file, discard_all, discard_hunk,
             stage, unstage, last_commit_message, commit, is_repo, open_file, search_commits, commit_places, commit_info, commit_patch, blame, move_branch, branch_tip, base_status, start_feature])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

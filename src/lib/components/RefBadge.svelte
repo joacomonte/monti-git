@@ -4,8 +4,9 @@
   import { CircleCheck, Cloud, GitBranch, Laptop, Tag } from "@lucide/svelte";
 
   // onclick: the pill becomes a button (with hover feedback) that opens the branch's options.
-  type Props = { ref: string; isSynced?: boolean; color?: string; onclick?: (e: MouseEvent) => void };
-  let { ref, isSynced = false, color = "var(--primary)", onclick }: Props = $props();
+  // chipsOnly: just the Checked out / Only local / cloud chips (the name is shown elsewhere, e.g. the collapsed branch card).
+  type Props = { ref: string; isSynced?: boolean; color?: string; onclick?: (e: MouseEvent) => void; oncontextmenu?: (e: MouseEvent) => void; chipsOnly?: boolean };
+  let { ref, isSynced = false, color = "var(--primary)", onclick, oncontextmenu, chipsOnly = false }: Props = $props();
   // Clicking the pill again closes its menu: keep the window's "mousedown closes menus" from closing it first.
   const stop = (e: MouseEvent) => e.stopPropagation();
   const isHead = $derived(ref.startsWith("HEAD -> "));
@@ -20,19 +21,18 @@
 </script>
 
 <span class="group">
-  <svelte:element this={onclick ? "button" : "span"} class="badge" class:head={isHead} class:clickable={onclick} style:--lane={color} id="ref-badge-{ref}" role={onclick ? "button" : undefined} {onclick} onmousedown={onclick ? stop : undefined}>
+  {#if !chipsOnly}
+  <svelte:element this={onclick ? "button" : "span"} class="badge" class:head={isHead} class:clickable={onclick} style:--lane={color} id="ref-badge-{ref}" role={onclick ? "button" : undefined} {onclick} {oncontextmenu} onmousedown={onclick ? stop : undefined}>
     <Icon size={12} strokeWidth={2.5} class="shrink-0 opacity-80" />
     <span class="truncate">{label}</span>
-  </svelte:element>
-  {#if isHead}
-    <span class="where current" title="The branch you're on: commits and changes go here."><CircleCheck size={11} strokeWidth={2.5} />Checked out</span>
-  {/if}
-  {#if !isTag}
-    {#if isRemote || isSynced}
-      <span class="where origin" title={isSynced ? `On ${remoteName} (the server) too, at this same commit: nothing to push or pull.` : `On ${remoteName} (the server) at this commit.`}><Cloud size={12} strokeWidth={2.5} /></span>
-    {:else}
-      <span class="where local" title="Only on this computer at this commit: not pushed yet, or the server has a different version."><Laptop size={11} strokeWidth={2.5} />Only local</span>
+    <!-- On the server at this commit: a small cloud inside the pill (the collapsed card draws its own). -->
+    {#if !isTag && (isRemote || isSynced)}
+      <span class="cloud" title={isSynced ? `On ${remoteName} (the server) too, at this same commit: nothing to push or pull.` : `On ${remoteName} (the server) at this commit.`}><Cloud size={12} strokeWidth={2.5} /></span>
     {/if}
+  </svelte:element>
+  {/if}
+  {#if !isTag && !isRemote && !isSynced}
+    <span class="where local" title="Only on this computer at this commit: not pushed yet, or the server has a different version."><Laptop size={11} strokeWidth={2.5} />Only local</span>
   {/if}
 </span>
 
@@ -44,16 +44,15 @@
     font-size: 11.5px; font-weight: 700; color: var(--tint); background: color-mix(in oklab, var(--tint) 14%, transparent);
     box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tint) 35%, transparent);
   }
-  .origin { --tint: var(--muted-foreground); width: 22px; justify-content: center; padding: 0; } /* grey, icon only: nothing to do */
-  .current { --tint: #34c77b; }
+  .cloud { display: flex; flex-shrink: 0; margin-left: 2px; opacity: 0.6; }
   .local { --tint: #f5a524; } /* amber: work that only exists here */
   .badge {
     display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex-shrink: 1;
     padding: 2px 6px; border-radius: 999px; font-size: 13px; font-weight: 600; white-space: nowrap;
     /* Soft tint of the line color; text mixed toward the foreground so it stays readable. */
-    color: color-mix(in oklab, var(--lane) 35%, var(--foreground));
-    background: color-mix(in oklab, var(--lane) 16%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--lane) 28%, transparent);
+    color: color-mix(in oklab, var(--lane) 25%, var(--foreground));
+    background: color-mix(in oklab, var(--lane) 9%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--lane) 18%, transparent);
   }
   .clickable { cursor: pointer; transition: background 0.15s, box-shadow 0.15s, transform 0.1s; }
   .clickable:hover { background: color-mix(in oklab, var(--lane) 28%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--lane) 55%, transparent); }

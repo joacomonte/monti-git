@@ -6,20 +6,23 @@
   import type { Component } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
+  import { featureCards } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import Example from "./Example.svelte";
 
-  let { model, onclose }: { model: RepoModel; onclose: () => void } = $props();
+  let { model, onclose, start = null }: { model: RepoModel; onclose: () => void; start?: "new" | "amend" | null } = $props(); // start: skip "where" with that mode
 
   const steps = ["where", "length", "copy"] as const;
-  let step = $state<(typeof steps)[number]>("where");
+  // svelte-ignore state_referenced_locally
+  let step = $state<(typeof steps)[number]>(start ? "length" : "where");
   let direction = $state(1);
   const at = $derived(steps.indexOf(step));
   const go = (to: (typeof steps)[number]) => { direction = steps.indexOf(to) > at ? 1 : -1; step = to; };
 
   type Mode = "new" | "amend" | "squash";
   type Length = "concise" | "medium" | "long" | "keep"; // keep: amend without touching the message
-  let mode = $state<Mode>("new");
+  // svelte-ignore state_referenced_locally
+  let mode = $state<Mode>(start ?? "new");
   let length = $state<Length>("concise");
   let copied = $state(false);
 
@@ -27,7 +30,7 @@
   // Same rule as squashable() in CommitList: the branch's own commits since where it was cut, more than one.
   const card = $derived.by(() => {
     const d = model.dashboard;
-    const found = d ? [...d.pinned, ...d.features, ...d.old].find((c) => c.local === branch) : null;
+    const found = d ? featureCards(d).find((c) => c.local === branch) : null;
     return found?.squashBase && found.featureCommits.length > 1 ? found : null;
   });
 

@@ -150,6 +150,22 @@
     <div class="crow c1"><span class="cdot" style:background="#ff3b6b"></span><em class="cpill head">feat/notifications</em><em class="chip ok">✓ Checked out</em><em class="chip warn">Only local</em><em class="count">4 commits ›</em></div>
     <div class="crow c2"><span class="cdot" style:background="#34c77b"></span><em class="cpill">fix/paginado</em><em class="chip cloud">☁</em><em class="count">1 commit ›</em></div>
     <div class="crow c3"><span class="cdot" style:background="#4f8cff"></span><em class="cpill">main</em><em class="chip cloud">☁</em></div>
+  {:else if name === "logs"}
+    <!-- A progress toast runs, then tucks itself into the Logs button; Logs lists the commands. -->
+    <div class="lbtn">Logs</div>
+    <div class="ltoast">Checking out fix/paginado…<span class="lbar"><span></span></span></div>
+    <div class="lrow c1"><em class="lok">✓</em><code>git checkout fix/paginado</code><span class="hint">120ms</span></div>
+    <div class="lrow c2"><em class="lok">✓</em><code>git pull --ff-only</code><span class="hint">840ms</span></div>
+  {:else if name === "quick-actions"}
+    <!-- Hovering the uncommitted row reveals Commit and Amend on the right. -->
+    <div class="qrow"><span class="qdot"></span>Uncommitted changes<span class="hint">3 files</span>
+      <span class="qbtns"><em>Commit</em><em>Amend</em></span><span class="pointer"></span></div>
+    <div class="qrow"><span class="qdot grey"></span>feat/notifications<span class="qbtns late"><em>⧉</em></span></div>
+  {:else if name === "branch-cards"}
+    <!-- Same-height cards with the status inside; the last one loads in place. -->
+    <div class="bc head c1"><b>feat/notifications</b><i>✓ Checked out · 2 behind</i></div>
+    <div class="bc c2"><b>fix/paginado</b><i>✓ merged into qa</i></div>
+    <div class="bc c3"><b>main</b><i class="skel"></i></div>
   {/if}
 </div>
 
@@ -370,6 +386,41 @@
   .chip.cloud { color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.14); }
   .count { margin-left: auto; padding: 0 7px; border-radius: 99px; font-size: 9.5px; font-weight: 600; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.12); }
   .crow.c1 { animation-name: col1; } .crow.c2 { animation-name: col2; } .crow.c3 { animation-name: col3; }
+
+  /* logs */
+  .lbtn { position: absolute; right: 12px; top: 8px; padding: 1px 8px; border-radius: 6px; font-weight: 600; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.12); animation-name: lpulse; }
+  .ltoast { position: absolute; right: 12px; top: 30px; display: flex; flex-direction: column; gap: 5px; padding: 6px 10px; border-radius: 9px; background: var(--popover); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.2); transform-origin: top right; animation-name: ltuck; }
+  .lbar { height: 3px; overflow: hidden; border-radius: 99px; background: oklch(0.5 0 0 / 0.15); }
+  .lbar span { display: block; height: 100%; background: var(--primary); animation-name: lfill; }
+  .lrow { display: flex; align-items: center; gap: 6px; height: 20px; margin-top: 2px; opacity: 0; }
+  .lrow.c1 { margin-top: 28px; }
+  .lrow code { font-family: var(--font-mono, ui-monospace); font-size: 10px; }
+  .lok { color: #34c77b; font-style: normal; }
+  .lrow.c1 { animation-name: lrow1; } .lrow.c2 { animation-name: lrow2; }
+  @keyframes ltuck { 0% { opacity: 0; transform: translateY(-14px) scale(0.6); } 8%, 40% { opacity: 1; transform: none; } 50%, 100% { opacity: 0; transform: translateY(-22px) scale(0.3); } }
+  @keyframes lfill { 0%, 6% { width: 0; } 40%, 100% { width: 100%; } }
+  @keyframes lpulse { 0%, 48% { box-shadow: none; } 52% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 40%, transparent); } 60%, 100% { box-shadow: none; } }
+  @keyframes lrow1 { 0%, 60% { opacity: 0; } 66%, 96% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes lrow2 { 0%, 68% { opacity: 0; } 74%, 96% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* quick-actions */
+  .qrow { position: relative; display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 8px; border-radius: 8px; }
+  .qrow:first-child { animation-name: row-hover; }
+  .qdot { width: 9px; height: 9px; border-radius: 99px; background: #f5a524; } .qdot.grey { background: var(--muted-foreground); }
+  .qbtns { margin-left: auto; display: flex; gap: 4px; opacity: 0; animation-name: qshow; }
+  .qbtns.late { animation-name: qshow-late; }
+  .qbtns em { padding: 1px 7px; border-radius: 6px; font-style: normal; font-weight: 600; background: oklch(0.5 0 0 / 0.14); }
+  .qrow .pointer { left: 55%; top: 50%; }
+  @keyframes qshow { 0%, 26% { opacity: 0; } 32%, 90% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes qshow-late { 0%, 60% { opacity: 0; } 66%, 90% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* branch-cards */
+  .bc { display: flex; flex-direction: column; justify-content: center; gap: 1px; height: 28px; padding: 0 9px; margin-bottom: 4px; border-radius: 8px; background: oklch(0.5 0 0 / 0.1); }
+  .bc i { font-style: normal; font-size: 10px; color: var(--muted-foreground); }
+  .bc.head { color: white; background: linear-gradient(135deg, #8a1a3c, #4d0f22); } .bc.head i { color: rgb(255 255 255 / 0.72); }
+  .skel { width: 70px; height: 8px; border-radius: 99px; background: oklch(0.5 0 0 / 0.2); animation: skel 1.2s infinite alternate !important; }
+  .bc.c1 { animation-name: col1; } .bc.c2 { animation-name: col2; } .bc.c3 { animation-name: col3; }
+  @keyframes skel { from { opacity: 0.4; } to { opacity: 1; } }
 
   @media (prefers-reduced-motion: reduce) { .demo * { animation: none !important; } }
 </style>

@@ -41,12 +41,11 @@ pub struct Card {
     promotion: Vec<(String, u32)>, // commits of this branch not yet in each target
     behind_base: u32,
     parent: Option<String>, // active features: branch it was cut from
-    diff: Option<Totals>, // active features: changes against `parent`
     uncommitted: Option<Totals>, // current branch only
-    changed: Vec<String>, // current branch only: uncommitted file paths
     conflicts: Vec<String>, // diverged from its upstream: files that would conflict pulling it
-    worktree: Option<(usize, usize, usize)>, // current branch only: staged, not staged, untracked
     feature_commits: Vec<Commit>, // active features: own commits on top of `parent`, newest first, no merges
+    merged_in: u32, // active features: of `feature_commits`, how many came in through merges (not on its own line)
+    first_parent_count: u32, // active features: commits "Only this branch" shows (its own line, merges included, merged-in ones not)
     squash_base: Option<String>, // active features: merge-base with `parent`
     already_in: Vec<String>, // active features: base/environments that already have some of its own commits
     merged_before: Vec<String>, // targets that got an earlier state of it (e.g. squash-merged) but not its newer commits
@@ -62,7 +61,6 @@ pub struct Dashboard {
     features: Vec<Card>, // "Recent activity"
     old: Vec<Card>, // "Hidden"
     current: Option<String>,
-    shelved: Vec<String>, // branches with changes saved when leaving them (WIP)
     local: Vec<String>, // every local branch, for the "Change base branch" list
 }
 
@@ -147,20 +145,6 @@ fn my_activity(repo: &Path, current: Option<&str>) -> HashMap<String, i64> {
     activity
 }
 
-/// Branches with changes saved when leaving them: a "monti-git: <branch>" stash or a WIP commit on top.
-fn shelved(repo: &Path) -> Vec<String> {
-    let stashes = ok(&["stash", "list", "--format=%gs"], repo).unwrap_or_default();
-    let tips = ok(&["for-each-ref", "--format=%(refname:short)%09%(contents:subject)", "refs/heads"], repo).unwrap_or_default();
-    stashes
-        .lines()
-        .filter_map(|line| line.split_once(": monti-git: ").map(|(_, b)| b.to_string()))
-        .chain(tips.lines().filter_map(|line| match line.split_once('\t') {
-            Some((name, "WIP [monti-git]")) => Some(name.to_string()),
-            _ => None,
-        }))
-        .collect()
-}
-
 /// Runs `build` for every ref on a few threads (read-only git is safe to run concurrently), keeping the order.
 fn parallel<T: Send>(refs: &[String], build: impl Fn(&str) -> T + Sync) -> Vec<T> {
     let next = AtomicUsize::new(0);
@@ -179,6 +163,30 @@ fn parallel<T: Send>(refs: &[String], build: impl Fn(&str) -> T + Sync) -> Vec<T
         }
     });
     built.into_inner().unwrap().into_iter().flatten().collect()
+}
+
+/// Graph "Commits collapsed": the few facts a branch without a dashboard card shows (someone else's, or remote-only).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Lite {
+    #[serde(rename = "ref")]
+    reference: String,
+    behind_base: u32,
+    promotion: Vec<(String, u32)>, // own commits (not in base) not yet in each target
+    first_parent_count: u32, // its own line since the base
+}
+
+// shortcut: no merged_another_way (squash-merges count as missing), unlike full cards; upgrade if foreign branches show false "not merged" notes.
+pub fn lite(repo: &Path, refs: &[String], base: &str, targets: &[String]) -> Vec<Lite> {
+    parallel(refs, |reference| Lite {
+        reference: reference.to_string(),
+        behind_base: count(&[&format!("{reference}..{base}")], repo),
+        promotion: targets
+            .iter()
+            .map(|t| (t.clone(), if t == base { count(&[&format!("{t}..{reference}")], repo) } else { count(&[reference, &format!("^{t}"), &format!("^{base}")], repo) }))
+            .collect(),
+        first_parent_count: count(&["--first-parent", reference, &format!("^{base}")], repo),
+    })
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -330,12 +338,11 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
             },
             behind_base: if light { 0 } else { base.as_ref().map_or(0, |b| count(&[&format!("{reference}..{b}")], repo)) },
             parent: None,
-            diff: None,
             uncommitted: None,
-            changed: vec![],
             conflicts: vec![],
-            worktree: None,
             feature_commits: vec![],
+            first_parent_count: 0,
+            merged_in: 0,
             squash_base: None,
             already_in: vec![],
             merged_before: vec![],
@@ -350,10 +357,13 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
         if detail == Detail::Full {
             if let Some(parent) = card.parent.clone() {
                 if let Some(merge_base) = ok(&["merge-base", &parent, reference], repo).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-                    card.diff = Some(totals(&git::changed_files(Some(&merge_base), reference, repo), &git::line_counts(Some(&merge_base), Some(reference), repo)));
                     // shortcut: last 100, enough to read and to write a squash message.
                     let range = format!("{merge_base}..{reference}");
                     card.feature_commits = parse_commits(&ok(&["log", "--no-merges", "-100", "--format=%H%x1f%an%x1f%at%x1f%s", &range], repo).unwrap_or_default());
+                    // Same range as load_history's focus (tip ^parent, first parent), so the count matches what opens.
+                    card.first_parent_count = count(&["--first-parent", reference, &format!("^{parent}")], repo);
+                    let on_own_line = count(&["--first-parent", "--no-merges", reference, &format!("^{merge_base}")], repo) as usize;
+                    card.merged_in = card.feature_commits.len().saturating_sub(on_own_line) as u32;
                     let not_base = format!("^{merge_base}");
                     let own = count(&[reference, &not_base], repo);
                     card.already_in = parent_candidates
@@ -379,13 +389,6 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
                 }
             }
             card.uncommitted = (!status.is_empty()).then(|| totals(&status, &counts));
-            card.changed = status.keys().cloned().collect();
-            card.changed.sort();
-            // "XY path": X = staged, Y = not staged, "??" = new file git doesn't track yet.
-            let porcelain = ok(&["status", "--porcelain", "--untracked-files=all"], repo).unwrap_or_default();
-            let lines: Vec<&[u8]> = porcelain.lines().map(str::as_bytes).collect();
-            let marked = |i: usize| lines.iter().filter(|l| l.get(i).is_some_and(|c| *c != b' ' && *c != b'?')).count();
-            card.worktree = Some((marked(0), marked(1), lines.iter().filter(|l| l.starts_with(b"??")).count()));
         }
         if card.summary.as_ref().is_some_and(|s| s.ahead > 0 && s.behind > 0) {
             card.conflicts = git::conflicts(reference, &format!("{reference}@{{upstream}}"), repo);
@@ -402,7 +405,6 @@ pub fn load(repo: &Path, preferred: Option<&str>, pinned: &[String], environment
         pinned: parallel(&pins, |r| card(r, &targets, Detail::Full)),
         features: parallel(&active, |r| card(r, &targets, Detail::Full)),
         old: parallel(&old, |r| card(r, &targets, Detail::Light)),
-        shelved: shelved(repo),
         local: local.clone(),
         current,
     }

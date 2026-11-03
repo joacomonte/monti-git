@@ -2,10 +2,11 @@
 <script lang="ts">
   import { whatsNew } from "./WhatsNew.svelte";
   import { fade } from "svelte/transition";
-  import { Check, ChevronRight, CloudDownload, History, Undo2, Copy, EyeOff, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
+  import { Check, ChevronRight, ArrowUpRight, CloudDownload, Coffee, Sparkles, Copy, EyeOff, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
   import ActionRow from "./ActionRow.svelte";
   import { Button } from "$lib/components/ui/button";
   import * as Popover from "$lib/components/ui/popover";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { getVersion } from "@tauri-apps/api/app";
   import { api, type RepoEntry } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
@@ -135,7 +136,7 @@
     <RefreshCw size={12} class="shrink-0 {model.isSyncing ? 'animate-spin' : ''}" />Auto sync {model.autoSyncOn ? "on" : "off"}
   </button>
   <button class="sync-button pull" onclick={() => model.sync()} disabled={!model.repo || model.isSyncing} id="sync-button"
-    title="Force pull now: downloads the latest from the server and updates every branch that's behind. Safe: it skips branches where you have unpushed commits or uncommitted changes. Ej: main is 3 behind → it catches up.">
+    title="Downloads the latest from the server and updates every branch that's behind. Safe: it skips branches where you have unpushed commits or uncommitted changes. Ej: main is 3 behind → it catches up.">
     <CloudDownload size={11} class={model.isSyncing ? "animate-pulse" : ""} />Force pull now
   </button>
   <span class="synced" id="last-synced">{model.isSyncing ? "syncing…" : model.lastSynced ? `synced ${ago(model.lastSynced)}` : ""}</span>
@@ -209,38 +210,45 @@
     <!-- Last action's result (sync, checkout, pull…). -->
     <div class="enter line-clamp-2 shrink-0 px-2.5 py-2 text-[10px] text-tertiary" title={model.syncStatus} id="sync-status">{model.syncStatus}</div>
   {/if}
-  <div class="flex shrink-0 items-center justify-between px-2.5 pb-2 text-[10px] text-tertiary">
+  <!-- Footer: what's new, GitHub, Cafecito; one full-width row each, with a tinted icon tile. -->
+  <div class="flex shrink-0 flex-col gap-1 border-t p-2">
     <!-- Opens this version's "What's new"; the dot stays until it's been read. -->
-    <button class="version" id="app-version" onclick={() => whatsNew.open()} title={whatsNew.unread ? "New in this version: see what changed" : "What's new in this version"}>
-      Monti Git v{version}{#if whatsNew.unread}<span class="news-dot"></span>{/if}
+    <button class="foot-row" style:--tint="#a78bfa" id="app-version" onclick={() => whatsNew.open()}>
+      <span class="tile"><Sparkles size={14} /></span>
+      <span class="text"><b>What's new</b><small>Monti Git v{version}</small></span>
+      {#if whatsNew.unread}<span class="news-dot"></span>{/if}
     </button>
-    <Popover.Root>
-      <Popover.Trigger class="activity-trigger" id="activity-open" title="What you did from the app in this repo, with Undo where it's safe"><History size={11} />Activity</Popover.Trigger>
-      <Popover.Content side="top" align="end" class="w-[340px] p-1.5" id="activity-panel">
-        <span class="block px-2 pt-1 pb-1.5 text-[11px] font-semibold text-muted-foreground uppercase">Activity · {model.repo ? nameOf(model.repo) : ""}</span>
-        {#each model.activity.filter((e) => e.repo === model.repo) as entry, i (entry.at + entry.text)}
-          <div class="activity-row" id="activity-{i}">
-            <span class="min-w-0 flex-1">
-              <span class="block truncate" class:line-through={entry.undone} title={entry.text}>{entry.text}</span>
-              <span class="text-[10.5px] text-tertiary">{ago(entry.at)}{entry.undone ? " · undone" : ""}</span>
-            </span>
-            {#if entry.undo && !entry.undone}
-              <button class="undo" id="activity-undo-{i}" disabled={model.isSyncing}
-                title={entry.undo.kind === "checkout" ? `Switch back to ${entry.undo.branch}` : entry.undo.expected ? `Put ${entry.undo.branch} back where it was` : `Recreate ${entry.undo.branch} (local)`}
-                onclick={() => model.undo(entry)}><Undo2 size={12} />Undo</button>
-            {/if}
-          </div>
-        {:else}
-          <p class="px-2 py-4 text-center text-[12px] text-tertiary">Nothing yet. Checkouts, commits, squashes, deletes… show up here.</p>
-        {/each}
-      </Popover.Content>
-    </Popover.Root>
+    <button class="foot-row" style:--tint="var(--foreground)" id="github-link" onclick={() => openUrl("https://github.com/joacomonte")}>
+      <!-- GitHub mark (lucide has no brand icons). -->
+      <span class="tile"><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></span>
+      <span class="text"><b>GitHub</b><small>joacomonte</small></span>
+      <ArrowUpRight size={14} class="go" />
+    </button>
+    <!-- shortcut: no Cafecito page yet (cafecito.app/joacomonte), so it goes nowhere; add openUrl once it exists. -->
+    <button class="foot-row" style:--tint="#f5a524" id="cafecito-link">
+      <span class="tile"><Coffee size={14} /></span>
+      <span class="text"><b>Invitame un cafecito</b><small>Pronto</small></span>
+    </button>
   </div>
 </aside>
 
 <style>
-  .version { display: flex; align-items: center; gap: 5px; padding: 1px 5px; margin-left: -5px; border-radius: 5px; }
-  .version:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.1); }
+  .foot-row {
+    display: flex; width: 100%; align-items: center; gap: 10px; padding: 7px 10px 7px 7px; border-radius: 11px; text-align: left;
+    background: oklch(0.5 0 0 / 0.05); transition: background 0.2s, transform 0.2s var(--ease, ease);
+  }
+  .foot-row:hover { background: oklch(0.5 0 0 / 0.11); }
+  .foot-row:active { transform: scale(0.98); }
+  .foot-row .tile {
+    display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 9px;
+    color: var(--tint); background: color-mix(in oklab, var(--tint) 14%, transparent); transition: transform 0.2s var(--ease, ease);
+  }
+  .foot-row:hover .tile { transform: scale(1.06); }
+  .foot-row .text { display: flex; min-width: 0; flex: 1; flex-direction: column; line-height: 1.25; }
+  .foot-row b { font-size: 12.5px; font-weight: 600; color: var(--foreground); }
+  .foot-row small { font-size: 11px; color: var(--tertiary); }
+  .foot-row :global(.go) { flex-shrink: 0; color: var(--tertiary); opacity: 0; transform: translate(-3px, 3px); transition: opacity 0.2s, transform 0.2s; }
+  .foot-row:hover :global(.go) { opacity: 1; transform: none; }
   .news-dot { width: 6px; height: 6px; border-radius: 99px; background: var(--primary); box-shadow: 0 0 0 0 var(--primary); animation: news 2s ease-out infinite; }
   @keyframes news { 70% { box-shadow: 0 0 0 5px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
   @media (prefers-reduced-motion: reduce) { .news-dot { animation: none; } }
@@ -260,13 +268,6 @@
   /* Second line under Auto sync, quiet until hovered. */
   .synced { flex-shrink: 0; height: 14px; margin: -2px 18px 10px; font-size: 10.5px; color: var(--tertiary); }
   .pull:disabled { opacity: 0.45; }
-  :global(.activity-trigger) { display: flex; align-items: center; gap: 4px; padding: 1px 5px; border-radius: 5px; }
-  :global(.activity-trigger:hover), :global(.activity-trigger[data-state="open"]) { color: var(--foreground); background: oklch(0.5 0 0 / 0.1); }
-  .activity-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; font-size: 12px; }
-  .activity-row:hover { background: oklch(0.5 0 0 / 0.07); }
-  .undo { display: flex; flex-shrink: 0; align-items: center; gap: 4px; height: 22px; padding: 0 7px; border-radius: 6px; font-size: 11px; color: var(--muted-foreground); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.2); }
-  .undo:hover:not(:disabled) { color: var(--foreground); background: oklch(0.5 0 0 / 0.1); }
-  .undo:disabled { opacity: 0.45; }
   .repo:hover { background: var(--quinary); }
   .repo.active { background: color-mix(in oklch, var(--primary) 20%, transparent); }
   /* 13–14px with real contrast: at 10px and tertiary grey they vanished on non-retina Windows screens. */
