@@ -1,5 +1,18 @@
 [
   {
+    "version": "1.1.0",
+    "changes": [
+      { "kind": "new", "title": "Focus view", "detail": "From a branch's menu: just its commits, where it left the base and how it came back, by a merge or a fast-forward. A banner under the toolbar takes you back where you were." },
+      { "kind": "new", "title": "Filters", "detail": "In Commits collapsed: Pending merge, Safe to delete and With WIP. They show up right away and get refined in the background for squash and cherry-pick merges." },
+      { "kind": "new", "title": "Base and environments in one place", "detail": "The toolbar chip on the left picks the base branch and which branches are environments (qa, develop…), per repo." },
+      { "kind": "new", "title": "Hover a branch to follow it", "detail": "Its whole line lights up and the other lines fade, so you can see where it came from and where it went." },
+      { "kind": "improved", "title": "Cards say how it got in", "detail": "Merged, Fast-forwarded, Squashed or Cherry-picked, with each place on hover. \"Not in production\" or \"Pending merge\" when something is missing; hover the label of a finished branch for Safe to delete." },
+      { "kind": "improved", "title": "Faster, lighter", "detail": "Fewer git processes per refresh, a lighter refresh near the top, and branch details cached until a branch moves. Most noticeable on Windows." },
+      { "kind": "improved", "title": "Cleaner collapsed graph", "detail": "Cards sit right next to their line, subtle colors per branch, a capsule dot when a card folds several commits, and the commit count beside the card." },
+      { "kind": "fixed", "title": "My branches", "detail": "Teammates' branches already merged into the base no longer show up." }
+    ]
+  },
+  {
     "version": "1.0.0",
     "changes": [
       { "kind": "new", "title": "Logs", "detail": "Top right: every git command the app ran, with its output, filters (changes, reads, errors, repo) and Undo for your actions. While something runs, a small progress toast shows the steps and then tucks itself into Logs.", "demo": "logs" },
