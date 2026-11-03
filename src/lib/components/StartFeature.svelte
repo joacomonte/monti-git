@@ -15,7 +15,7 @@
   const localName = (ref: string) => (/^(origin|upstream)\//.test(ref) ? ref.slice(ref.indexOf("/") + 1) : ref);
   // `from` (the card it was opened from) first, then the base, the environments and the branch you're on.
   const bases = $derived([...new Set(
-    [from, model.dashboard?.base?.ref, ...(model.dashboard?.environments ?? []).map((c) => c.ref), model.dashboard?.current]
+    [from, model.base, ...model.environments, model.current]
       .filter((r): r is string => r != null).map(localName),
   )]);
   let picked = $state<string | null>(null);

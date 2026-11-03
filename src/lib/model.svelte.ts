@@ -1,8 +1,6 @@
 // App state, ported from RepoModel in ContentView.swift. Prefs keep the Swift UserDefaults key names.
 import { open as pickFolders } from "@tauri-apps/plugin-dialog";
-import { FILTERS, type BranchFilter } from "$lib/branchFilters";
-import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { allCards, api, featureCards, WORKTREE_ID, type Card, type Commit, type Dashboard, type DiffRow, type Row, type WipMode } from "./api";
+import { api, WORKTREE_ID, type Card, type Commit, type DiffRow, type Row, type WipMode } from "./api";
 
 export const prefs = {
   get<T>(key: string, fallback: T): T {
@@ -43,9 +41,11 @@ export function fileTree(paths: Iterable<string>, prefix = ""): FileNode[] {
 
 const PAGE = 300;
 
+export type BranchFilter = "pending" | "safe" | "wip";
+
 /** What a repo looked like when we left it, so coming back shows it at once while `reload()` refreshes it. */
 /** `view`: where the user was (tab, commit, file, focus), restored on coming back to compare across repos. */
-type Snapshot = Pick<RepoModel, "commits" | "rows" | "names" | "limit" | "hasMore" | "dashboard"> & {
+type Snapshot = Pick<RepoModel, "commits" | "rows" | "names" | "limit" | "hasMore" | "current" | "base" | "environments" | "localBranches"> & {
   view: {
     showGraph: boolean; selectedId: string | null; fileFilter: string | null; diffOpen: boolean; focus: string[] | null; historyPath: string | null;
   };
@@ -59,11 +59,12 @@ export class RepoModel {
   selected = $state.raw<Range | null>(null);
   error = $state<string | null>(null);
   limit = PAGE;
+  viewEnd = 0; // last row on screen (set by the list): a refresh near the top only reloads the first page
+  private growing = false; // the next load is infinite scroll asking for more: keep the bigger limit
   hasMore = $state(false);
   isLoading = $state(false);
   onlyMine = $state(prefs.get("onlyMine", true)); // hide other people's branches; on by default
   branchesOnly = $state(prefs.get("branchesOnly", false));
-  graphFilter = $state<BranchFilter>(prefs.get("graphFilter", "all")); // the graph's quick filter (Shipped, Not merged…) // one row per branch tip, commits collapsed: a quick look
   focus = $state.raw<string[] | null>(null); // "Only this branch": the branch and its base, the rest of the graph hidden
   historyPath = $state<string | null>(null); // a file's history: the graph shows only the commits that touched it
   private cache = new Map<string, Snapshot>();
@@ -76,7 +77,7 @@ export class RepoModel {
 
   /** Something is already on screen and a reload is checking it for news: the thin bar at the top. */
   get isRefreshing() {
-    return (this.isLoading || this.isLoadingDashboard) && (this.dashboard != null || this.commits.length > 0);
+    return this.isLoading && this.commits.length > 0;
   }
 
   constructor() {
@@ -86,9 +87,9 @@ export class RepoModel {
 
   open(path: string) {
     if (this.repo && this.repo !== path && !this.error) {
-      const { commits, rows, names, limit, hasMore, dashboard, showGraph, fileFilter, diffOpen, focus, historyPath } = this;
+      const { commits, rows, names, limit, hasMore, current, base, environments, localBranches, showGraph, fileFilter, diffOpen, focus, historyPath } = this;
       const selectedId = this.selected ? commits[this.selected[0]].id : null;
-      this.cache.set(this.repo, { commits, rows, names, limit, hasMore, dashboard, view: { showGraph, selectedId, fileFilter, diffOpen, focus, historyPath } });
+      this.cache.set(this.repo, { commits, rows, names, limit, hasMore, current, base, environments, localBranches, view: { showGraph, selectedId, fileFilter, diffOpen, focus, historyPath } });
     }
     this.repo = path;
     prefs.set("lastRepo", path); // reopened on next launch
@@ -96,6 +97,10 @@ export class RepoModel {
     this.error = null;
     this.focus = null;
     this.historyPath = null;
+    this.filters = [];
+    this.filterRefs = null;
+    this.filterRun++;
+    this.isFiltering = false;
     this.syncStatus = "";
     this.syncFailure = null;
     this.pendingCheckout = null;
@@ -107,7 +112,11 @@ export class RepoModel {
     this.names = cached?.names ?? [];
     this.limit = cached?.limit ?? PAGE;
     this.hasMore = cached?.hasMore ?? false;
-    this.dashboard = cached?.dashboard ?? null;
+    this.current = cached?.current ?? null;
+    this.base = cached?.base ?? null;
+    this.environments = cached?.environments ?? [];
+    this.localBranches = cached?.localBranches ?? [];
+    this.allBranches = [];
     // Same view as when we left this repo, shown from the cache right away while reload() refreshes it in the
     // background. First visit: the graph.
     const view = cached?.view;
@@ -131,22 +140,56 @@ export class RepoModel {
 
   private restoreId: string | null = null; // commit to select once loaded, coming back to a repo
 
-  async reload() {
+  private loading: { repo: string; done: Promise<void> } | null = null;
+  private again = false;
+
+  /** Reloads the graph. While one load runs for this repo, more calls (focus, sync, actions in a row) fold into one more
+   *  load after it, so they don't stack git processes or land out of order. */
+  reload(): Promise<void> {
+    const repo = this.repo;
+    if (!repo) return Promise.resolve();
+    if (this.loading?.repo === repo) {
+      this.again = true;
+      return this.loading.done;
+    }
+    const loading = { repo, done: Promise.resolve() };
+    loading.done = (async () => {
+      do {
+        this.again = false;
+        await this.loadOnce();
+      } while (this.again && this.repo === repo);
+      if (this.loading === loading) this.loading = null;
+    })();
+    this.loading = loading;
+    return loading.done;
+  }
+
+  private async loadOnce() {
     const repo = this.repo;
     if (!repo) return;
-    this.loadDashboard();
     this.isLoading = true;
+    // Nothing past the first page on screen or selected: a refresh (focus, sync, action) needs only that page again.
+    const selectedRow = this.selected?.[0] ?? -1;
+    if (!this.growing && !this.restoreId && this.limit > PAGE && this.viewEnd < PAGE - 50 && selectedRow < PAGE - 50) this.limit = PAGE;
+    this.growing = false;
     const selectedID = this.selected ? this.commits[this.selected[0]].id : this.restoreId; // indices go stale: re-find by hash
     const preferred = prefs.get<Record<string, string>>("mainBranches", {})[repo] ?? null;
+    const environments = prefs.get<Record<string, string[]>>("environments", {})[repo] ?? null;
     try {
-      this.historyEnvironments = this.environmentRefs();
-      this.historyBranches = this.filteredRefs();
-      const history = await api.loadHistory(repo, this.limit, this.onlyMine, this.branchesOnly, preferred, this.historyEnvironments, this.focus ?? [], this.historyPath, this.historyBranches);
+      const only = this.branchesOnly && !this.focus ? this.filterRefs : null;
+      const history = await api.loadHistory(repo, this.limit, this.onlyMine, this.branchesOnly, preferred, this.focus ?? [], this.historyPath, environments, only);
       if (this.repo !== repo) return; // switched repos meanwhile: the newer load owns the state
       this.commits = history.commits;
       this.rows = history.rows;
       this.names = history.names;
       this.hasMore = history.hasMore;
+      this.current = history.current;
+      this.base = history.base;
+      this.environments = history.environments;
+      this.localBranches = history.local;
+      this.allBranches = history.allBranches;
+      this.fastForwarded = history.fastForwarded;
+      this.shelvedBranches = history.shelvedBranches;
       this.error = null;
     } catch (error) {
       if (this.repo !== repo) return;
@@ -170,23 +213,12 @@ export class RepoModel {
   loadMore() {
     if (!this.hasMore || this.isLoading) return;
     this.limit += PAGE;
+    this.growing = true;
     this.reload(); // --topo-order output is prefix-stable, so rows above don't move
   }
 
-  /** Branch the "Only this branch" toggle would show: the one being focused, or the selected commit's. */
-  get focusTarget(): string | null {
-    if (this.focus) return this.focus[0];
-    const name = this.selected ? this.names[this.selected[0]] : null;
-    return name && name !== "uncommitted changes" ? name : null;
-  }
-
-  /** The header toggle: "Only this branch" on/off. */
-  async toggleFocus() {
-    await this.setFocus(this.focus ? null : this.focusTarget);
-  }
-
   /** Graph shows only `branch` and its base (where it was cut from, else main); null = everything again. */
-  async setFocus(branch: string | null, base: string | null = this.dashboard?.base?.ref ?? null) {
+  async setFocus(branch: string | null, base: string | null = this.base) {
     this.focus = branch ? [...new Set([branch, base].filter((r): r is string => r != null))] : null;
     this.limit = PAGE;
     await this.reload();
@@ -200,13 +232,6 @@ export class RepoModel {
     await this.reload();
   }
 
-  setGraphFilter(filter: BranchFilter) {
-    this.graphFilter = filter;
-    prefs.set("graphFilter", filter);
-    this.limit = PAGE;
-    this.reload();
-  }
-
   setBranchesOnly(on: boolean) {
     this.branchesOnly = on;
     prefs.set("branchesOnly", on);
@@ -217,7 +242,58 @@ export class RepoModel {
   setOnlyMine(on: boolean) {
     this.onlyMine = on;
     prefs.set("onlyMine", on);
-    this.reload();
+    if (this.filters.length) this.applyFilters();
+    else this.reload();
+  }
+
+  // Commits collapsed filters: the graph keeps only the matching branches (plus the base and the environments).
+  filters = $state.raw<BranchFilter[]>([]);
+  filterRefs = $state.raw<string[] | null>(null); // the branches they matched, null = no filter
+  isFiltering = $state(false); // confirming squash / cherry-pick merges in the background
+  private filterRun = 0;
+
+  setFilters(filters: BranchFilter[]) {
+    this.filters = filters;
+    this.applyFilters();
+  }
+
+  /** Fast pass from history (one for-each-ref per target), then the branches it couldn't place are confirmed with
+   *  the card check (squash / cherry-pick; cached in Rust), reloading only if the result changed. */
+  private async applyFilters() {
+    const repo = this.repo, base = this.base, run = ++this.filterRun;
+    if (!repo || !this.filters.length) {
+      this.filterRefs = null;
+      this.isFiltering = false;
+      return this.reload();
+    }
+    const local = (ref: string) => (/^(origin|upstream)\//.test(ref) ? ref.slice(ref.indexOf("/") + 1) : ref);
+    const targets = [...(base ? [base] : []), ...this.environments];
+    const compared = new Set(targets.map(local));
+    const wants = (done: number) =>
+      (this.filters.includes("safe") && done === targets.length) || (this.filters.includes("pending") && done > 0 && done < targets.length);
+    const wip = this.filters.includes("wip")
+      ? [...this.shelvedBranches, ...(this.current && this.commits.some((c) => c.id === WORKTREE_ID) ? [this.current] : [])]
+      : [];
+    const { all, merged } = await api.mergedInto(repo, targets, this.onlyMine);
+    if (run !== this.filterRun) return;
+    const sets = merged.map(([, refs]) => new Set(refs));
+    const branches = all.filter((ref) => !compared.has(local(ref)));
+    const doneOf = (ref: string) => sets.filter((s) => s.has(ref)).length;
+    this.filterRefs = [...new Set([...branches.filter((ref) => wants(doneOf(ref))), ...wip])];
+    await this.reload();
+    const unsure = branches.filter((ref) => doneOf(ref) < targets.length);
+    if (!base || !unsure.length || !this.filters.some((f) => f !== "wip")) return;
+    this.isFiltering = true;
+    const found = await api.branchStatus(repo, unsure, base, targets).catch(() => []);
+    if (run !== this.filterRun) return;
+    this.isFiltering = false;
+    const sure = branches.filter((ref) => doneOf(ref) === targets.length && wants(targets.length));
+    const confirmed = found.filter((s) => wants(s.promotion.filter(([, missing]) => missing === 0).length)).map((s) => s.ref);
+    const next = [...new Set([...sure, ...confirmed, ...wip])];
+    if (next.join() !== this.filterRefs?.join()) {
+      this.filterRefs = next;
+      await this.reload();
+    }
   }
 
 
@@ -342,10 +418,15 @@ export class RepoModel {
     this.diffMessage = path in this.changes ? "Binary file or no text changes" : "Empty or binary file";
   }
 
-  // MARK: Dashboard
+  // MARK: Branches (come with every history load)
 
-  dashboard = $state.raw<Dashboard | null>(null);
-  isLoadingDashboard = $state(false);
+  current = $state<string | null>(null); // checked-out branch
+  base = $state<string | null>(null); // the branch pinned to the left
+  environments = $state.raw<string[]>([]); // qa, develop…
+  localBranches = $state.raw<string[]>([]); // for "Change base"
+  allBranches = $state.raw<string[]>([]); // local and origin names, for the environments picker
+  shelvedBranches = $state.raw<string[]>([]); // branches with WIP the app put aside
+  fastForwarded = $state(false); // "Only this branch" on a branch the base fast-forwarded to: no merge to draw
   showGraph = $state(true); // the graph is the app; the Dashboard tab is a placeholder for what comes next
   scrollRow = $state<{ row: number } | null>(null); // table row to bring into view; a new object every request
 
@@ -355,7 +436,7 @@ export class RepoModel {
 
   /** A remote-only base ("origin/main") counts as current when its local twin is checked out. */
   isCurrent(name: string) {
-    const current = this.dashboard?.current;
+    const current = this.current;
     return current != null && (name === current || name.endsWith("/" + current));
   }
 
@@ -366,36 +447,12 @@ export class RepoModel {
     this.reload();
   }
 
-  private async loadDashboard() {
-    const repo = this.repo;
-    if (!repo) return;
-    const mine = <T>(key: string, fallback: T) => prefs.get<Record<string, T>>(key, {})[repo] ?? fallback;
-    this.isLoadingDashboard = true;
-    const dashboard = await api.loadDashboard(repo, mine<string | null>("mainBranches", null), mine("pinnedBranches", []),
-      mine<string[] | null>("environmentBranches", null), mine("featureStates", {}));
-    if (this.repo !== repo) return;
-    if (this.dashboard && this.dashboardRepo === repo) notifyChanges(repo, this.dashboard, dashboard);
-    this.dashboard = dashboard;
-    this.dashboardRepo = repo;
-    this.isLoadingDashboard = false;
-    // "My branches only" keeps the environments, which come from the dashboard: reload once if they arrived late or changed.
-    if (this.onlyMine && this.environmentRefs().join() !== this.historyEnvironments.join()) this.reload();
-    // Same for the graph's quick filter: which branches match comes from the dashboard.
-    else if (this.filteredRefs().join() !== this.historyBranches.join()) this.reload();
-  }
-
-  private dashboardRepo: string | null = null; // whose `dashboard` that is: compare only within one repo
-  private historyEnvironments: string[] = [];
-  private historyBranches: string[] = [];
-  /** The graph's quick filter: refs of the branches that match; none = no filter. */
-  private filteredRefs() {
-    const d = this.dashboard;
-    const filter = FILTERS.find((f) => f.id === this.graphFilter);
-    if (!d || !filter || filter.id === "all" || this.historyPath) return []; // a file's history ignores it (its chips hide)
-    return featureCards(d).filter((card) => filter.matches(card, d.base?.ref ?? null)).map((card) => card.ref);
-  }
-  private environmentRefs() {
-    return this.dashboard?.environments.map((c) => c.ref) ?? [];
+  /** The user's environments for this repo, by branch name; null goes back to detecting them by name (qa, develop…). */
+  setEnvironments(names: string[] | null) {
+    if (!this.repo) return;
+    const { [this.repo]: _, ...others } = prefs.get<Record<string, string[]>>("environments", {});
+    prefs.set("environments", names ? { ...others, [this.repo]: names } : others);
+    this.reload();
   }
 
   /** An older commit may sit past the loaded page: keep loading history until it shows up (or there is no more). */
@@ -598,7 +655,7 @@ export class RepoModel {
     const result = await api.sync(repo).catch(() => null);
     this.isSyncing = false;
     if (result) this.lastSynced = Date.now();
-    if (result && this.repo === repo) this.reload();
+    if (result?.changed && this.repo === repo) this.reload(); // nothing new from origin: focus already reloaded
   }
 
   /** With uncommitted changes, asks first (stash / WIP commit / move them) via `pendingCheckout`. */
@@ -618,7 +675,7 @@ export class RepoModel {
 
   async runCheckout(name: string, wip: WipMode | null) {
     this.pendingCheckout = null;
-    const repo = this.repo, previous = this.dashboard?.current;
+    const repo = this.repo, previous = this.current;
     if (!(await this.act(`Checking out ${name}…`, "Checkout failed", (repo) => api.checkout(repo, name, wip), [
       ...(wip === "shelve" ? ["Shelving your changes for the branch you're leaving"] : wip === "commit" ? ["Saving your changes as a WIP commit on the branch you're leaving"]
         : wip === "carry" ? ["Stashing your changes to bring them along"] : []),
@@ -664,16 +721,16 @@ export class RepoModel {
 
   /** "Start feature": new branch from an up-to-date `base`, checked out. False if git refused (status line says why). */
   async startFeature(name: string, base: string, wip: WipMode | null) {
-    const repo = this.repo, previous = this.dashboard?.current;
+    const repo = this.repo, previous = this.current;
     const done = await this.act(`Creating ${name}…`, "Couldn't create the branch", (repo) => api.startFeature(repo, name, base, wip),
       [`Bringing ${base} up to date with origin`, `Creating ${name} from it`, `Checking out ${name}`]);
     if (done) this.record(repo!, `Started ${name} from ${base}`, previous ? { kind: "checkout", branch: previous } : undefined);
     return done;
   }
 
-  /** "Update from main": merge (or rebase) the feature's parent into it. Throws so the panel can show why. */
+  /** "Update from main": merge (or rebase) the base into the branch. Throws so the panel can show why. */
   async updateFromParent(card: Card, rebase: boolean) {
-    const parent = card.parent;
+    const parent = this.base;
     if (!parent) return;
     await this.rewrite(card.local, `${rebase ? "Rebased" : "Merged"} ${parent} into ${card.local}`,
       (repo) => api.updateBranch(repo, card.local, parent, rebase, this.isCurrent(card.ref)));
@@ -703,7 +760,7 @@ export class RepoModel {
     if (path) this.discard(`Discarded a block in ${path}`, (repo) => api.discardHunk(repo, path, index));
   }
 
-  /** Stages or unstages files from the tree's checkboxes; only the tree and the dashboard counts refresh. */
+  /** Stages or unstages files from the tree's checkboxes; only the tree refreshes. */
   async setStaged(paths: string[], on: boolean) {
     const repo = this.repo;
     if (!repo || !paths.length) return;
@@ -714,12 +771,11 @@ export class RepoModel {
     }
     if (this.repo !== repo) return;
     this.loadTree();
-    this.loadDashboard();
   }
 
   /** Commits what's staged (and pushes with `push`). Resolves to false if git refused, so the form keeps the message. */
   async commit(message: string, push: boolean) {
-    const repo = this.repo, branch = this.dashboard?.current;
+    const repo = this.repo, branch = this.current;
     const before = repo && branch ? await api.branchTip(repo, branch) : null;
     let after: string | null = null;
     const done = await this.act(push ? "Committing and pushing…" : "Committing…", "Commit failed", async (repo) => {
@@ -752,27 +808,3 @@ export class RepoModel {
 /** Puts things back: switch to the branch you were on, or move a branch back (`expected` null: recreate it). */
 type Undo = { kind: "checkout"; branch: string } | { kind: "move"; branch: string; expected: string | null; target: string };
 export type Activity = { at: number; started?: number; repo: string; text: string; undo?: Undo; undone?: boolean }; // started: when its git commands began (Logs panel groups them)
-
-/** System notifications for what changed between two loads of the same repo's dashboard; transitions only, so each
- *  event notifies once: a branch starts having conflicts, your branch's remote gets commits you don't have,
- *  your branch's base gets new ones. */
-async function notifyChanges(repo: string, before: Dashboard, after: Dashboard) {
-  const old = new Map(allCards(before).map((c) => [c.ref, c]));
-  const name = repo.split(/[\\/]/).pop();
-  const messages: string[] = [];
-  for (const card of allCards(after)) {
-    const was = old.get(card.ref);
-    if (!was) continue;
-    if (card.conflicts.length && !was.conflicts.length) messages.push(`${card.local} now conflicts with its remote (${card.conflicts.length} files)`);
-    if (card.local !== after.current) continue;
-    // shortcut: "behind grew" stands for someone else's push; it's also you pushing from another machine.
-    const behind = card.summary?.behind ?? 0;
-    if (behind > (was.summary?.behind ?? 0)) messages.push(`${behind} new commits on the remote of ${card.local}: someone pushed to it`);
-    if (card.parent && card.parentTip !== was.parentTip && card.behindParent > was.behindParent) {
-      messages.push(`${card.parent} has ${card.behindParent} commits ${card.local} doesn't have yet`);
-    }
-  }
-  if (!messages.length) return;
-  if (!(await isPermissionGranted()) && (await requestPermission()) !== "granted") return;
-  for (const body of messages) sendNotification({ title: `Monti Git · ${name}`, body });
-}

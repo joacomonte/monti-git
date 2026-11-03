@@ -3,7 +3,6 @@
   import { fade } from "svelte/transition";
   import { Check, ChevronRight, ChevronsDownUp, Copy, Folder, FolderOpen, History, List, ListTree, SquareArrowOutUpRight, Sparkles, Square, SquareCheck, SquareMinus } from "@lucide/svelte";
   import { api, WORKTREE_ID } from "$lib/api";
-  import { fileIcon } from "$lib/fileIcon";
   import { Switch } from "$lib/components/ui/switch";
   import * as Tabs from "$lib/components/ui/tabs";
   import { prefs, type FileNode, type RepoModel } from "$lib/model.svelte";
@@ -12,6 +11,9 @@
   import DiscardButton from "./DiscardButton.svelte";
 
   let { model }: { model: RepoModel } = $props();
+  // The icon theme's manifest (~450 KB) loads on first use, not with the app.
+  let fileIcon = $state<((path: string) => string) | null>(null);
+  import("$lib/fileIcon").then((m) => (fileIcon = m.fileIcon));
   let flat = $state(prefs.get("treeFlat", false)); // one row per file with its folder dimmed, instead of nested folders
   let copiedPath = $state<string | null>(null);
   // Virtualized: only the rows in view (plus a margin) are in the DOM, so the whole project scrolls smoothly.
@@ -164,7 +166,7 @@
           {@const s = stageState(node.path)}
           {@render checkbox(node.path, s.all, s.some, s.files)}
         {/if}
-        {#if isFolder}<Folder size={13} class="shrink-0 text-tertiary" />{:else}<img src={fileIcon(node.path)} alt="" class="size-[14px] shrink-0" />{/if}
+        {#if isFolder}<Folder size={13} class="shrink-0 text-tertiary" />{:else}<img src={fileIcon?.(node.path)} alt="" class="size-[14px] shrink-0" />{/if}
         <span
           class="truncate"
           class:name-first={flat}

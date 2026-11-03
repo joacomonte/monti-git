@@ -1,5 +1,5 @@
 mod actions;
-mod dashboard;
+mod branches;
 mod diff;
 mod git;
 mod graph;
@@ -144,31 +144,90 @@ struct History {
     names: Vec<Option<String>>, // branch each commit belongs to, by index, for the line tooltip
     #[serde(rename = "hasMore")]
     has_more: bool,
+    current: Option<String>, // checked-out branch, None when detached
+    base: Option<String>, // the branch pinned to the left (main / production / the user's pick)
+    environments: Vec<String>, // qa, develop…: kept by "Only mine" and compared against on the branch cards
+    #[serde(rename = "allBranches")]
+    all_branches: Vec<String>, // every branch name, local or on origin: the environments picker
+    local: Vec<String>, // every local branch, for "Change base"
+    #[serde(rename = "shelvedBranches")]
+    shelved_branches: Vec<String>, // branches with WIP the app put aside (stash): the "With WIP" filter
+    #[serde(rename = "fastForwarded")]
+    fast_forwarded: bool, // "Only this branch": it reached the base by a fast-forward, so there's no merge to draw
 }
 
 #[tauri::command(async)]
 /// `focus` ([branch] or [branch, base]): only that branch's own line (first parents, minus what's already in
-/// `base`), nothing else, not even HEAD; wins over `only_mine`. `path`: only the commits that touched that file.
+/// `base`), plus, once merged into `base`, that merge and the fork point; nothing else, not even HEAD; wins over `only_mine`. `path`: only the commits that touched that file.
 fn load_history(
-    repo: String, limit: usize, only_mine: bool, branches_only: bool, preferred: Option<String>, environments: Vec<String>, focus: Vec<String>,
-    path: Option<String>, branches: Vec<String>,
+    repo: String, limit: usize, only_mine: bool, branches_only: bool, preferred: Option<String>, focus: Vec<String>,
+    path: Option<String>, environments: Option<Vec<String>>, only: Option<Vec<String>>,
 ) -> Result<History, String> {
     let repo = Path::new(&repo);
-    let main = git::main_ref(repo, preferred.as_deref());
+    let (main, main_tip) = git::main_ref(repo, preferred.as_deref()).unzip();
+    let (local, environments, all_branches) = branches::branches(repo, main.as_deref(), environments.as_deref());
     // Only mine: my branches plus the base branch and the environments (qa, develop…), so the graph keeps its spine.
     // A name from the graph may be a branch since deleted, or a stripped origin/ name: keep only refs git knows.
+    // Focused on a branch that isn't checked out, or a file's history: no "Uncommitted changes" row.
+    // A file's history skips the status (no uncommitted row there): only the branch name.
+    let (current, head, changed) = if path.is_none() {
+        git::head_status(repo)
+    } else {
+        (git::run(&["symbolic-ref", "--quiet", "--short", "HEAD"], repo).ok().map(|s| s.trim().to_string()), None, 0)
+    };
     let focus: Vec<String> = focus.into_iter().filter(|r| git::run(&["rev-parse", "--verify", "--quiet", r], repo).is_ok()).collect();
     let focused = !focus.is_empty();
+    let mut fast_forwarded = false;
     let mut commits = if focused {
+        let tip = &focus[0];
+        // Merged into the base by a real merge: the oldest base commit (first parents) that contains the tip is that
+        // merge, and its first parent is the base right before it. A fast-forward has no merge to show.
+        // The first base commit after the tip on the base's main line: a merge of it, or (fast-forward: its first
+        // parent is the tip itself) simply where the base went on from this branch.
+        // (--first-parent with --ancestry-path misses a merge that brought it in through another branch, like qa
+        // merged into production: so the base's main line and the tip's descendants, crossed.)
+        let next = focus.get(1).filter(|_| path.is_none()).and_then(|base| {
+            let tip_id = git::run(&["rev-parse", tip], repo).ok()?.trim().to_string();
+            let main_line = git::run(&["rev-list", "--first-parent", base], repo).ok()?;
+            let main_line: Vec<&str> = main_line.lines().collect();
+            if let Some(at) = main_line.iter().position(|c| *c == tip_id) {
+                return Some((main_line.get(at.checked_sub(1)?)?.to_string(), true));
+            }
+            let after = git::run(&["rev-list", "--ancestry-path", &format!("{tip}..{base}")], repo).ok()?;
+            let after: std::collections::HashSet<&str> = after.lines().collect();
+            main_line.iter().rev().find(|c| after.contains(**c)).map(|c| (c.to_string(), false))
+        });
+        let merge = next.as_ref().filter(|(_, ff)| !ff).map(|(next, _)| (next.clone(), format!("{next}^1")));
+        fast_forwarded = next.as_ref().is_some_and(|(_, ff)| *ff);
         let own = |exclude: bool| {
-            let mut args = vec!["--first-parent".to_string(), focus[0].clone()];
-            args.extend(focus.get(1).filter(|_| exclude).map(|base| format!("^{base}")));
+            let mut args = vec!["--first-parent".to_string(), tip.clone()];
+            let stop = merge.as_ref().map(|(_, before)| before.clone()).or_else(|| focus.get(1).cloned());
+            args.extend(stop.filter(|_| exclude).map(|stop| format!("^{stop}")));
             git::log(repo, Some(&args), false, path.as_deref(), limit)
         };
         // Already fully in its base (merged): its own line from the tip down instead of nothing.
         let mut commits = own(true)?;
+        let fork = commits.last().and_then(|oldest| oldest.parents.first().cloned());
         if commits.is_empty() {
             commits = own(false)?;
+        }
+        // Merged: the merge commit on top and the fork point below, the base's line drawn straight between them,
+        // so the branch is seen leaving the base and coming back.
+        if let (Some((merge, _)), Some(fork), Some(newest)) = (&merge, fork, commits.first().map(|c| c.id.clone())) {
+            let one = |id: &String| git::log(repo, Some(std::slice::from_ref(id)), false, None, 1).ok().and_then(|mut c| c.pop());
+            if let (Some(mut merged), Some(mut forked)) = (one(merge), one(&fork)) {
+                merged.parents = vec![forked.id.clone(), newest];
+                forked.parents.clear();
+                commits.insert(0, merged);
+                commits.push(forked);
+            }
+        }
+        // Fast-forwarded: no merge to show, but the base's next commit on top, on the same line, shows it went on from here.
+        if let (Some((next, true)), Some(newest)) = (&next, commits.first().map(|c| c.id.clone())) {
+            if let Some(mut after) = git::log(repo, Some(std::slice::from_ref(next)), false, None, 1)?.pop() {
+                after.parents = vec![newest];
+                commits.insert(0, after);
+            }
         }
         // Merges keep only the parent shown: the merged-in branches are hidden, so no lines to nowhere.
         let ids: std::collections::HashSet<String> = commits.iter().map(|c| c.id.clone()).collect();
@@ -177,12 +236,25 @@ fn load_history(
         }
         commits
     } else {
-        // A quick filter (Shipped, Not merged…): just those branches, plus the base and the environments as the spine.
-        let mut refs = if !branches.is_empty() {
-            Some(branches.into_iter().chain(main.clone()).chain(environments).collect::<Vec<_>>())
-        } else {
-            only_mine.then(|| git::my_branches(repo).into_iter().chain(main.clone()).chain(environments).collect::<Vec<_>>())
+        let full = |r: &str| if r.starts_with("refs/") { r.to_string() } else if r.starts_with("origin/") { format!("refs/remotes/{r}") } else { format!("refs/heads/{r}") };
+        // Only mine and/or a filter (`only`: the branches it matched): those, both when both are on.
+        let picked: Option<Vec<String>> = match (only_mine, &only) {
+            (false, None) => None,
+            (true, None) => Some(git::my_branches(repo)),
+            (false, Some(only)) => Some(only.iter().map(|r| full(r)).collect()),
+            (true, Some(only)) => {
+                let only: std::collections::HashSet<String> = only.iter().map(|r| full(r)).collect();
+                Some(git::my_branches(repo).into_iter().filter(|r| only.contains(r)).collect())
+            }
         };
+        let mut refs = picked.map(|picked| {
+            let shown: Vec<String> = picked.into_iter().chain(main.clone()).chain(environments.clone()).collect();
+            // Walking from the base also reaches other branches merged into it: label only these refs (plus the
+            // checked-out branch, HEAD and, unless filtering, tags), so their names and collapsed rows don't show up.
+            let tags = only.is_none().then(|| "refs/tags/".to_string());
+            let labels = shown.iter().map(|r| full(r)).chain(current.as_deref().map(full)).chain(["HEAD".into()]).chain(tags);
+            labels.map(|r| format!("--decorate-refs={r}")).chain(shown.iter().cloned()).collect::<Vec<_>>()
+        });
         // Branches only: just the commits a branch or tag points at, each linked to the next one down (rewritten parents).
         if branches_only && path.is_none() {
             let all = ["--branches", "--remotes", "--tags"].map(String::from).to_vec();
@@ -191,21 +263,21 @@ fn load_history(
         git::log(repo, refs.as_deref(), true, path.as_deref(), limit)?
     };
     let has_more = commits.len() >= limit;
-    // Focused on a branch that isn't checked out, or a file's history: no "Uncommitted changes" row.
-    let worktree =
-        git::worktree_commit(repo).filter(|w| path.is_none() && (!focused || commits.iter().any(|c| Some(&c.id) == w.parents.first())));
+    let worktree = git::worktree_commit(head, changed).filter(|w| !focused || commits.iter().any(|c| Some(&c.id) == w.parents.first()));
     if let Some(worktree) = worktree {
         // Right above the checked-out commit, not at the very top of the graph.
         let head = commits.iter().position(|c| Some(&c.id) == worktree.parents.first()).unwrap_or(0);
         commits.insert(head, worktree);
     }
     // Saved WIP of other branches: right above the commit it was saved on, when that commit is shown.
-    for shelved in git::shelved_commits(repo).into_iter().filter(|_| path.is_none()) {
+    let shelved = if path.is_none() { git::shelved_commits(repo) } else { vec![] };
+    let shelved_branches: Vec<String> = shelved.iter().filter_map(|s| s.shelved.clone()).collect();
+    for shelved in shelved {
         if let Some(at) = commits.iter().position(|c| Some(&c.id) == shelved.parents.first()) {
             commits.insert(at, shelved);
         }
     }
-    let chain = git::main_chain(repo, main.as_deref());
+    let chain = git::main_chain(repo, main_tip.as_deref());
     let rows = graph::compute(&commits, &chain);
     let names = graph::branch_names(&commits, main.as_deref(), &chain);
     Ok(History {
@@ -213,6 +285,13 @@ fn load_history(
         names: commits.iter().map(|c| names.get(&c.id).cloned()).collect(),
         commits,
         has_more,
+        current,
+        base: main,
+        environments,
+        all_branches,
+        local,
+        fast_forwarded,
+        shelved_branches,
     })
 }
 
@@ -281,22 +360,16 @@ fn load_diff(repo: String, path: String, base: Option<String>, target: Option<St
     FileDiff { rows, touching }
 }
 
-/// Per-repo prefs from the frontend: pins, the environment list (None = detect by name), "active"/"old" per feature.
+/// Behind/merged facts of the branch cards in "Commits collapsed", only for the ones visible in the graph.
 #[tauri::command(async)]
-fn load_dashboard(
-    repo: String,
-    preferred: Option<String>,
-    pinned: Vec<String>,
-    environments: Option<Vec<String>>,
-    states: HashMap<String, String>,
-) -> dashboard::Dashboard {
-    dashboard::load(Path::new(&repo), preferred.as_deref(), &pinned, environments.as_deref(), &states)
+fn branch_status(repo: String, refs: Vec<String>, base: String, targets: Vec<String>) -> Vec<branches::Status> {
+    branches::status(Path::new(&repo), &refs, &base, &targets)
 }
 
-/// Behind/merged facts for branches the dashboard has no card for, only the ones visible in the graph.
+/// Filters, fast pass: every branch (yours only with `only_mine`) and, per target, the ones already in it by history.
 #[tauri::command(async)]
-fn branch_status(repo: String, refs: Vec<String>, base: String, targets: Vec<String>) -> Vec<dashboard::Lite> {
-    dashboard::lite(Path::new(&repo), &refs, &base, &targets)
+fn merged_into(repo: String, targets: Vec<String>, only_mine: bool) -> branches::Merged {
+    branches::merged_into(Path::new(&repo), &targets, only_mine)
 }
 
 /// The Logs panel: git commands run since `since` (an id), with their output.
@@ -411,9 +484,64 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![list_repos, load_history, load_changes, load_diff, load_dashboard, branch_status, git_logs,
+        .invoke_handler(tauri::generate_handler![list_repos, load_history, load_changes, load_diff, branch_status, merged_into, git_logs,
             sync, changed_file_count, checkout, pull, delete_branch, update_branch, force_push, discard_file, discard_all, discard_hunk,
             stage, unstage, last_commit_message, commit, is_repo, open_file, search_commits, commit_places, commit_info, commit_patch, blame, move_branch, branch_tip, base_status, start_feature])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::testutil::Repo;
+
+    /// "Only this branch" on a merged branch: the merge on top, its own commits, the fork point below, linked up.
+    #[test]
+    fn focus_shows_where_a_merged_branch_left_and_came_back() {
+        let repo = Repo::new("focus-merge");
+        repo.commit("a.txt", "1", "init");
+        repo.git(&["checkout", "-q", "-b", "feat"]);
+        repo.commit("f.txt", "1", "feat 1");
+        repo.commit("f.txt", "2", "feat 2");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.commit("a.txt", "2", "main moves");
+        repo.git(&["merge", "-q", "--no-ff", "-m", "merge feat", "feat"]);
+        repo.commit("a.txt", "3", "after");
+        let path = repo.path().to_string_lossy().to_string();
+        let history = super::load_history(path, 300, false, false, Some("main".into()), vec!["feat".into(), "main".into()], None, None, None).unwrap();
+        let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["merge feat", "feat 2", "feat 1", "init"]);
+        let id = |i: usize| history.commits[i].id.clone();
+        assert_eq!(history.commits[0].parents, [id(3), id(1)], "merge links to the fork point and the tip");
+        assert_eq!(history.commits[2].parents, [id(3)], "the branch starts at the fork point");
+        assert!(!history.fast_forwarded);
+
+        // Merged through another branch (feature → qa, then qa → main): that qa merge is where it came back.
+        repo.git(&["checkout", "-q", "-b", "qa2"]);
+        repo.git(&["checkout", "-q", "-b", "via"]);
+        repo.commit("v.txt", "1", "via 1");
+        repo.git(&["checkout", "-q", "qa2"]);
+        repo.git(&["merge", "-q", "--no-ff", "-m", "via into qa2", "via"]);
+        repo.git(&["checkout", "-q", "main"]);
+        repo.commit("a.txt", "3b", "main moves again");
+        repo.git(&["merge", "-q", "--no-ff", "-m", "qa2 into main", "qa2"]);
+        let path = repo.path().to_string_lossy().to_string();
+        let history = super::load_history(path, 300, false, false, Some("main".into()), vec!["via".into(), "main".into()], None, None, None).unwrap();
+        assert_eq!(history.commits[0].subject, "qa2 into main");
+        assert_eq!(history.commits[1].subject, "via 1");
+
+        // Fast-forwarded: no merge, the base's next commit on top of the tip, same line; its card says so too.
+        repo.git(&["checkout", "-q", "-b", "ff"]);
+        repo.commit("g.txt", "1", "ff 1");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.git(&["merge", "-q", "--ff-only", "ff"]);
+        repo.commit("a.txt", "4", "main after ff");
+        let path = repo.path().to_string_lossy().to_string();
+        let history = super::load_history(path, 300, false, false, Some("main".into()), vec!["ff".into(), "main".into()], None, None, None).unwrap();
+        assert!(history.fast_forwarded);
+        assert_eq!(history.commits[0].subject, "main after ff");
+        assert_eq!(history.commits[0].parents, [history.commits[1].id.clone()]);
+        let card = crate::branches::status(repo.path(), &["ff".into()], "main", &["main".into()]);
+        assert_eq!(card[0].promotion, [("main".to_string(), 0, "fast-forwarded")]);
+    }
 }

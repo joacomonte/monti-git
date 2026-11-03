@@ -26,8 +26,21 @@ pub fn discover(folders: &[String], repos: &[String]) -> Vec<RepoEntry> {
     found.retain(|(p, _)| is_repo(p));
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found.dedup_by(|a, b| a.0 == b.0); // added on its own and inside a folder: listed once
-    found.into_iter()
-        .map(|(p, folder)| RepoEntry { path: p.to_string_lossy().into(), owner: owner(&p), last_activity: last_activity(&p), folder })
+    // Two git calls per repo: a few repos at a time on threads, so a long list doesn't add up their latency (worst on Windows).
+    let batch = std::thread::available_parallelism().map_or(4, |n| n.get()) * 2;
+    found
+        .chunks(batch)
+        .flat_map(|chunk| {
+            std::thread::scope(|s| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|(p, folder)| {
+                        s.spawn(move || RepoEntry { path: p.to_string_lossy().into(), owner: owner(p), last_activity: last_activity(p), folder: folder.clone() })
+                    })
+                    .collect();
+                handles.into_iter().filter_map(|h| h.join().ok()).collect::<Vec<_>>()
+            })
+        })
         .collect()
 }
 

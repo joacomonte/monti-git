@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 #[derive(Serialize, Clone, Debug)]
 pub struct Commit {
@@ -35,18 +36,6 @@ pub fn run_input(args: &[&str], repo: &Path, input: Option<&str>) -> Result<Stri
         return Err(String::from_utf8_lossy(&out.stderr).into_owned());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// Files that would conflict merging `theirs` into `ours`, without touching the working tree or index
-/// (exit 1 = conflicts, with their paths after the tree id).
-pub fn conflicts(ours: &str, theirs: &str, repo: &Path) -> Vec<String> {
-    let Ok(out) = spawn(&["-c", "core.quotePath=false", "merge-tree", "--write-tree", "--name-only", "--no-messages", ours, theirs], repo, None) else { return vec![] };
-    if out.status.code() != Some(1) {
-        return vec![];
-    }
-    let mut files: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().skip(1).filter(|l| !l.is_empty()).map(String::from).collect();
-    files.dedup();
-    files
 }
 
 /// True when merging `theirs` into `ours` would change nothing: its content is already there, e.g. after a
@@ -222,13 +211,20 @@ pub fn log(repo: &Path, refs: Option<&[String]>, with_head: bool, path: Option<&
         .collect())
 }
 
-/// The "Uncommitted changes" row, or None when the working tree is clean.
-pub fn worktree_commit(repo: &Path) -> Option<Commit> {
-    let changed = ok(&["status", "--porcelain"], repo).unwrap_or_default().lines().count();
+/// Checked-out branch (None when detached), HEAD's commit and how many files are changed, from one `git status`
+/// instead of symbolic-ref + rev-parse + status.
+pub fn head_status(repo: &Path) -> (Option<String>, Option<String>, usize) {
+    let out = ok(&["status", "--porcelain=v2", "--branch"], repo).unwrap_or_default();
+    let header = |key: &str| out.lines().find_map(|l| l.strip_prefix(key)).map(str::trim).filter(|v| !v.starts_with('(')).map(String::from);
+    let changed = out.lines().filter(|l| !l.starts_with("# ") && !l.is_empty()).count();
+    (header("# branch.head "), header("# branch.oid "), changed)
+}
+
+/// The "Uncommitted changes" row on top of `head`, or None when the working tree is clean.
+pub fn worktree_commit(head: Option<String>, changed: usize) -> Option<Commit> {
     if changed == 0 {
         return None;
     }
-    let head = ok(&["rev-parse", "HEAD"], repo).map(|s| s.trim().to_string());
     Some(Commit {
         id: WORKTREE_ID.into(),
         parents: head.into_iter().collect(),
@@ -249,8 +245,14 @@ pub fn shelved_commits(repo: &Path) -> Vec<Commit> {
             let f: Vec<&str> = line.splitn(4, '\t').collect();
             let branch = f.get(3)?.split_once(": monti-git: ")?.1; // "On <branch>: monti-git: <branch>"
             let base = f[1].split(' ').next()?;
-            // " 4 files changed, 120 insertions(+), 30 deletions(-)": untracked files included.
-            let stat = ok(&["stash", "show", "--include-untracked", "--shortstat", f[0]], repo).unwrap_or_default();
+            // " 4 files changed, 120 insertions(+), 30 deletions(-)": untracked files included. A stash never changes: cached by hash.
+            static STATS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+            let cached = STATS.lock().unwrap().get_or_insert_with(HashMap::new).get(f[0]).cloned();
+            let stat = cached.unwrap_or_else(|| {
+                let stat = ok(&["stash", "show", "--include-untracked", "--shortstat", f[0]], repo).unwrap_or_default();
+                STATS.lock().unwrap().get_or_insert_with(HashMap::new).insert(f[0].to_string(), stat.clone());
+                stat
+            });
             let count = |word: &str| stat.split(", ").find(|p| p.contains(word)).and_then(|p| p.split_whitespace().next()?.parse::<u32>().ok()).unwrap_or(0);
             let files = count("file");
             Some(Commit {
@@ -267,25 +269,45 @@ pub fn shelved_commits(repo: &Path) -> Vec<Commit> {
 }
 
 /// The ref behind `main_chain`: the one chosen for this repo, else main, else production (local first, then origin/).
-pub fn main_ref(repo: &Path, preferred: Option<&str>) -> Option<String> {
-    preferred
-        .into_iter()
-        .chain(["main", "production"])
-        .flat_map(|name| [name.to_string(), format!("origin/{name}")])
-        .find(|candidate| ok(&["rev-parse", "--verify", "--quiet", candidate], repo).is_some())
+pub fn main_ref(repo: &Path, preferred: Option<&str>) -> Option<(String, String)> {
+    let candidates: Vec<String> =
+        preferred.into_iter().chain(["main", "production"]).flat_map(|name| [name.to_string(), format!("origin/{name}")]).collect();
+    let full = |name: &str| if name.starts_with("origin/") { format!("refs/remotes/{name}") } else { format!("refs/heads/{name}") };
+    // One for-each-ref for every candidate (and its commit), instead of a rev-parse per candidate.
+    let mut args = vec!["for-each-ref".to_string(), "--format=%(refname)%09%(objectname)".to_string()];
+    args.extend(candidates.iter().map(|c| full(c)));
+    let found: HashMap<String, String> = ok(&args.iter().map(String::as_str).collect::<Vec<_>>(), repo)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('\t').map(|(r, o)| (r.to_string(), o.to_string())))
+        .collect();
+    candidates.into_iter().find_map(|c| found.get(&full(&c)).cloned().map(|oid| (c, oid)))
 }
 
-/// First-parent history of the branch pinned to the left. Empty if none exists.
-pub fn main_chain(repo: &Path, main: Option<&str>) -> HashSet<String> {
-    main.and_then(|r| ok(&["rev-list", "--first-parent", "--max-count=20000", r], repo))
-        .map(|out| out.lines().map(String::from).collect())
-        .unwrap_or_default()
+/// First-parent history of the branch pinned to the left (`tip`: its commit, from main_ref). Empty if none exists.
+/// Cached per repo and tip: no walking up to 20k commits on every load.
+pub fn main_chain(repo: &Path, tip: Option<&str>) -> Arc<HashSet<String>> {
+    static CACHE: Mutex<Option<HashMap<(String, String), Arc<HashSet<String>>>>> = Mutex::new(None);
+    let Some(tip) = tip else { return Arc::default() };
+    let key = (repo.to_string_lossy().into_owned(), tip.to_string());
+    if let Some(chain) = CACHE.lock().unwrap().get_or_insert_with(HashMap::new).get(&key) {
+        return chain.clone();
+    }
+    let chain: Arc<HashSet<String>> =
+        Arc::new(ok(&["rev-list", "--first-parent", "--max-count=20000", &key.1], repo).unwrap_or_default().lines().map(String::from).collect());
+    let mut cache = CACHE.lock().unwrap();
+    let cache = cache.get_or_insert_with(HashMap::new);
+    cache.retain(|(r, _), _| *r != key.0); // one tip per repo: the old one is stale
+    cache.insert(key, chain.clone());
+    chain
 }
 
 /// Local and remote branches whose newest commit was authored by this repo's user.name or user.email.
 pub fn my_branches(repo: &Path) -> Vec<String> {
-    let config = |key| ok(&["config", key], repo).unwrap_or_default().trim().to_lowercase();
-    let (name, email) = (config("user.name"), config("user.email"));
+    // Both settings in one call: "user.name Ana\nuser.email ana@x.com".
+    let config = ok(&["config", "--get-regexp", r"^user\.(name|email)$"], repo).unwrap_or_default().to_lowercase();
+    let value = |key: &str| config.lines().find_map(|l| l.strip_prefix(key)).map(|v| v.trim().to_string()).unwrap_or_default();
+    let (name, email) = (value("user.name "), value("user.email "));
     let output = ok(&["for-each-ref", "--format=%(refname)%09%(authorname)%09%(authoremail:trim)", "refs/heads", "refs/remotes"], repo)
         .unwrap_or_default();
     output
@@ -422,7 +444,24 @@ mod tests {
     }
 
     #[test]
-    fn conflicts_and_containment() {
+    fn head_status_and_main_ref() {
+        let repo = Repo::new("head-status");
+        repo.commit("a.txt", "1", "init");
+        let tip = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+        assert_eq!(super::head_status(repo.path()), (Some("main".into()), Some(tip.clone()), 0));
+        std::fs::write(repo.path().join("a.txt"), "2").unwrap();
+        std::fs::write(repo.path().join("new.txt"), "x").unwrap();
+        assert_eq!(super::head_status(repo.path()).2, 2); // modified + untracked
+        repo.git(&["checkout", "-q", "--detach"]);
+        assert_eq!(super::head_status(repo.path()).0, None);
+        // Preferred first when it exists, else main; a missing preferred falls through.
+        repo.git(&["branch", "develop"]);
+        assert_eq!(super::main_ref(repo.path(), Some("develop")), Some(("develop".into(), tip.clone())));
+        assert_eq!(super::main_ref(repo.path(), Some("nope")), Some(("main".into(), tip)));
+    }
+
+    #[test]
+    fn containment() {
         let repo = Repo::new("conflicts");
         repo.commit("a.txt", "base\n", "init");
         repo.git(&["checkout", "-q", "-b", "mine"]);
@@ -430,8 +469,6 @@ mod tests {
         repo.git(&["checkout", "-q", "-b", "theirs", "main"]);
         repo.commit("a.txt", "theirs\n", "theirs");
         repo.commit("b.txt", "new\n", "other file");
-        assert_eq!(super::conflicts("mine", "theirs", repo.path()), ["a.txt"]);
-        assert!(super::conflicts("main", "theirs", repo.path()).is_empty()); // fast-forward: nothing to resolve
         assert!(super::already_contains("theirs", "main", repo.path()));
         assert!(!super::already_contains("main", "theirs", repo.path()));
     }

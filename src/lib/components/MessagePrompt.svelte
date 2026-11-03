@@ -6,7 +6,6 @@
   import type { Component } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
-  import { featureCards } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import Example from "./Example.svelte";
 
@@ -26,13 +25,10 @@
   let length = $state<Length>("concise");
   let copied = $state(false);
 
-  const branch = $derived(model.dashboard?.current ?? "(current)");
-  // Same rule as squashable() in CommitList: the branch's own commits since where it was cut, more than one.
-  const card = $derived.by(() => {
-    const d = model.dashboard;
-    const found = d ? featureCards(d).find((c) => c.local === branch) : null;
-    return found?.squashBase && found.featureCommits.length > 1 ? found : null;
-  });
+  const branch = $derived(model.current ?? "(current)");
+  const base = $derived(model.base?.replace(/^(origin|upstream)\//, "") ?? null);
+  // A branch of its own (not the base itself): squashing it means its commits since it split from the base.
+  const canSquash = $derived(!!base && !!model.current && model.current !== base);
 
   const LENGTHS: Record<Exclude<Length, "keep">, string> = {
     concise: "one or two short lines: what changed and why.",
@@ -48,7 +44,6 @@
       "- If something is staged (`git diff --staged`), only that goes in; otherwise everything in `git status` and `git diff`, new files included.",
       "Show me what will be added and wait for my OK before amending. If it's already on origin, it'll need --force-with-lease: don't push, I'll do it myself.",
     ].join("\n");
-    const base = card?.squashBase ?? "<base>";
     const task = {
       new: ["Write a commit message for my uncommitted changes."],
       amend: [
@@ -56,8 +51,8 @@
         "- The message must cover both: read the last commit's message (`git log -1 --format=%B`) and the new changes, and rewrite title and/or body as a summary of all of it.",
       ],
       squash: [
-        `Squash ${branch}'s ${card?.featureCommits.length ?? ""} commits since ${base.slice(0, 7)} plus my uncommitted changes into one single commit (e.g. \`git reset --soft ${base}\` then commit).`,
-        `- The message must cover everything: read those commits' messages (\`git log --format=%B ${base.slice(0, 7)}..HEAD\`) and the new changes, and write one title and body that summarize all of it.`,
+        `Squash ${branch}'s own commits since it split from ${base} (\`git merge-base ${base} HEAD\`) plus my uncommitted changes into one single commit (e.g. \`git reset --soft <that merge-base>\` then commit).`,
+        `- The message must cover everything: read those commits' messages (\`git log --format=%B <merge-base>..HEAD\`) and the new changes, and write one title and body that summarize all of it.`,
       ],
     }[mode];
     return [
@@ -121,9 +116,9 @@
             {@render choice("message-prompt-mode-amend", PenLine, "#f5a524", "Amend the last commit",
               "Your changes join the last commit, and its message is rewritten to cover both.",
               "you forgot a file or a fix right after committing: it stays one commit.", () => { mode = "amend"; go("length"); }, mode === "amend")}
-            {#if card}
+            {#if canSquash}
               {@render choice("message-prompt-mode-squash", Layers, "#ec5fa8", "Squash into one",
-                `${branch}'s ${card.featureCommits.length} commits and your changes become a single commit, with one message summarizing all.`,
+                `${branch}'s commits since ${base} and your changes become a single commit, with one message summarizing all.`,
                 '"wip", "fix typo", "fix again" + your changes become one clean commit.', () => { mode = "squash"; go("length"); }, mode === "squash")}
             {/if}
             <div class="flex justify-end"><button class="ghost" id="message-prompt-cancel" onclick={onclose}>Cancel</button></div>

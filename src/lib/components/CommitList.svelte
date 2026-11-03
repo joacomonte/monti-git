@@ -1,17 +1,14 @@
 <!-- Virtualized commit list: only the rows on screen are in the DOM. Rows touch so the graph lines stay continuous. -->
 <script lang="ts">
   import { fade } from "svelte/transition";
-  import { Archive, Check, ChevronRight, GitCommitHorizontal, PenLine, CircleCheck, Cloud, CloudOff, Copy, GitBranch, GitMerge, Layers, Sparkles, Trash2, X } from "@lucide/svelte";
-  import { allCards, api, featureCards, WORKTREE_ID, type Card, type Commit, type Row } from "$lib/api";
-  import { prefs, type Range, type RepoModel } from "$lib/model.svelte";
-  import { isShipped } from "$lib/branchFilters";
+  import { Archive, Check, ChevronRight, GitCommitHorizontal, PenLine, CircleCheck, Cloud, CloudOff, Copy, GitBranch, Sparkles, Trash2 } from "@lucide/svelte";
+  import { api, WORKTREE_ID, type Card, type Commit, type Row } from "$lib/api";
+  import { type Range, type RepoModel } from "$lib/model.svelte";
   import GraphCell, { LANE, PAD, laneColor } from "./GraphCell.svelte";
   import RefBadge from "./RefBadge.svelte";
-  import SquashPrompt from "./SquashPrompt.svelte";
   import ActionRow from "./ActionRow.svelte";
   import MessagePrompt from "./MessagePrompt.svelte";
   import BranchActions from "./BranchActions.svelte";
-  import PrPrompt from "./PrPrompt.svelte";
   import StartFeature from "./StartFeature.svelte";
   import UpdatePanel from "./UpdatePanel.svelte";
 
@@ -27,69 +24,52 @@
   let menu = $state<{ commit: Commit; x: number; y: number } | null>(null);
   let copied = $state<string | null>(null); // menu item just copied, for the ✓ before the menu closes
 
-  /** The feature branch whose own commits include this one (from the dashboard), to squash them all. */
-  function branchOf(c: Commit): Card | null {
-    const d = model.dashboard;
-    if (!d) return null;
-    return featureCards(d).find((card) => card.squashBase && card.featureCommits.some((f) => f.id === c.id)) ?? null;
-  }
-  // Centered over the graph: squash, PR, merge/rebase from its parent, delete, new branch.
-  let dialog = $state<{ kind: "squash" | "pr" | "update" | "delete"; card: Card } | { kind: "new"; from: string } | null>(null);
+  // Centered over the graph: merge/rebase from the base, delete, new branch.
+  let dialog = $state<{ kind: "update" | "delete"; card: Card } | { kind: "new"; from: string } | null>(null);
 
-  /** Options for a branch pill in the graph: check out (if it isn't already) and squash (if it has commits to squash). */
+  /** Options for a branch pill in the graph: check out, pull, new branch, copy. */
   let branchMenu = $state<{ name: string; commit: Commit; x: number; y: number } | null>(null);
-  function squashable(ref: string): Card | null {
-    const d = model.dashboard;
-    const name = ref.replace("HEAD -> ", "").replace(/^(origin|upstream)\//, "");
-    const card = d ? featureCards(d).find((c) => c.local === name) : null;
-    return card?.squashBase && card.featureCommits.length > 1 ? card : null;
-  }
 
-  /** Branches only: the dashboard card of a pill's branch, for its "N commits" (own commits vs its base). */
-  function cardOf(ref: string): Card | null {
-    const d = model.dashboard;
-    const name = ref.replace("HEAD -> ", "").replace(/^(origin|upstream)\//, "");
-    return (d ? allCards(d).find((c) => c.local === name) : null) ?? lite.get(ref.replace("HEAD -> ", "")) ?? null;
-  }
+  /** Branches only: a pill's card (behind, merged into, "N commits"), once fetched. */
+  const cardOf = (ref: string): Card | null => cards.get(ref.replace("HEAD -> ", "")) ?? null;
+  /** The base and the environments are what the others compare against: they stay plain pills. */
+  const hasCard = (badge: string) => {
+    const ref = badge.replace("HEAD -> ", "");
+    return !ref.startsWith("tag: ") && localName(ref) !== localName(model.base ?? "") && !model.environments.some((e) => localName(e) === localName(ref));
+  };
 
-  // Branches without a dashboard card (someone else's, remote-only): their behind/merged facts, fetched only for the rows
-  // on screen and cached until the dashboard reloads. A Card with the rest empty, so statusOf/hasStatus/the card UI just work.
-  let lite = $state(new Map<string, Card>());
-  let freshFor: unknown = null; // the dashboard `fresh` belongs to
-  let fresh = new Set<string>(); // refs fetched for the current dashboard; older entries stay shown until refetched, so nothing jumps
+  // Cards' facts, fetched only for the rows on screen. Kept across reloads (shown until refetched, so nothing jumps).
+  let cards = $state(new Map<string, Card>());
+  let freshFor: unknown = null; // the history load `fresh` belongs to
+  let fresh = new Set<string>(); // refs fetched since that load
   $effect(() => {
-    const d = model.dashboard;
-    const repo = model.repo;
-    if (!model.branchesOnly || model.focus || !d?.base || !repo) return;
-    if (freshFor !== d) { freshFor = d; fresh = new Set(); }
-    const known = new Set(allCards(d).map((c) => c.local));
+    const loaded = model.commits;
+    const repo = model.repo, base = model.base;
+    if (!model.branchesOnly || model.focus || !base || !repo) return;
+    if (freshFor !== loaded) { freshFor = loaded; fresh = new Set(); }
     const refs = [...new Set(model.visible.slice(start, end).flatMap((r) => badges(model.commits[r[0]].refs)))]
       .map((b) => b.ref.replace("HEAD -> ", ""))
-      .filter((ref) => !ref.startsWith("tag: ") && !known.has(localName(ref)) && !fresh.has(ref));
+      .filter((ref) => hasCard(ref) && !fresh.has(ref));
     if (!refs.length) return;
-    refs.forEach((ref) => fresh.add(ref));
-    const targets = [d.base.ref, ...d.environments.map((c) => c.ref)];
+    const targets = [base, ...model.environments];
     const timer = setTimeout(async () => {
-      const found = await api.branchStatus(repo, refs, d.base!.ref, targets);
-      if (model.dashboard !== d) return;
-      const next = new Map(lite);
-      for (const f of found) next.set(f.ref, { ...f, local: localName(f.ref), parent: null, behindParent: 0, featureCommits: [], mergedIn: 0,
-        uncommitted: null, alreadyIn: [], mergedBefore: [], squashBase: null } as unknown as Card);
-      lite = next;
+      refs.forEach((ref) => fresh.add(ref)); // here, not before: a scroll cancels the timer and these must be asked again
+      const found = await api.branchStatus(repo, refs, base, targets);
+      if (model.repo !== repo) return;
+      const next = new Map(cards);
+      for (const f of found) next.set(f.ref, { ...f, local: localName(f.ref) });
+      cards = next;
     }, 250); // scrolling settles first
     return () => clearTimeout(timer);
   });
-  $effect(() => { model.repo; lite = new Map(); });
-  /** Commits collapsed, while the dashboard (or a foreign branch's facts) is still loading: the row keeps a card's height
+  $effect(() => { model.repo; cards = new Map(); });
+  /** Commits collapsed, while a branch's facts are still loading: the row keeps a card's height
    *  with a placeholder status line, so it doesn't jump when the numbers arrive. Index of the badge to draw it on, or -1. */
   function pendingAt(c: Commit) {
     if (!bare(c) || collapsedOf(c)) return -1;
     return badges(c.refs).findIndex((b) => isPending(b.ref));
   }
-  function isPending(ref: string) {
-    const d = model.dashboard;
-    return !ref.startsWith("tag: ") && !cardOf(ref) && (!d || (!!d.base && !lite.has(ref.replace("HEAD -> ", ""))));
-  }
+  const isPending = (ref: string) => hasCard(ref) && !!model.base && !cardOf(ref);
   /** Commits collapsed: the badge drawn as the row's card. The one with something to say, else the one loading, else the first branch. */
   function cardIndex(c: Commit) {
     if (!bare(c)) return -1;
@@ -98,7 +78,6 @@
     const pending = pendingAt(c);
     return withStatus >= 0 ? withStatus : pending >= 0 ? pending : list.findIndex((b) => !b.ref.startsWith("tag: "));
   }
-  const isLite = (card: Card) => lite.get(card.ref) === card; // no dashboard card: delete and PR need one
 
   /** Moves the node to <body>, so the fixed menu isn't clipped by the scrolling list. */
   function portal(node: HTMLElement) {
@@ -119,14 +98,16 @@
   /** Repo, branch and hash: enough for an agent with git access, it can `git show` the rest. The branch: the one given
    *  (a clicked pill), else the feature branch the commit belongs to, else one pointing at it, else one containing it. */
   async function metadata(c: Commit, branch?: string) {
-    const name = branch ?? branchOf(c)?.local ?? badges(c.refs).find((b) => !b.ref.startsWith("tag: "))?.ref.replace("HEAD -> ", "")
+    const name = branch ?? badges(c.refs).find((b) => !b.ref.startsWith("tag: "))?.ref.replace("HEAD -> ", "")
       ?? (await api.commitPlaces(model.repo!, c.id))[0];
     return [`Repo: ${model.repo}`, name ? `Branch: ${name}` : null, `Commit: ${c.id}`].filter((line) => line != null).join("\n");
   }
 
 
   let scrollTop = $state(0);
-  // "N commits ›" opens "Only this branch"; closing it comes back to the same scroll position.
+  // Lineage spotlight: hovering a branch's card or badge lights its whole line and fades the other lines (rows stay as they are).
+  let spot = $state<number | null>(null);
+  // "N commits ›" opens the focus view; closing it comes back to the same scroll position.
   let beforeFocus: number | null = null;
   $effect(() => {
     if (model.focus || model.isLoading || beforeFocus == null || !scroller) return;
@@ -134,43 +115,59 @@
     beforeFocus = null;
     requestAnimationFrame(() => (scroller.scrollTop = y));
   });
+  /** Opens the focus view from the top, remembering where the full graph was. */
+  async function openFocus(ref: string) {
+    beforeFocus = scroller.scrollTop;
+    await model.setFocus(ref, model.base);
+    scroller.scrollTop = 0;
+  }
+  // A click outside an open menu only closes it: the row or button under the pointer doesn't react to that click.
+  let swallowing = false;
+  function closeMenusOutside(e: MouseEvent) {
+    swallowing = false;
+    if (!(menu || branchMenu || copyMenu) || (e.target as Element).closest?.(".context-menu")) return;
+    menu = null;
+    branchMenu = null;
+    copyMenu = null;
+    swallowing = true;
+  }
+  function swallowClick(e: MouseEvent) {
+    if (!swallowing) return;
+    swallowing = false;
+    e.stopPropagation();
+    e.preventDefault();
+  }
   let viewHeight = $state(600);
   let scroller: HTMLDivElement;
 
   const width = $derived(model.graphLanes * LANE + PAD * 2);
+  // Collapsed: each row's graph only as wide as its own lanes, so the card sits right next to its line.
+  const last = (lanes: (unknown | null)[]) => lanes.findLastIndex((l) => l != null);
+  const widthOf = (r: Range) => {
+    if (!model.branchesOnly || model.focus) return width;
+    const row = rowFor(r);
+    return (Math.max(last(row.before), last(row.after), row.column) + 1) * LANE + PAD * 2;
+  };
   /** Branches only: a branch row is just its pills, count, date and author, on one line (no subject). */
   const bare = (c: Commit) => model.branchesOnly && !model.focus && c.id !== WORKTREE_ID && !c.shelved;
-  /** Branches only: the branch whose status line goes under the row (first pill with a dashboard card). */
+  /** Branches only: the branch whose status line goes under the row (first pill with something to say). */
   const collapsedOf = (c: Commit) => (bare(c) ? badges(c.refs).map((b) => cardOf(b.ref)).find((card) => card != null && hasStatus(card)) ?? null : null);
 
-  /** What a branch is compared against, how far behind, and whether it's finished (shipped everywhere). */
+  /** What a branch is compared against (the base), how far behind, and whether it's finished: every commit everywhere. */
   function statusOf(card: Card) {
-    const d = model.dashboard;
-    const kind = card === d?.base ? "base" : d?.environments.includes(card) ? "environment" : "feature";
-    const against = card.parent ? localName(card.parent) : kind === "feature" ? localName(d?.base?.ref ?? "main") : null;
-    const behind = card.parent ? card.behindParent : kind === "feature" ? card.behindBase : 0;
-    return { kind, against, behind, done: kind === "feature" && isShipped(card) && !card.uncommitted };
+    const done = card.promotion.length > 0 && card.promotion.every(([, missing]) => missing === 0);
+    return { against: localName(model.base ?? "main"), behind: card.behindBase, done };
   }
-  /** Only branches with something to say grow into a card; the rest (e.g. main, up to date) stay a plain pill. */
+  /** Only branches with something to say get a status line. */
   function hasStatus(card: Card) {
-    const { against, behind, done } = statusOf(card);
-    const d = model.dashboard;
-    const merged = card !== d?.base && !d?.environments.includes(card) && card.promotion.some(([, missing]) => missing === 0);
-    return card.firstParentCount > 0 || (!!against && behind > 0) || done || !!card.uncommitted || merged;
+    const { behind, done } = statusOf(card);
+    return card.firstParentCount > 0 || behind > 0 || done || card.promotion.some(([, missing]) => missing === 0);
   }
-  // Collapsed rows are compact cards: name line, plus the status line when the branch has a dashboard card.
-  const GREY = "var(--muted-foreground)"; // collapsed: only the checked-out branch keeps its line color
-  const COLLAPSED = 86; // every branch row: card (52) plus room for the "N commits" link under it
+  // Collapsed rows are compact cards: name line, plus the status line when the branch has something to say.
+  const COLLAPSED = 64; // every branch row: card (52) with "N commits" beside it
   const CARD = 48;
   const localName = (ref: string) => (/^(origin|upstream)\//.test(ref) ? ref.slice(ref.indexOf("/") + 1) : ref);
 
-  // "Not merged into main" notes the user hid, per repo + branch + target; they stay hidden until the branch changes name.
-  let hiddenNotes = $state<string[]>(prefs.get("hiddenMergeNotes", []));
-  const noteKey = (card: Card, target: string) => `${model.repo}|${card.local}|${localName(target)}`;
-  function hideNote(card: Card, target: string) {
-    hiddenNotes = [...hiddenNotes, noteKey(card, target)];
-    prefs.set("hiddenMergeNotes", hiddenNotes);
-  }
 
   const heightOf = (r: Range) => {
     const c = model.commits[r[0]];
@@ -207,6 +204,7 @@
     requestAnimationFrame(() => (scroller.scrollTop = Math.max(0, offsets[request.row] - viewHeight / 3)));
   });
 
+  $effect(() => { model.viewEnd = end; });
   // Last rows about to show: load the next page.
   $effect(() => {
     if (end >= model.visible.length - 30) model.loadMore();
@@ -298,9 +296,10 @@
         tabindex="-1"
         onkeydown={() => {}}
       >
-        <div class="shrink-0" style:width="{width}px">
-          <GraphCell index={range[0]} row={rowFor(range)} height={heightOf(range)} {width}
-            isWorktree={commit.id === WORKTREE_ID} isShelved={!!commit.shelved} isMerge={commit.parents.length > 1} isHead={commit.refs.some((ref) => ref.startsWith("HEAD -> "))} names={model.names} grey={model.branchesOnly && !model.focus} />
+        <div class="shrink-0" style:width="{widthOf(range)}px">
+          <GraphCell index={range[0]} row={rowFor(range)} height={heightOf(range)} width={widthOf(range)}
+            isWorktree={commit.id === WORKTREE_ID} isShelved={!!commit.shelved} isMerge={commit.parents.length > 1} isHead={commit.refs.some((ref) => ref.startsWith("HEAD -> "))} names={model.names} grey={model.branchesOnly && !model.focus}
+            {spot} hidden={(collapsedOf(commit)?.firstParentCount ?? 1) - 1} />
         </div>
         {#if quiet}
           <div class="flex min-w-0 items-center px-2 text-[12px] text-tertiary opacity-70"><span class="truncate">{commit.subject}</span></div>
@@ -335,8 +334,8 @@
                     {@const name = localName(badge.ref.replace("HEAD -> ", ""))}
                     {@const isHead = badge.ref.startsWith("HEAD -> ")}
                     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-                    <div class="bcard" onclick={openMenu} oncontextmenu={(e) => { e.preventDefault(); openMenu(e); }} class:head={isHead}
-                      style:--lane={isHead ? laneColor(rowFor(range).color) : GREY} aria-busy={isPending(badge.ref)}>
+                    <div class="bcard" onclick={openMenu} onmouseenter={() => (spot = rowFor(range).color)} onmouseleave={() => (spot = null)} oncontextmenu={(e) => { e.preventDefault(); openMenu(e); }} class:head={isHead}
+                      style:--lane={laneColor(rowFor(range).color)} aria-busy={isPending(badge.ref)}>
                       <button class="bname" id="branch-card-{name}" onclick={openMenu}>
                         {#if isHead}<CircleCheck size={13} strokeWidth={2.5} />{:else}<GitBranch size={13} strokeWidth={2.5} />{/if}<span class="truncate">{name}</span>
                         {#if badge.isSynced || /^(origin|upstream)\//.test(badge.ref)}<span class="cloud" title="On the server at this commit: nothing to push or pull."><Cloud size={12} strokeWidth={2.5} /></span>{/if}
@@ -344,36 +343,29 @@
                       {#if own && hasStatus(own)}{@render status(own)}
                       {:else if isPending(badge.ref)}<div class="status"><span class="skel"></span><span class="skel w-[54px]"></span></div>{/if}
                     </div>
+                    <!-- Right of the card: opens the branch focused (the focus view); turning that off comes back here. -->
+                    {#if own && hasStatus(own) && own.firstParentCount}
+                      <button class="expand" id="branch-expand-{own.local}"
+                        onclick={(e) => { e.stopPropagation(); openFocus(own.ref); }}>
+                        {own.firstParentCount} commit{own.firstParentCount === 1 ? "" : "s"}<ChevronRight size={11} />
+                      </button>
+                    {:else if isPending(badge.ref)}<span class="skel ml-1 w-[64px]"></span>{/if}
                     <RefBadge ref={badge.ref} isSynced={badge.isSynced} chipsOnly />
                   {:else}
-                    <RefBadge ref={badge.ref} isSynced={badge.isSynced} color={bare(commit) && !badge.ref.startsWith("HEAD -> ") ? GREY : laneColor(rowFor(range).color)}
-                      onclick={!badge.ref.startsWith("tag: ") ? openMenu : undefined}
-                      oncontextmenu={!badge.ref.startsWith("tag: ") ? (e) => { e.preventDefault(); openMenu(e); } : undefined} />
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <span class="contents" onmouseenter={() => { if (!badge.ref.startsWith("tag: ")) spot = rowFor(range).color; }} onmouseleave={() => (spot = null)}>
+                      <RefBadge ref={badge.ref} isSynced={badge.isSynced} color={laneColor(rowFor(range).color)}
+                        onclick={!badge.ref.startsWith("tag: ") ? openMenu : undefined}
+                        oncontextmenu={!badge.ref.startsWith("tag: ") ? (e) => { e.preventDefault(); openMenu(e); } : undefined} />
+                    </span>
                   {/if}
                 {/each}
                 <!-- Date and author together on the right edge. -->
                 <span class="meta-right ml-auto shrink-0 pl-2 text-[12.5px] text-tertiary" title={new Date(commit.date * 1000).toLocaleString()}>{when(commit.date)}</span>
-                <span class="meta-right truncate text-[12.5px] text-tertiary" title={commit.author}>· {commit.author}</span>
+                <span class="meta-right author truncate text-[12.5px] text-tertiary" title={commit.author}>· {commit.author}</span>
               </div>
             {/if}
             {#if !commit.shelved && !bare(commit)}<div class="truncate text-[12.5px]" style:color={tint(range)}>{commit.subject}</div>{/if}
-            {#if pendingAt(commit) >= 0}<div class="under"><span class="skel w-[64px]"></span></div>{/if}
-            {#if collapsedOf(commit)?.firstParentCount}
-              {@const own = collapsedOf(commit)!}
-              <!-- Under the card: opens the branch focused ("Only this branch"); turning that off comes back here. -->
-              <div class="under">
-                <button class="expand" id="branch-expand-{own.local}"
-                  onclick={(e) => { e.stopPropagation(); beforeFocus = scroller.scrollTop; model.setFocus(own.ref, own.parent ?? model.dashboard?.base?.ref ?? null); }}>
-                  {own.firstParentCount} commit{own.firstParentCount === 1 ? "" : "s"}<ChevronRight size={11} />
-                </button>
-                {#if squashable(own.ref)}
-                  <!-- Same picker as the pill menu's "Squash commits…". -->
-                  <button class="expand st" id="branch-squash-{own.local}" onclick={(e) => { e.stopPropagation(); dialog = { kind: "squash", card: own }; }}>
-                    <span class="short"><Layers size={11} strokeWidth={2.5} />Squash</span><span class="more">&nbsp;· combine {own.featureCommits.length} commits into one{own.mergedIn ? ` (${own.mergedIn} came in through merges)` : ""}…</span>
-                  </button>
-                {/if}
-              </div>
-            {/if}
           </div>
         {/if}
         <!-- Quick actions on hover, far right: commit / amend for the uncommitted row, copy for AI for a branch row. -->
@@ -397,48 +389,47 @@
   </div>
 </div>
 
-<!-- Commits collapsed, right of the card: the environments that already have the branch (✓). The missing ones go inside the card. -->
-<!-- Commits collapsed: a branch's second line (behind, not merged yet, finished, uncommitted) with its actions. -->
+<!-- Commits collapsed: a branch's second line (behind, not merged yet, merged into, finished) with its actions. -->
 {#snippet status(card: Card)}
-  {@const d = model.dashboard}
   {@const { against, behind, done } = statusOf(card)}
   {@const stop = (action: () => void) => (e: MouseEvent) => { e.stopPropagation(); action(); }}
   <div class="status">
     {#if done}
-      <span class="st">✓ Finished · safe to delete</span>
-      {#if !isLite(card)}
-        <button class="st act" id="branch-status-delete-{card.local}" disabled={model.isCurrent(card.ref)} onclick={stop(() => (dialog = { kind: "delete", card }))}>Delete…</button>
-      {/if}
+      <!-- How it got there: the weakest way across targets in the label, each target's way on hover. -->
+      {@const ways = card.promotion.map(([, , how]) => how)}
+      {@const label = ways.includes("squashed") ? "Squashed" : ways.includes("cherry-picked") ? "Cherry-picked" : ways.includes("fast-forwarded") ? "Fast-forwarded" : "Merged"}
+      {@const explain = { merged: "merged", "fast-forwarded": "fast-forwarded: the base moved up to this branch, no merge commit", "cherry-picked": "same changes copied (cherry-pick or rebase)", squashed: "squashed: its contents are already there", "": "" }}
+      {@const how = card.promotion.map(([t, , how]) => `${localName(t)}: ${explain[how]}`).join("\n")}
+      {@const deletable = model.localBranches.includes(card.local) && !model.isCurrent(card.ref)}
+      <!-- Hovering the label swaps it for the delete button, in the same spot. -->
+      <span class="swap" class:deletable>
+        <span class="st label" title="{how}\nSafe to delete">✓ {label}</span>
+        {#if deletable}
+          <button class="st del" id="branch-status-delete-{card.local}" title="{how}\nDelete this branch…"
+            onclick={stop(() => (dialog = { kind: "delete", card }))}><Trash2 size={11} strokeWidth={2.5} />&nbsp;Safe to delete</button>
+        {/if}
+      </span>
     {:else}
-      {#if against && behind}
-        <button class="st warn" id="branch-status-behind-{card.local}" disabled={!card.parent}
-          onclick={stop(() => (dialog = { kind: "update", card }))}><span class="short">↓ {behind}</span><span class="more">&nbsp;behind {against}{#if card.parent} · Merge or rebase…{/if}</span></button>
+      {#if behind}
+        <button class="st warn" id="branch-status-behind-{card.local}" disabled={!model.localBranches.includes(card.local)}
+          onclick={stop(() => (dialog = { kind: "update", card }))}><span class="short">↓ {behind}</span><span class="more">&nbsp;behind {against} · Merge or rebase…</span></button>
       {/if}
-      <!-- Not merged yet where it came from (or an environment): quiet grey, hideable. Click opens the PR prompt. -->
-      {#if card !== d?.base && !d?.environments.includes(card)}
-        {#each card.promotion.filter(([t, missing]) => missing > 0 && !hiddenNotes.includes(noteKey(card, t))) as [target, missing] (target)}
-          {@const back = localName(target) === against}
-          <span class="note">
-            <button class="st" id="branch-status-pr-{card.local}-{localName(target)}" disabled={isLite(card)}
-              title="{missing} commit{missing === 1 ? '' : 's'} not in {localName(target)} yet. Click to open a PR."
-              onclick={stop(() => (dialog = { kind: "pr", card }))}><span class="short"><GitMerge size={11} strokeWidth={2.5} />{localName(target)}</span><span class="more">&nbsp;· {back ? "not merged back yet" : "not in it yet"} · PR…</span></button>
-            <button class="hide" id="branch-status-hide-note-{card.local}-{localName(target)}" title="Hide this note" onclick={stop(() => hideNote(card, target))}><X size={10} strokeWidth={2.5} /></button>
-          </span>
-        {/each}
-        <!-- Already fully in an environment (or the base): a quiet tick. -->
-        {#each card.promotion.filter(([, missing]) => missing === 0) as [target] (target)}
-          <span class="st" title="All its commits are in {localName(target)}">✓ merged into {localName(target)}</span>
-        {/each}
+      <!-- Merged somewhere but not everywhere yet: one quiet grey note, the places on hover. -->
+      {@const pending = card.promotion.filter(([t, missing]) => missing > 0)}
+      {#if pending.length && card.promotion.some(([, missing]) => missing === 0)}
+        <span class="note">
+          <span class="st" title="Not in {pending.map(([t, missing]) => `${localName(t)} (${missing} commit${missing === 1 ? '' : 's'})`).join(', ')}">{#if pending.some(([t]) => localName(t) === against)}Not in {against}{pending.length > 1 ? ` · +${pending.length - 1}` : ""}{:else}Pending merge{pending.length > 1 ? ` · ${pending.length}` : ""}{/if}</span>
+        </span>
       {/if}
-    {/if}
-    {#if card.uncommitted}
-      <button class="st warn" id="branch-status-changes-{card.local}" onclick={stop(() => model.revealWorktree())}>
-        {card.uncommitted.files} file{card.uncommitted.files === 1 ? "" : "s"} uncommitted<span class="do">· Review</span></button>
+      <!-- In no environment nor the base yet: work left halfway, worth a warning. Being merged somewhere needs no note. -->
+      {#if card.firstParentCount > 0 && card.promotion.every(([, missing]) => missing > 0)}
+        <span class="st alert" title="None of its commits are in {localName(model.base ?? 'main')} or any environment">Not merged anywhere</span>
+      {/if}
     {/if}
   </div>
 {/snippet}
 
-<svelte:window onmousedown={() => { menu = null; branchMenu = null; copyMenu = null; }} onkeydown={(e) => { if (e.key === "Escape") { menu = null; branchMenu = null; copyMenu = null; dialog = null; } }}
+<svelte:window onmousedowncapture={closeMenusOutside} onclickcapture={swallowClick} onkeydown={(e) => { if (e.key === "Escape") { menu = null; branchMenu = null; copyMenu = null; dialog = null; } }}
   onwheel={() => { menu = null; branchMenu = null; copyMenu = null; }} onblur={() => { menu = null; branchMenu = null; copyMenu = null; }} />
 {#if copyMenu}
   {@const { commit, branch } = copyMenu}
@@ -456,38 +447,26 @@
 {/if}
 {#if branchMenu}
   {@const { name, commit } = branchMenu}
-  {@const d = model.dashboard}
-  {@const own = cardOf(name) && !isLite(cardOf(name)!) ? cardOf(name) : null}
-  {@const kind = !own ? null : own === d?.base ? "base" : d?.environments.includes(own) ? "environment" : "feature"}
   {@const isCurrent = model.isCurrent(name)}
-  <!-- Branches without a card (someone else's) get it without PR and squash. -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div use:portal class="context-menu fit enter-pop" out:fade={{ duration: 120 }} role="menu" tabindex="-1" id="branch-pill-menu" onmousedown={(e) => e.stopPropagation()}
     style:left="{Math.min(branchMenu.x, innerWidth - 380)}px" style:top="{Math.max(8, Math.min(branchMenu.y, innerHeight - 520))}px">
-    <BranchActions {name} local={localName(name)} hash={own?.last?.id ?? commit.id} isBase={kind === "base" || localName(name) === d?.base?.local} {isCurrent} {model}
-      dismiss={() => (branchMenu = null)}
-      onSquash={own && kind === "feature" && own.featureCommits.length > 1 && own.squashBase ? () => (dialog = { kind: "squash", card: own }) : null}
-      onOpenPr={own && kind === "feature" ? () => (dialog = { kind: "pr", card: own }) : null} onNewBranch={() => (dialog = { kind: "new", from: localName(name) })} />
+    <BranchActions {name} local={localName(name)} hash={commit.id} isBase={localName(name) === localName(model.base ?? "")} {isCurrent} {model}
+      dismiss={() => (branchMenu = null)} onNewBranch={() => (dialog = { kind: "new", from: localName(name) })}
+      onFocus={() => openFocus(name)} />
   </div>
 {/if}
 {#if writingMessage}<MessagePrompt {model} start={writingMessage === "pick" ? null : writingMessage} onclose={() => (writingMessage = null)} />{/if}
 {#if menu}
   {@const c = menu.commit}
-  {@const branch = branchOf(c)}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div use:portal class="context-menu enter-pop" out:fade={{ duration: 120 }} role="menu" tabindex="-1" id="commit-menu" onmousedown={(e) => e.stopPropagation()}
-    style:left="{Math.min(menu.x, innerWidth - 340)}px" style:top="{Math.min(menu.y, innerHeight - (branch && branch.featureCommits.length > 1 ? 190 : 130))}px">
+    style:left="{Math.min(menu.x, innerWidth - 340)}px" style:top="{Math.min(menu.y, innerHeight - 130)}px">
     <ActionRow title={copied === "metadata" ? "Copied ✓" : "Copy metadata for AI"} icon={Sparkles} color="#a78bfa" id="commit-menu-copy-metadata" onclick={() => copy("metadata", metadata(c))}
       detail="Repo, branch and commit hash: enough for an agent with git to look at it itself"
       example={'paste it in Claude Code and ask "why did this break the build?": it runs git show by itself.'} />
     <ActionRow title={copied === "hash" ? "Copied ✓" : "Copy hash"} icon={Copy} grey id="commit-menu-copy-hash" onclick={() => copy("hash", c.id)}
       detail={c.id.slice(0, 7)} />
-    {#if branch && branch.featureCommits.length > 1}
-      <div class="mx-2 my-1 h-px bg-border"></div>
-      <ActionRow title="Squash this branch's commits…" icon={Layers} color="#ec5fa8" id="commit-menu-squash" onclick={() => { dialog = { kind: "squash", card: branch }; menu = null; }}
-        detail="Combine {branch.local}'s {branch.featureCommits.length} commits into one; copies a prompt for your agent"
-        example={'"wip", "fix typo", "fix again" become one clean commit: "feat: export csv".'} />
-    {/if}
   </div>
 {/if}
 
@@ -497,8 +476,6 @@
     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
     <div class="dialog-panel enter-pop" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()}>
       {#if dialog.kind === "new"}<StartFeature {model} from={dialog.from} dismiss={() => (dialog = null)} />
-      {:else if dialog.kind === "squash"}<SquashPrompt card={dialog.card} {model} dismiss={() => (dialog = null)} />
-      {:else if dialog.kind === "pr"}<PrPrompt card={dialog.card} {model} dismiss={() => (dialog = null)} />
       {:else if dialog.kind === "update"}<UpdatePanel card={dialog.card} {model} isCurrent={model.isCurrent(dialog.card.ref)} dismiss={() => (dialog = null)} />
       {:else}
         {@const card = dialog.card}
@@ -508,7 +485,7 @@
           <span class="px-1.5 pb-1 text-[12px] text-muted-foreground">Git refuses if it has commits that aren't merged, so no work can get lost.</span>
           <ActionRow title="Delete branch" detail="Only on your machine (git branch -d). The server copy stays." icon={Trash2} color="#f5a524"
             id="branch-delete-local" onclick={() => { model.deleteBranch(card.local, false); dialog = null; }} />
-          {#if card.summary?.hasUpstream}
+          {#if card.hasUpstream}
             <ActionRow title="Delete here and on the server" detail="Also removes it from origin, for the whole team." icon={CloudOff} color="#f5a524"
               id="branch-delete-remote" onclick={() => { model.deleteBranch(card.local, true); dialog = null; }} />
           {/if}
@@ -533,38 +510,41 @@
     box-shadow: none;
   }
   .bcard.head .bname .cloud { opacity: 0.75; }
-  .bcard.head :is(.st, .note .st, .hide) { color: rgb(255 255 255 / 0.72); }
+  .bcard.head :is(.st, .note .st) { color: rgb(255 255 255 / 0.72); }
   .bcard.head .st.warn, .row.selected .bcard.head .st.warn { color: #ffd58a; }
-  .bcard.head .st:hover:not(:disabled), .bcard.head .hide:hover { color: white; }
+  .bcard.head .st:hover:not(:disabled) { color: white; }
   .bname { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 13px; font-weight: 700; color: inherit; text-align: left; }
   .bname .cloud { display: flex; flex-shrink: 0; margin-left: 3px; opacity: 0.6; }
-  .bname:hover { text-decoration: underline; text-underline-offset: 3px; }
+  /* Hover: the card glows a little in its own color (no underline). */
+  .bcard { transition: background 0.15s, box-shadow 0.15s, color 0.15s; }
+  .bcard:not(.head):hover {
+    color: color-mix(in oklab, var(--lane) 45%, var(--foreground)); background: color-mix(in oklab, var(--lane) 12%, var(--background));
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--lane) 38%, transparent);
+  }
+  .bcard.head:hover { filter: brightness(1.12); }
   /* Status line inside the card: quiet text; amber only for what needs you (behind, uncommitted). */
-  .under { display: flex; align-items: center; gap: 18px; margin-left: 12px; white-space: nowrap; }
-  .expand { display: flex; align-items: center; gap: 1px; font-size: 11.5px; color: var(--tertiary); }
+  .expand { display: flex; flex-shrink: 0; align-items: center; gap: 1px; margin-left: 6px; white-space: nowrap; font-size: 11.5px; color: var(--tertiary); }
   .expand:hover { color: var(--foreground); }
   /* Minimal by default (↓ 18, ⑂ main); the full sentence and its action on hover. */
   .st .short { display: flex; align-items: center; gap: 3px; }
   .st .more { max-width: 0; overflow: hidden; opacity: 0; transition: max-width 0.3s var(--ease), opacity 0.2s var(--ease); }
   .st:hover .more { max-width: 280px; opacity: 1; }
-  .under .st { color: var(--tertiary); }
-  .under .st:hover { color: var(--foreground); }
   .note { display: flex; flex-shrink: 0; align-items: center; gap: 2px; }
   .note .st { color: var(--tertiary); }
-  .note .hide { display: grid; place-items: center; width: 14px; height: 14px; border-radius: 4px; color: var(--tertiary); opacity: 0; }
-  .note:hover .hide { opacity: 1; }
-  .note .hide:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.15); }
   .status { display: flex; align-items: center; gap: 18px; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 11.5px; }
   .st { display: flex; flex-shrink: 0; align-items: center; gap: 1px; color: var(--muted-foreground); }
   button.st:hover:not(:disabled) { color: var(--foreground); }
   .st.warn { color: color-mix(in oklab, #f5a524 75%, var(--foreground)); }
   .st.warn:hover:not(:disabled) { color: #ffc35c; }
+  .swap { display: grid; flex-shrink: 0; }
+  .swap > * { grid-area: 1 / 1; transition: opacity 0.12s; }
+  .swap .del { opacity: 0; pointer-events: none; }
+  .swap.deletable:hover .label { opacity: 0; }
+  .swap.deletable:hover .del { opacity: 1; pointer-events: auto; }
+  .st.alert, .bcard.head .st.alert { color: #f5a524; font-weight: 600; }
   /* Behind stays grey on other branches; amber only on the checked-out one or the selected row. */
   .bcard:not(.head) .st.warn { color: var(--muted-foreground); }
   .row.selected .bcard .st.warn { color: color-mix(in oklab, #f5a524 75%, var(--foreground)); }
-  /* The action word takes no room until hovered, so the line stays tight. */
-  .st .do { max-width: 0; overflow: hidden; opacity: 0; transition: max-width 0.2s var(--ease), opacity 0.15s, margin 0.2s var(--ease); }
-  .st:hover .do { max-width: 160px; margin-left: 4px; opacity: 1; }
   .context-menu {
     position: fixed; z-index: 1000; width: 320px; padding: 6px; border-radius: 10px;
     background: var(--popover); color: var(--popover-foreground);
@@ -579,8 +559,8 @@
   .dialog-panel { padding: 10px; border-radius: 12px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 0 0 1px oklch(0.5 0 0 / 0.18), 0 16px 40px rgb(0 0 0 / 0.4); }
   .row { transition: background-color 0.15s ease; }
   .quick { position: absolute; top: 50%; right: 10px; display: flex; gap: 6px; opacity: 0; pointer-events: none; translate: 4px -50%; transition: opacity 0.15s, translate 0.15s; }
-  .meta-right { transition: opacity 0.15s; }
-  .row:hover:has(.quick) .meta-right { opacity: 0; } /* the quick buttons take that spot */
+  .meta-right.author { transition: margin-right 0.15s; }
+  .row:hover:has(.quick) .meta-right.author { margin-right: 44px; } /* slides left to make room for the copy button */
   .row:hover .quick { opacity: 1; pointer-events: auto; translate: 0 -50%; }
   .quick button { display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
     color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.1); transition: color 0.15s, background 0.15s; }

@@ -30,6 +30,13 @@ export type History = {
   rows: Row[];
   names: (string | null)[];
   hasMore: boolean;
+  current: string | null; // checked-out branch, null when detached
+  base: string | null; // the branch pinned to the left
+  environments: string[]; // qa, develop…
+  allBranches: string[]; // every branch name, local or on origin: the environments picker
+  local: string[]; // every local branch, for "Change base"
+  shelvedBranches: string[]; // branches with WIP the app put aside: the "With WIP" filter
+  fastForwarded: boolean; // "Only this branch": reached the base by a fast-forward, no merge to draw
 };
 
 /** A commit whose title or description matched a global search (see search.rs). */
@@ -57,44 +64,18 @@ export type Side = { number: number; text: string; changed: [number, number] | n
 export type DiffRow = { hunk?: number; left: Side | null; right: Side | null; isChange: boolean };
 export type FileDiff = { rows: DiffRow[]; touching: string[] };
 
-export type Totals = { files: number; added: number; removed: number };
-
-/** One branch with its status against the base and environments (see Card in src-tauri/src/dashboard.rs). */
+/** A branch card in "Commits collapsed" (Status in src-tauri/src/branches.rs), fetched only for the rows on screen. */
 export type Card = {
   ref: string; // "qa", or "origin/qa" when there is no local branch
   local: string;
-  summary: { date: number; ahead: number; behind: number; hasUpstream: boolean } | null; // null = remote-only
-  last: Commit | null;
-  promotion: [string, number][]; // target, commits not in it yet
   behindBase: number;
-  parent: string | null;
-  uncommitted: Totals | null;
-  conflicts: string[]; // diverged from its upstream: files that would conflict pulling it
-  featureCommits: Commit[];
-  mergedIn: number; // of featureCommits, how many came in through merges
+  // target, own commits not in it yet, and how they got there when 0 ("" while missing)
+  promotion: [string, number, "merged" | "fast-forwarded" | "cherry-picked" | "squashed" | ""][];
   firstParentCount: number; // commits "Only this branch" shows: matches the graph when focused
-  squashBase: string | null;
-  alreadyIn: string[];
-  mergedBefore: string[]; // targets that got an earlier state of it (e.g. squash-merged) but not its newer commits
-  behindParent: number;
-  parentTip: string | null;
+  hasUpstream: boolean;
 };
 
-export type Dashboard = {
-  base: Card | null;
-  environments: Card[];
-  pinned: Card[];
-  features: Card[]; // "Recent activity"
-  old: Card[]; // "Hidden"
-  current: string | null;
-  local: string[]; // every local branch, for "Change base branch"
-};
-
-/** Feature branches (pinned, recent, hidden), and every card including the base and environments. */
-export const featureCards = (d: Dashboard) => [...d.pinned, ...d.features, ...d.old];
-export const allCards = (d: Dashboard) => [d.base, ...d.environments, ...featureCards(d)].filter((c): c is Card => c != null);
-
-export type SyncResult = { updated: string[]; skipped: string[]; log: string[] };
+export type SyncResult = { updated: string[]; skipped: string[]; log: string[]; changed: boolean };
 
 /** One git command the app ran (src-tauri/src/git.rs `LogEntry`), for the Logs panel. */
 export type GitLog = {
@@ -108,8 +89,12 @@ export type WipMode = "shelve" | "commit" | "carry";
 export const api = {
   listRepos: (folders: string[], repos: string[]) => invoke<RepoEntry[]>("list_repos", { folders, repos }),
   isRepo: (path: string) => invoke<boolean>("is_repo", { path }),
-  loadHistory: (repo: string, limit: number, onlyMine: boolean, branchesOnly: boolean, preferred: string | null, environments: string[], focus: string[], path: string | null, branches: string[]) =>
-    invoke<History>("load_history", { repo, limit, onlyMine, branchesOnly, preferred, environments, focus, path, branches }),
+  loadHistory: (repo: string, limit: number, onlyMine: boolean, branchesOnly: boolean, preferred: string | null, focus: string[], path: string | null,
+    environments: string[] | null, only: string[] | null) =>
+    invoke<History>("load_history", { repo, limit, onlyMine, branchesOnly, preferred, focus, path, environments, only }),
+  /** Filters, fast pass: every branch and, per target, the ones already in it by history (see branches.rs). */
+  mergedInto: (repo: string, targets: string[], onlyMine: boolean) =>
+    invoke<{ all: string[]; merged: [string, string[]][] }>("merged_into", { repo, targets, onlyMine }),
   searchCommits: (repos: string[], query: string) => invoke<SearchHit[]>("search_commits", { repos, query }),
   commitPlaces: (repo: string, id: string) => invoke<string[]>("commit_places", { repo, id }),
   commitInfo: (repo: string, id: string) => invoke<CommitInfo>("commit_info", { repo, id }),
@@ -119,10 +104,8 @@ export const api = {
     invoke<Changes>("load_changes", { repo, base, target, all }),
   loadDiff: (repo: string, path: string, base: string | null, target: string | null, group: string[], whole: boolean) =>
     invoke<FileDiff>("load_diff", { repo, path, base, target, group, whole }),
-  loadDashboard: (repo: string, preferred: string | null, pinned: string[], environments: string[] | null, states: Record<string, string>) =>
-    invoke<Dashboard>("load_dashboard", { repo, preferred, pinned, environments, states }),
   branchStatus: (repo: string, refs: string[], base: string, targets: string[]) =>
-    invoke<{ ref: string; behindBase: number; promotion: [string, number][]; firstParentCount: number }[]>("branch_status", { repo, refs, base, targets }),
+    invoke<Omit<Card, "local">[]>("branch_status", { repo, refs, base, targets }),
   gitLogs: (since: number) => invoke<GitLog[]>("git_logs", { since }),
   // Actions that change the repo (src-tauri/src/actions.rs); they reject with git's stderr.
   sync: (repo: string) => invoke<SyncResult>("sync", { repo }),

@@ -1,12 +1,11 @@
 <script lang="ts">
-  import { Crosshair, GitBranch, History, LayoutGrid, Search, X, TriangleAlert, UserRound, Waypoints } from "@lucide/svelte";
+  import { ArrowLeft, GitBranch, History, LayoutGrid, Search, X, TriangleAlert, UserRound, Waypoints } from "@lucide/svelte";
   import CommitSearch from "$lib/components/CommitSearch.svelte";
   import CheckoutPrompt from "$lib/components/CheckoutPrompt.svelte";
   import CommitList from "$lib/components/CommitList.svelte";
   import DiffPane from "$lib/components/DiffPane.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
   import Loader from "$lib/components/Loader.svelte";
-  import Onboarding from "$lib/components/Onboarding.svelte";
   import QuickTooltip from "$lib/components/QuickTooltip.svelte";
   import PaneDivider from "$lib/components/PaneDivider.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
@@ -14,9 +13,9 @@
   import WhatsNew from "$lib/components/WhatsNew.svelte";
   import ActionToast from "$lib/components/ActionToast.svelte";
   import LogsPanel from "$lib/components/LogsPanel.svelte";
+  import EnvironmentsPicker from "$lib/components/EnvironmentsPicker.svelte";
+  import FilterPicker from "$lib/components/FilterPicker.svelte";
   import { prefs, RepoModel } from "$lib/model.svelte";
-  import { FILTERS } from "$lib/branchFilters";
-  import { featureCards } from "$lib/api";
   import { fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
 
@@ -31,9 +30,10 @@
   // Keeps every branch up to date with origin: on open, every 5 min, on focus and on any activity (below).
   $effect(() => {
     if (!model.repo) return;
-    model.autoSync();
+    // A few seconds in, not right away: the first fetch would compete with the graph's first load.
+    const first = setTimeout(() => model.autoSync(), 3000);
     const timer = setInterval(() => model.autoSync(), 5 * 60_000);
-    return () => clearInterval(timer);
+    return () => { clearTimeout(first); clearInterval(timer); };
   });
 </script>
 
@@ -76,7 +76,7 @@
 
     <div class="min-h-0 flex-1" bind:clientWidth={space.width} bind:clientHeight={space.height}>
       {#if !model.hasSources || model.onboarding}
-        <Onboarding {model} />
+        {#await import("$lib/components/Onboarding.svelte") then { default: Onboarding }}<Onboarding {model} />{/await}<!-- first run only: not in the startup bundle -->
       {:else if model.error}
         <div class="flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
           <TriangleAlert size={32} strokeWidth={1.5} />
@@ -112,56 +112,43 @@
         <div class="enter-fade flex h-full flex-col">
           <!-- Inside the graph view (so it slides with it): thin strip with the graph's toggles (blue when on), short labels; the full explanation on hover. -->
           <div class="flex h-[46px] shrink-0 items-center gap-1 overflow-x-auto border-b px-3" id="toolbar">
+            <EnvironmentsPicker {model} />
+            <span class="mx-1 h-4 w-px shrink-0 bg-border"></span>
             <button class="tool" class:on={model.onlyMine} aria-pressed={model.onlyMine} id="only-mine-toggle"
               onclick={() => model.setOnlyMine(!model.onlyMine)}
               title={`My branches only: ${model.onlyMine ? "on" : "off"}\nShows only branches whose last commit is yours, plus main and the environments (qa, develop…). Ej: hides your teammates' branches so the graph stays clean.`}>
               <UserRound size={14} />My branches
             </button>
-            <!-- Only with a commit selected (or while on): it focuses that commit's branch. -->
-            {#if model.focusTarget}
-              <button class="tool" class:on={model.focus != null} aria-pressed={model.focus != null} id="focus-branch-toggle"
-                onclick={() => model.toggleFocus()}
-                title={model.focus ? `Only this branch: on · ${model.focus[0]}\nThe graph shows just this branch's own commits. Click to show everything again.`
-                  : `Only this branch: off\nShow just ${model.focusTarget}'s own commits, nothing else.`}>
-                <Crosshair size={14} />Only this branch
-              </button>
-            {/if}
             <button class="tool" class:on={model.branchesOnly} aria-pressed={model.branchesOnly} id="branches-only-toggle"
               disabled={model.focus != null || model.historyPath != null}
               onclick={() => model.setBranchesOnly(!model.branchesOnly)}
               title={`Commits collapsed: ${model.branchesOnly ? "on" : "off"}\nOne row per branch with its commit count, the rest collapsed: a quick look at every branch. Click "N commits" to open one.`}>
               <GitBranch size={14} />Commits collapsed
             </button>
+            <FilterPicker {model} disabled={!model.branchesOnly || model.focus != null || model.historyPath != null} />
             {#if model.historyPath}
               <button class="tool on" id="file-history-clear" onclick={() => model.setHistory(null)}
                 title={`History of ${model.historyPath}: only the commits that touched it. Click to show every commit again.`}>
                 <History size={14} />History: {model.historyPath.split("/").pop()}<X size={11} />
               </button>
             {/if}
-            <!-- Quick filters: the graph keeps only the matching branches, plus main and the environments. -->
-            {#if model.dashboard && !model.focus && !model.historyPath}
-              {@const d = model.dashboard}
-              {@const cards = featureCards(d)}
-              <span class="mx-2 h-5 w-px shrink-0 bg-border"></span>
-              {#each FILTERS as f (f.id)}
-                {@const count = cards.filter((card) => f.matches(card, d.base?.ref ?? null)).length}
-                {#if f.id === "all" || count || model.graphFilter === f.id}
-                  <button class="chip" class:on={model.graphFilter === f.id} id="graph-filter-{f.id}" title={f.help} onclick={() => model.setGraphFilter(f.id)}>
-                    {f.label}<span class="n">{count}</span>
-                  </button>
-                {/if}
-              {/each}
-            {/if}
           </div>
+          {#if model.focus}
+            <!-- While the focus view is on: a strip under the toolbar to go back to the graph as it was. -->
+            <div class="focus-banner" id="focus-banner">
+              <button class="back" id="focus-close" title="Back to the whole graph, where you were" onclick={() => model.setFocus(null)}>
+                <ArrowLeft size={16} />Back to full graph
+              </button>
+              <span class="mode">Focus view</span>
+              {#if model.fastForwarded}
+                <span class="mode" title="The base was moved up to this branch (fast-forward): there's no merge commit, the base simply went on from its last commit.">
+                  · Fast-forwarded into {model.base}: no merge, it went on from here</span>
+              {/if}
+            </div>
+          {/if}
           <div class="flex min-h-0 flex-1">
             <div class="relative min-w-0 flex-1">
               <CommitList {model} />
-              {#if model.focus}
-                <!-- Floating while "Only this branch" is on: click to go back to the graph as it was. -->
-                <button class="focus-float enter-pop" id="focus-close" title="Back to the whole graph" onclick={() => model.setFocus(null)}>
-                  <Crosshair size={15} />Only this branch<span class="name">{model.focus[0]}</span><X size={15} class="close" />
-                </button>
-              {/if}
             </div>
             {#if model.selected}
               <PaneDivider vertical bind:size={treeWidth} min={220} max={Math.max(220, space.width - 500)} />
@@ -194,30 +181,16 @@
   .tool { display: flex; flex-shrink: 0; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--muted-foreground); }
   .tool:hover:not(:disabled) { color: var(--foreground); background: oklch(0.5 0 0 / 0.1); }
   .tool:disabled { opacity: 0.4; }
-  .tool.on { color: var(--primary); background: color-mix(in oklab, var(--primary) 13%, transparent); }
-  .focus-float {
-    position: absolute; top: 12px; left: 50%; z-index: 20; translate: -50% 0; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px);
-    height: 38px; padding: 0 12px 0 14px; border-radius: 999px; font-size: 13.5px; font-weight: 600; color: var(--primary);
-    background: color-mix(in oklab, var(--primary) 14%, var(--popover)); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 40%, transparent), 0 8px 24px rgb(0 0 0 / 0.35);
-    transition: background 0.15s;
-  }
-  .focus-float:hover { background: color-mix(in oklab, var(--primary) 22%, var(--popover)); }
-  .focus-float .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--foreground); }
-  .focus-float :global(.close) { flex-shrink: 0; margin-left: 2px; opacity: 0.7; }
-  .focus-float:hover :global(.close) { opacity: 1; }
+  .tool.on { color: var(--primary); }
+  .tool.on:hover:not(:disabled) { color: var(--primary); }
+  .focus-banner { display: flex; flex-shrink: 0; align-items: center; gap: 14px; height: 48px; padding: 0 10px; border-bottom: 1px solid var(--border);
+    background: color-mix(in oklab, var(--primary) 8%, transparent); }
+  .focus-banner .back { display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px; border-radius: 9px; font-size: 14px; font-weight: 600; color: var(--primary); background: color-mix(in oklab, var(--primary) 12%, transparent); }
+  .focus-banner .back:hover { background: color-mix(in oklab, var(--primary) 22%, transparent); }
+  .focus-banner .mode { font-size: 13px; color: var(--muted-foreground); }
   .side-btn { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--muted-foreground); }
   .side-btn:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.1); }
   .side-btn.on { color: var(--primary); background: color-mix(in oklab, var(--primary) 12%, transparent); }
-  /* Graph quick filters. */
-  .chip {
-    display: inline-flex; flex-shrink: 0; align-items: center; gap: 6px; height: 28px; padding: 0 6px 0 12px; border-radius: 999px;
-    font-size: 12px; font-weight: 600; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.08);
-  }
-  .chip:hover:not(:disabled) { color: var(--foreground); background: oklch(0.5 0 0 / 0.14); }
-  .chip:disabled { opacity: 0.45; }
-  .chip.on { color: white; background: var(--primary); }
-  .chip .n { min-width: 18px; padding: 0 5px; border-radius: 999px; font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; background: oklch(0.5 0 0 / 0.14); }
-  .chip.on .n { background: rgb(255 255 255 / 0.22); }
   .search {
     display: flex; align-items: center; gap: 7px; height: 30px; width: 220px; padding: 0 10px; border-radius: 8px;
     font-size: 12px; color: var(--tertiary); background: oklch(0.5 0 0 / 0.08); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.12);

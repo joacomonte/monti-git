@@ -8,6 +8,8 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [tailwindcss(), sveltekit()],
+  // File type icons (~650 SVGs) stay separate files: inlined, they'd add ~550 KB to the startup bundle.
+  build: { assetsInlineLimit: (file) => (file.includes("material-icon-theme") ? false : undefined) },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

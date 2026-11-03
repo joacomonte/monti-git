@@ -1,4 +1,4 @@
-<!-- "Update from main" (UpdatePanel in Dashboard.swift): pick merge (recommended) or rebase, run it, then show the
+<!-- "Update from main": pick merge (recommended) or rebase, run it, then show the
      result. Conflicts abort cleanly and list the files; a rebase of a pushed branch offers the force push. -->
 <script lang="ts">
   import { ArrowUpDown, CircleCheck, GitMerge, LoaderCircle, TriangleAlert } from "@lucide/svelte";
@@ -14,9 +14,9 @@
   let usedRebase = $state(false);
 
   const localName = (ref: string) => (/^(origin|upstream)\//.test(ref) ? ref.slice(ref.indexOf("/") + 1) : ref);
-  const parentName = $derived(card.parent ? localName(card.parent) : "its base");
-  const isPushed = $derived(card.summary?.hasUpstream === true);
-  const n = $derived(card.behindParent);
+  const parentName = $derived(model.base ? localName(model.base) : "its base");
+  const isPushed = $derived(card.hasUpstream);
+  const n = $derived(card.behindBase);
 
   async function run(rebase: boolean) {
     usedRebase = rebase;

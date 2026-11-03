@@ -12,7 +12,6 @@
   import type { Component } from "svelte";
   import changelog from "$lib/changelog.json";
   import { prefs } from "$lib/model.svelte";
-  import WhatsNewDemo from "./WhatsNewDemo.svelte";
 
   type Kind = "new" | "improved" | "fixed";
   type Release = { version: string; changes: { kind: Kind; title: string; detail: string; demo?: string }[] }; // demo: see WhatsNewDemo
@@ -96,7 +95,7 @@
                     <span class="tag rounded-full px-1.5 text-[9.5px] font-bold tracking-[0.5px] uppercase">{kind.label}</span>
                   </div>
                   <span class="text-[12.5px] leading-[1.45] text-muted-foreground">{change.detail}</span>
-                  {#if change.demo}<WhatsNewDemo name={change.demo} />{/if}
+                  {#if change.demo}{#await import("./WhatsNewDemo.svelte") then { default: WhatsNewDemo }}<WhatsNewDemo name={change.demo} />{/await}{/if}<!-- demos load when this opens, not with the app -->
                 </div>
               </div>
             {/each}

@@ -9,7 +9,7 @@
 
   let { target, model }: { target: string; model: RepoModel } = $props();
   const n = $derived(model.pendingChangeCount);
-  const from = $derived(model.dashboard?.current ?? "this branch");
+  const from = $derived(model.current ?? "this branch");
   const cancel = () => (model.pendingCheckout = null);
 
   /** Enter = Stash (the default), Esc = cancel. */

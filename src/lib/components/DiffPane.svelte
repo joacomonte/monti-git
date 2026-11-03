@@ -11,11 +11,14 @@
   const counts = $derived(model.fileFilter ? model.counts[model.fileFilter] : undefined);
   // Blame of the file as of the selected commit, for the tooltip on each line of the "after" side.
   let blame = $state.raw<Blame | null>(null);
+  // By id: a reload hands over new commit objects, but a commit's blame never changes, so only a new id re-blames.
+  const newestId = $derived(model.selected ? (model.commits[model.selected[0]]?.id ?? null) : null);
   $effect(() => {
-    const repo = model.repo, path = model.fileFilter, newest = model.selected ? model.commits[model.selected[0]] : null;
+    const repo = model.repo, path = model.fileFilter, id = newestId;
+    if (id === WORKTREE_ID) void model.commits; // uncommitted: the file may have changed, so every reload re-blames
     blame = null;
-    if (!repo || !path || !newest) return;
-    const rev = newest.id === WORKTREE_ID ? null : newest.id;
+    if (!repo || !path || !id) return;
+    const rev = id === WORKTREE_ID ? null : id;
     api.blame(repo, path, rev).then((result) => { if (model.fileFilter === path) blame = result; }, () => {}); // deleted / binary: no blame
   });
   function blameOf(line: number) {

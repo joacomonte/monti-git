@@ -22,6 +22,7 @@ pub struct SyncResult {
     updated: Vec<String>,
     skipped: Vec<String>,
     log: Vec<String>, // raw git errors of the skipped branches, for debugging
+    changed: bool,    // any ref moved (fetch, prune or fast-forward): the graph needs a reload
 }
 
 /// Fetches every remote with --prune, then fast-forwards local branches that are strictly behind
@@ -29,6 +30,8 @@ pub struct SyncResult {
 /// anything that is not a clean fast-forward is skipped and reported. `--prune` only removes
 /// remote-tracking refs (origin/x) whose branch was deleted on the remote.
 pub fn sync(repo: &Path) -> Result<SyncResult, String> {
+    let refs = || ok(&["for-each-ref", "--format=%(refname) %(objectname)"], repo);
+    let before = refs();
     run(&["fetch", "--all", "--prune"], repo)?;
     let current = current_branch(repo);
     let branches = run(&["for-each-ref", "--format=%(refname:short)%09%(upstream)%09%(upstream:track)", "refs/heads"], repo)?;
@@ -59,6 +62,7 @@ pub fn sync(repo: &Path) -> Result<SyncResult, String> {
             }
         }
     }
+    result.changed = before.is_none() || refs() != before;
     Ok(result)
 }
 
