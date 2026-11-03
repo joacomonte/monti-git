@@ -166,6 +166,40 @@
     <div class="bc head c1"><b>feat/notifications</b><i>✓ Checked out · 2 behind</i></div>
     <div class="bc c2"><b>fix/paginado</b><i>✓ merged into qa</i></div>
     <div class="bc c3"><b>main</b><i class="skel"></i></div>
+  {:else if name === "focus-view"}
+    <!-- Branch menu → Focus view: a banner takes over under the toolbar, the branch leaves the base and merges back. -->
+    <div class="fv-banner"><em>← Back to full graph</em><span class="hint">Focus view</span></div>
+    <svg viewBox="0 0 220 70" class="fv-graph">
+      <path d="M20 0 V70" stroke="#4f8cff" />
+      <path class="fv-branch" d="M20 62 C20 52 60 52 60 42 V22 C60 12 20 12 20 6" stroke="#ff3b8b" />
+      <circle cx="20" cy="6" r="4" fill="#4f8cff" /><circle cx="20" cy="62" r="4" fill="#4f8cff" />
+      {#each [24, 40] as y (y)}<circle class="fv-branch" cx="60" cy={y} r="4" fill="#ff3b8b" />{/each}
+      <text x="78" y="9" class="fv-t">Merge into production</text><text x="78" y="35" class="fv-t fv-branch">feat/esim · 2 commits</text><text x="78" y="65" class="fv-t">left production here</text>
+    </svg>
+  {:else if name === "filters"}
+    <!-- Filter → Pending merge: branches already everywhere fold away, the pending ones stay. -->
+    <div class="fl-chip">Filter<span class="fl-on"> · Pending merge</span></div>
+    <div class="crow"><span class="cdot" style:background="#ff3b6b"></span><em class="cpill">feat/esim</em><em class="chip warn">Pending merge · 1</em></div>
+    <div class="crow fl-out"><span class="cdot" style:background="#34c77b"></span><em class="cpill">fix/paginado</em><em class="chip ok">✓ Merged</em></div>
+    <div class="crow"><span class="cdot" style:background="#4f8cff"></span><em class="cpill">feat/export</em><em class="chip warn">Not in production</em></div>
+  {:else if name === "environments"}
+    <!-- One chip: base on the left, environments after it; ticking develop adds it. -->
+    <div class="ev-chip"><b>production</b> · qa<span class="ev-add">, develop</span> ▾</div>
+    <div class="ev-list">
+      <div class="ev-pick"><span class="ev-box on">✓</span>qa</div>
+      <div class="ev-pick"><span class="ev-box ev-tick">✓</span>develop</div>
+      <div class="ev-pick"><span class="ev-box"></span>staging</div>
+    </div>
+  {:else if name === "follow"}
+    <!-- The pointer rests on a branch card: its line lights up, the others fade. -->
+    <svg viewBox="0 0 220 100" class="graph">
+      <path class="other" d="M30 0 V100" stroke="#4f8cff" />
+      <path class="other" d="M30 90 C30 80 90 80 90 70 V30" stroke="#f5a524" />
+      <path class="mine" d="M30 70 C30 60 60 60 60 50 V10" stroke="#ff3b8b" />
+      <circle class="mine" cx="60" cy="18" r="5" fill="#ff3b8b" />
+      <circle class="other" cx="90" cy="40" r="4" fill="#f5a524" /><circle class="other" cx="30" cy="50" r="4" fill="#4f8cff" />
+    </svg>
+    <em class="cpill hv-card">feat/esim</em><span class="pointer hv-ptr"></span>
   {/if}
 </div>
 
@@ -422,5 +456,32 @@
   .bc.c1 { animation-name: col1; } .bc.c2 { animation-name: col2; } .bc.c3 { animation-name: col3; }
   @keyframes skel { from { opacity: 0.4; } to { opacity: 1; } }
 
+  .fv-banner { display: flex; align-items: center; gap: 8px; height: 22px; margin: -4px -6px 4px; padding: 0 6px; border-radius: 6px; background: oklch(0.5 0 0 / 0.08); animation-name: fv-in; }
+  .fv-banner em { padding: 1px 7px; border-radius: 5px; font-style: normal; font-weight: 600; color: var(--primary); background: color-mix(in oklab, var(--primary) 16%, transparent); }
+  .fv-graph { width: 220px; height: 70px; }
+  .fv-graph path { stroke-width: 2.5; fill: none; }
+  .fv-t { font-size: 9.5px; fill: var(--muted-foreground); }
+  .fv-branch { animation-name: fv-draw; }
+  @keyframes fv-in { 0%, 10% { opacity: 0; transform: translateY(-6px); } 20%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+  @keyframes fv-draw { 0%, 22% { opacity: 0; } 34%, 92% { opacity: 1; } 100% { opacity: 0; } }
+  .fl-chip { position: absolute; right: 12px; top: 10px; font-weight: 600; color: var(--muted-foreground); animation-name: fl-chip; }
+  .fl-on { animation-name: fl-show; }
+  .fl-out { animation-name: fl-fold; overflow: hidden; }
+  @keyframes fl-chip { 0%, 25% { color: var(--muted-foreground); } 32%, 88% { color: var(--primary); } }
+  @keyframes fl-show { 0%, 25% { opacity: 0; } 32%, 88% { opacity: 1; } 96%, 100% { opacity: 0; } }
+  @keyframes fl-fold { 0%, 36% { height: 26px; opacity: 1; } 48%, 88% { height: 0; opacity: 0; } 98%, 100% { height: 26px; opacity: 1; } }
+  .ev-chip { display: inline-block; padding: 2px 8px; border-radius: 6px; color: var(--tertiary); background: oklch(0.5 0 0 / 0.1); }
+  .ev-chip b { color: var(--muted-foreground); }
+  .ev-add { animation-name: fl-show; }
+  .ev-list { width: 130px; margin-top: 6px; padding: 4px; border-radius: 8px; background: var(--popover); box-shadow: 0 4px 14px rgb(0 0 0 / 0.3); }
+  .ev-pick { display: flex; align-items: center; gap: 6px; height: 18px; padding: 0 4px; }
+  .ev-box { display: grid; place-items: center; width: 11px; height: 11px; border-radius: 3px; font-size: 8px; color: transparent; box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.4); }
+  .ev-box.on { color: white; background: var(--primary); box-shadow: none; }
+  .ev-tick { animation-name: ev-tick; }
+  @keyframes ev-tick { 0%, 25% { color: transparent; background: transparent; } 32%, 88% { color: white; background: var(--primary); box-shadow: none; } }
+  .hv-card { position: absolute; left: 100px; top: 16px; animation-name: hv-card; }
+  .hv-ptr { left: 150px; top: 24px; animation-name: hv-ptr; }
+  @keyframes hv-card { 0%, 30% { box-shadow: none; } 42%, 85% { box-shadow: inset 0 0 0 1px #ff3b8b; background: rgb(255 59 139 / 0.16); } }
+  @keyframes hv-ptr { 0% { opacity: 0; transform: translate(40px, 40px); } 10% { opacity: 1; } 30%, 85% { opacity: 1; transform: none; } 100% { opacity: 0; } }
   @media (prefers-reduced-motion: reduce) { .demo * { animation: none !important; } }
 </style>
