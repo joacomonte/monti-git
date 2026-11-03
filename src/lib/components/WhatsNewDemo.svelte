@@ -200,6 +200,12 @@
       <circle class="other" cx="90" cy="40" r="4" fill="#f5a524" /><circle class="other" cx="30" cy="50" r="4" fill="#4f8cff" />
     </svg>
     <em class="cpill hv-card">feat/esim</em><span class="pointer hv-ptr"></span>
+  {:else if name === "tree-search"}
+    <!-- Typing in the tree's search: the files fold down to the ones that match, with their matching lines counted. -->
+    <div class="ts-bar"><span class="typed">migration</span><span class="caret"></span><span class="ts-seg"><em>Names</em><em>Lines</em><em class="on">Both</em></span></div>
+    <div class="file ts-hit">● db/v8_migration.sql <span class="ts-n">4</span></div>
+    <div class="file ts-out">○ app/routes.ts</div>
+    <div class="file ts-hit">● api/sims.ts <span class="ts-n">2</span></div>
   {/if}
 </div>
 
@@ -483,5 +489,12 @@
   .hv-ptr { left: 150px; top: 24px; animation-name: hv-ptr; }
   @keyframes hv-card { 0%, 30% { box-shadow: none; } 42%, 85% { box-shadow: inset 0 0 0 1px #ff3b8b; background: rgb(255 59 139 / 0.16); } }
   @keyframes hv-ptr { 0% { opacity: 0; transform: translate(40px, 40px); } 10% { opacity: 1; } 30%, 85% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+  .ts-bar { display: flex; align-items: center; gap: 2px; height: 22px; margin-bottom: 4px; padding: 0 8px; border-radius: 6px; background: oklch(0.5 0 0 / 0.08); }
+  .ts-seg { display: flex; gap: 2px; margin-left: auto; font-size: 9.5px; font-weight: 600; color: var(--muted-foreground); }
+  .ts-seg em { padding: 0 4px; font-style: normal; border-radius: 4px; }
+  .ts-seg em.on { color: var(--foreground); background: oklch(0.5 0 0 / 0.16); }
+  .ts-n { padding: 0 5px; border-radius: 99px; font-size: 9.5px; font-weight: 600; color: var(--primary); background: color-mix(in oklab, var(--primary) 16%, transparent); animation-name: fl-show; }
+  .ts-out { overflow: hidden; animation-name: fl-fold; }
+  .ts-bar .typed { width: auto; animation-name: none; }
   @media (prefers-reduced-motion: reduce) { .demo * { animation: none !important; } }
 </style>

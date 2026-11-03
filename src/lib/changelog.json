@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.2.0",
+    "changes": [
+      { "kind": "new", "title": "Search in the file tree", "demo": "tree-search", "detail": "Find files by name, by lines or both. With Show changes only, lines come from the diff or from the whole changed files; with every file, from the whole repo at that commit." },
+      { "kind": "improved", "title": "Commit or Amend, in the commit box", "detail": "The two AI choices for your uncommitted changes moved from the graph row to the top of the commit box on the right." },
+      { "kind": "improved", "title": "Only local, inside the card", "detail": "Branches not on the server say so in amber where synced ones show the cloud." },
+      { "kind": "improved", "title": "Collapsed by default", "detail": "New installs start with My branches and Commits collapsed on." }
+    ]
+  },
+  {
     "version": "1.1.0",
     "changes": [
       { "kind": "new", "title": "Focus view", "demo": "focus-view", "detail": "From a branch's menu: just its commits, where it left the base and how it came back, by a merge or a fast-forward. A banner under the toolbar takes you back where you were." },
