@@ -17,8 +17,10 @@ type Prefs = {
   repoSources: Sources;
   sidebarPrefs: { favorites?: string[] };
   activity: Activity[];
+  seenChanges: Record<string, string>; // repo -> fingerprint of the uncommitted changes the user has already seen
   treeShowsAll: boolean;
   treeFlat: boolean;
+  openWith: string | null; // id of the editor the file tree's "Open" uses; null = the default app
   treeWidth: number;
   diffHeight: number;
   treeSearchMode: TreeSearchMode;

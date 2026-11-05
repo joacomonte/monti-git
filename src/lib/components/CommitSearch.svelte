@@ -64,7 +64,7 @@
     }
     searching = true;
     try {
-      const repos = scope === "repo" && model.repo ? [model.repo] : (await model.listedRepos()).map((r) => r.path);
+      const repos = scope === "repo" && model.repo ? [model.repo] : model.repos.map((r) => r.path);
       const none = { hits: [], truncated: false };
       const [found, lines] = await Promise.all([
         mode === "code" ? none : api.searchCommits(repos, text),

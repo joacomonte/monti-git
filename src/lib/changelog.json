@@ -1,5 +1,18 @@
 [
   {
+    "version": "1.4.0",
+    "changes": [
+      { "kind": "new", "title": "Push from the commit details", "demo": "push", "detail": "Select a commit at the tip of a branch that isn't on the server and push it from there. The first push sets where it goes; if the server has commits you don't, it offers a force push that never overwrites work you haven't fetched." },
+      { "kind": "improved", "title": "Local committed", "detail": "Branches committed but not pushed say Local committed in amber; pushed ones keep the cloud." },
+      { "kind": "improved", "title": "Safe to delete asks the server first", "detail": "It fetches, checks the branch is in the base and every environment, then offers only what applies: here and on the server, one of them, or switching to the base first. Squashed and cherry-picked branches can go too." },
+      { "kind": "improved", "title": "Watch it land in Logs", "detail": "After an action, the git commands it ran type out and fly into Logs, where you can undo it. Automatic fetches stay out of Logs unless you ask for them." },
+      { "kind": "improved", "title": "Open in your editor", "detail": "Files open in VS Code, Cursor, Zed, Sublime Text, IntelliJ or WebStorm, with the repo as the project. ⌥-click or right-click to pick one; it's remembered." },
+      { "kind": "improved", "title": "Repos with changes", "detail": "A dot in the sidebar marks repos with uncommitted changes: it pulses while they're new to you and stays still once you've opened the repo." },
+      { "kind": "improved", "title": "Fits narrow panes", "detail": "The file tree's toolbar turns its labels into icons when the pane is narrow, and the diff pane has a big Hide button." },
+      { "kind": "fixed", "title": "Merges show their changes", "detail": "Selecting a merge commit shows what it brought into its branch, also in the collapsed and focus views." }
+    ]
+  },
+  {
     "version": "1.3.0",
     "changes": [
       { "kind": "new", "title": "Search code in every repo", "demo": "code-search", "detail": "⌘K now finds lines of code too, in the current branch, the base or every branch of each repo. Picking one opens the file on that line, with its commit, author and date." },

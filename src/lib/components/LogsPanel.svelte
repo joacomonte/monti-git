@@ -6,7 +6,7 @@
   import * as Popover from "$lib/components/ui/popover";
   import type { Activity, RepoModel } from "$lib/model.svelte";
   import { CopyFlash } from "$lib/clipboard.svelte";
-  import { ago, baseName } from "$lib/format";
+  import { ago, baseName, gitCommand, ranBy } from "$lib/format";
   import Segmented from "./Segmented.svelte";
 
   let { model }: { model: RepoModel } = $props();
@@ -15,6 +15,7 @@
   let query = $state("");
   let errorsOnly = $state(false);
   let allRepos = $state(false);
+  let showFetches = $state(false); // fetches outside any action: the automatic ones (background sync, checks)
   let kind = $state<"write" | "read" | "all">("write");
   let expanded = $state<number[]>([]);
   const flash = new CopyFlash();
@@ -39,13 +40,11 @@
 
   const name = baseName;
   const when = (ms: number) => ago(ms / 1000, now);
-  // Arguments with spaces quoted, so the line can be pasted in a terminal.
-  const command = (l: GitLog) => "git " + l.args.map((a) => (/[\s"'$`\\|&;<>()*?]/.test(a) ? `'${a.replace(/'/g, `'\\''`)}'` : a)).join(" ");
   const output = (l: GitLog) => [l.stdout, l.stderr].filter(Boolean).join(l.stdout && l.stderr ? "\n--- stderr ---\n" : "");
 
   const matches = (l: GitLog) =>
     (allRepos || l.repo === model.repo) && (!errorsOnly || !l.ok) && (kind === "all" || (kind === "write") === l.write)
-    && (!query || (command(l) + "\n" + output(l)).toLowerCase().includes(query.toLowerCase()));
+    && (!query || (gitCommand(l) + "\n" + output(l)).toLowerCase().includes(query.toLowerCase()));
 
   type Item = { at: number; action: Activity | null; commands: GitLog[] };
   /** Newest first: each action with the commands that ran while it did, then the commands outside any action. */
@@ -55,18 +54,20 @@
     const actions: Item[] = model.activity
       .filter((a) => allRepos || a.repo === model.repo)
       .map((a) => {
-        const commands = a.started ? shown.filter((l) => l.repo === a.repo && l.at >= a.started! && l.at <= a.at + 500) : [];
+        const commands = shown.filter((l) => ranBy(l, a));
         commands.forEach((l) => used.add(l.id));
         return { at: a.at, action: a, commands };
       })
       // With a filter on, an action only stays if some of its commands match (or its text does).
       .filter((it) => it.commands.length || (!errorsOnly && kind !== "read" && (!query || it.action!.text.toLowerCase().includes(query.toLowerCase()))));
-    const loose: Item[] = shown.filter((l) => !used.has(l.id)).map((l) => ({ at: l.at, action: null, commands: [l] }));
+    // A fetch you started belongs to its action; one on its own is the app's background sync: hidden unless asked for.
+    const isAutoFetch = (l: GitLog) => l.args[0] === "fetch";
+    const loose: Item[] = shown.filter((l) => !used.has(l.id) && (showFetches || !isAutoFetch(l))).map((l) => ({ at: l.at, action: null, commands: [l] }));
     return [...actions, ...loose].sort((a, b) => b.at - a.at).slice(0, 400);
   });
 
   const toggle = (id: number) => (expanded = expanded.includes(id) ? expanded.filter((x) => x !== id) : [...expanded, id]);
-  const copy = (l: GitLog) => flash.copy(String(l.id), `$ ${command(l)}\n${output(l)}`);
+  const copy = (l: GitLog) => flash.copy(String(l.id), `$ ${gitCommand(l)}\n${output(l)}`);
 </script>
 
 {#snippet line(l: GitLog)}
@@ -75,7 +76,7 @@
     <button class="cmd-head" id="log-command-{l.id}" onclick={() => toggle(l.id)} aria-expanded={isOpen}>
       <ChevronRight size={11} class="shrink-0 transition-transform {isOpen ? 'rotate-90' : ''}" />
       <span class="dot" class:read={!l.write}></span>
-      <span class="min-w-0 flex-1 truncate font-mono" title={command(l)}>{command(l)}</span>
+      <span class="min-w-0 flex-1 truncate font-mono" title={gitCommand(l)}>{gitCommand(l)}</span>
       <span class="meta">{#if !l.ok}exit {l.code ?? "?"} · {/if}{l.ms}ms · {when(l.at)}{#if allRepos} · {name(l.repo)}{/if}</span>
     </button>
     {#if isOpen}
@@ -104,6 +105,8 @@
         <Segmented id="logs-kind" value={kind} onchange={(v) => (kind = v)}
           options={[{ value: "write", label: "Changes" }, { value: "read", label: "Reads" }, { value: "all", label: "All" }]} />
         <button class="chip" id="logs-errors" class:on={errorsOnly} aria-pressed={errorsOnly} onclick={() => (errorsOnly = !errorsOnly)}>Errors</button>
+        <button class="chip" id="logs-auto-fetch" class:on={showFetches} aria-pressed={showFetches} onclick={() => (showFetches = !showFetches)}
+          title="The fetches the app runs by itself (background sync, checks before an action). Hidden by default.">Auto fetch</button>
         <button class="chip" id="logs-all-repos" class:on={allRepos} aria-pressed={allRepos} onclick={() => (allRepos = !allRepos)}>All repos</button>
       </div>
     </div>

@@ -212,6 +212,13 @@
     <div class="file cs-hit">db/v8_migration.sql:1 <span class="env">✓ main</span></div>
     <div class="file cs-hit">app/run.ts:12 <span class="env">✓ qa</span></div>
     <div class="cs-line"><span class="cs-code">-- V8 Migration</span><span class="cs-blame">a1b2c3d · Ana · 2d ago</span></div>
+  {:else if name === "push"}
+    <!-- A committed branch says Local committed; Push in the commit details uploads it, the chip turns into the cloud,
+         and the command flies into Logs, where it can be undone. -->
+    <div class="pu-logs">Logs</div>
+    <div class="pu-row"><em class="pu-pill">feat/sms-forward</em><em class="pu-local">Local committed</em><em class="pu-cloud">☁</em></div>
+    <div class="pu-btn">↑ Push feat/sms-forward</div>
+    <div class="pu-term"><b>$</b> git push -u origin feat/sms-forward</div>
   {/if}
 </div>
 
@@ -506,5 +513,19 @@
   .cs-line { display: flex; gap: 8px; margin-top: 4px; padding: 2px 6px; border-radius: 4px; font-family: var(--font-mono, ui-monospace); animation-name: fl-show;
     background: color-mix(in oklab, var(--primary) 16%, transparent); box-shadow: inset 2px 0 0 var(--primary); }
   .cs-blame { margin-left: auto; font-family: var(--font-sans, system-ui); color: var(--muted-foreground); }
+  /* push */
+  .pu-logs { position: absolute; top: 8px; right: 10px; padding: 1px 8px; border-radius: 6px; font-weight: 600; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.1); animation-name: pu-logs; }
+  .pu-row { display: flex; align-items: center; gap: 6px; height: 20px; }
+  .pu-pill { padding: 1px 7px; border-radius: 99px; font-style: normal; font-weight: 600; color: var(--primary); background: color-mix(in oklab, var(--primary) 12%, transparent); }
+  .pu-local { font-style: normal; font-weight: 700; font-size: 10px; color: #f5a524; animation-name: pu-local; }
+  .pu-cloud { font-style: normal; color: var(--muted-foreground); opacity: 0; animation-name: pu-cloud; }
+  .pu-btn { display: inline-block; margin-top: 8px; padding: 3px 9px; border-radius: 6px; font-weight: 600; color: white; background: var(--primary); animation-name: pu-btn; }
+  .pu-term { position: absolute; left: 12px; bottom: 10px; padding: 4px 8px; border-radius: 6px; font-family: var(--font-mono, ui-monospace); color: oklch(0.92 0 0); background: oklch(0.16 0 0); opacity: 0; animation-name: pu-term; }
+  .pu-term b { color: #34c77b; }
+  @keyframes pu-btn { 0%, 25% { transform: none; } 29% { transform: scale(0.92); } 33%, 100% { transform: none; } }
+  @keyframes pu-local { 0%, 33% { opacity: 1; } 38%, 100% { opacity: 0; } }
+  @keyframes pu-cloud { 0%, 36% { opacity: 0; } 42%, 100% { opacity: 1; } }
+  @keyframes pu-term { 0%, 38% { opacity: 0; transform: translateY(6px); } 44%, 70% { opacity: 1; transform: none; } 88%, 100% { opacity: 0; transform: translate(190px, -78px) scale(0.1); } }
+  @keyframes pu-logs { 0%, 86% { box-shadow: none; } 90% { box-shadow: 0 0 0 4px color-mix(in oklab, var(--primary) 45%, transparent); color: var(--primary); } 100% { box-shadow: none; } }
   @media (prefers-reduced-motion: reduce) { .demo * { animation: none !important; } }
 </style>

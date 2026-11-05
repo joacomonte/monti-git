@@ -15,7 +15,6 @@
   import { ago, baseName } from "$lib/format";
 
   let { model }: { model: RepoModel } = $props();
-  let repos = $state<RepoEntry[]>([]);
   let version = $state("");
   getVersion().then((v) => (version = v));
   // Ticks so "2m ago" next to Auto sync stays current.
@@ -23,14 +22,6 @@
   $effect(() => {
     const timer = setInterval(() => (now = Date.now()), 20_000);
     return () => clearInterval(timer);
-  });
-
-  // Relisted whenever a folder or repo is added, removed or hidden; an older listing arriving late is dropped.
-  $effect(() => {
-    void model.sources;
-    let stale = false;
-    model.listedRepos().then((list) => { if (!stale) repos = list; }, () => {});
-    return () => (stale = true);
   });
 
   let showAdd = $state(false);
@@ -47,7 +38,7 @@
 
   const sections = $derived.by(() => {
     const favorites = model.favorites;
-    const sorted = [...repos].sort((a, b) => b.lastActivity - a.lastActivity);
+    const sorted = [...model.repos].sort((a, b) => b.lastActivity - a.lastActivity);
     const groups = new Map<string, RepoEntry[]>();
     for (const repo of sorted.filter((r) => !favorites.includes(r.path))) {
       groups.set(repo.owner, [...(groups.get(repo.owner) ?? []), repo]);
@@ -150,6 +141,12 @@
         >
           <GitBranch size={13} class="shrink-0 text-muted-foreground" />
           <span class="flex-1 truncate">{baseName(repo.path)}</span>
+          {#if model.changesDot(repo)}
+            {@const isNew = model.changesDot(repo) === "new"}
+            <!-- Uncommitted changes in that repo: pulsing until you open it, then still; gone once it's clean. -->
+            <span class="changes" class:new={isNew} id="repo-changes-{baseName(repo.path)}"
+              title={isNew ? "New uncommitted changes: open it to see them" : "Uncommitted changes"}></span>
+          {/if}
           <!-- spans, not buttons: they sit inside the row's <button>. -->
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <span role="button" tabindex="0" class="copy shrink-0" class:on={flash.copied === repo.path} id="copy-path-{baseName(repo.path)}"
@@ -249,6 +246,10 @@
   .repo:hover { background: var(--quinary); }
   .repo.active { background: color-mix(in oklch, var(--primary) 20%, transparent); }
   /* 13–14px with real contrast: at 10px and tertiary grey they vanished on non-retina Windows screens. */
+  .changes { width: 7px; height: 7px; flex-shrink: 0; border-radius: 99px; background: var(--muted-foreground); opacity: 0.8; }
+  .changes.new { opacity: 1; background: var(--primary); animation: changes 1.8s ease-out infinite; }
+  @keyframes changes { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 70%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+  @media (prefers-reduced-motion: reduce) { .changes.new { animation: none; } }
   .star, .copy { padding: 3px; margin: -3px 0; border-radius: 5px; }
   .star { display: none; color: var(--muted-foreground); }
   .star:hover { color: rgb(234 179 8); background: oklch(0.5 0 0 / 0.15); }

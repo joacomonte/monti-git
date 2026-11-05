@@ -1,6 +1,6 @@
 [package]
 name = "monti-git"
-version = "1.3.0"
+version = "1.4.0"
 description = "A git graph for every repo you work on"
 authors = ["Joaquín Monte"]
 edition = "2024"

@@ -43,7 +43,7 @@
 <!-- Back from the editor/terminal: pick up new commits, checkouts and uncommitted changes. -->
 <!-- Any activity also syncs with origin (at most once a minute, see autoSync). -->
 <!-- oncontextmenu: no browser menu (Reload / Inspect Element) on right click; text fields and selected text keep it for copy/paste. -->
-<svelte:window onfocus={() => { model.reload(); model.autoSync(); }} onpointerdown={() => model.autoSync()} onwheel={() => model.autoSync()}
+<svelte:window onfocus={() => { model.reload(); model.refreshRepos(); model.autoSync(); }} onpointerdown={() => model.autoSync()} onwheel={() => model.autoSync()}
   oncontextmenu={(e) => {
     const field = (e.target as Element).closest("input, textarea, [contenteditable]");
     if (!field && !getSelection()?.toString()) e.preventDefault();

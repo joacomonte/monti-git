@@ -5,6 +5,7 @@ mod blame;
 mod branches;
 mod changes;
 mod diff;
+mod editors;
 mod git;
 mod graph;
 mod history;
@@ -18,7 +19,7 @@ mod testutil;
 mod wip;
 
 use git::Span;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -34,13 +35,29 @@ fn is_repo(path: String) -> bool {
     library::is_repo(Path::new(&path))
 }
 
-/// Opens a repo file with the system's default app, or with `reveal` shows it selected in Finder / Explorer.
+/// How to open a repo file: shown selected in Finder / Explorer, with the system's default app, or in a code editor.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Open {
+    Reveal,
+    Default,
+    Editor(String),
+}
+
 /// Our own command, so it isn't limited by the opener plugin's path scope.
 #[tauri::command(async)]
-fn open_file(repo: String, path: String, reveal: bool) -> Result<()> {
+fn open_file(repo: String, path: String, with: Open) -> Result<()> {
     let full = git::repo_file(Path::new(&repo), &path)?;
-    let result = if reveal { tauri_plugin_opener::reveal_item_in_dir(full) } else { tauri_plugin_opener::open_path(full, None::<&str>) };
-    result.map_err(|e| e.to_string())
+    match with {
+        Open::Reveal => tauri_plugin_opener::reveal_item_in_dir(full).map_err(|e| e.to_string()),
+        Open::Default => tauri_plugin_opener::open_path(full, None::<&str>).map_err(|e| e.to_string()),
+        Open::Editor(id) => editors::open(&id, Path::new(&repo), &full),
+    }
+}
+
+#[tauri::command(async)]
+fn list_editors() -> Vec<editors::Editor> {
+    editors::installed()
 }
 
 // MARK: Reading
@@ -50,16 +67,16 @@ fn load_history(repo: String, query: history::Query) -> Result<history::History>
     history::load(Path::new(&repo), &query)
 }
 
-/// Files of a selection. `target` None = the uncommitted-changes row; `base` None = root commit.
+/// Files of a selection. `commit` None = the uncommitted-changes row.
 #[tauri::command(async)]
-fn load_changes(repo: String, base: Option<String>, target: Option<String>, all: bool) -> Result<changes::Changes> {
-    changes::load(Path::new(&repo), Span::new(base.as_deref(), target.as_deref()), all)
+fn load_changes(repo: String, commit: Option<String>, all: bool) -> Result<changes::Changes> {
+    changes::load(Path::new(&repo), Span::new(commit.as_deref()), all)
 }
 
 /// One file of a selection. `whole`: its full content instead of its diff.
 #[tauri::command(async)]
-fn load_diff(repo: String, path: String, base: Option<String>, target: Option<String>, whole: bool) -> Result<changes::FileDiff> {
-    changes::file_diff(Path::new(&repo), &path, Span::new(base.as_deref(), target.as_deref()), whole)
+fn load_diff(repo: String, path: String, commit: Option<String>, whole: bool) -> Result<changes::FileDiff> {
+    changes::file_diff(Path::new(&repo), &path, Span::new(commit.as_deref()), whole)
 }
 
 #[derive(Serialize)]
@@ -157,9 +174,9 @@ fn search_code(repos: Vec<String>, bases: HashMap<String, String>, query: String
 
 /// File tree search by content in a selection: path -> its matching lines.
 #[tauri::command(async)]
-fn search_lines(repo: String, base: Option<String>, target: Option<String>, query: String, paths: Vec<String>, diff_only: bool) -> HashMap<String, search::LineHits> {
+fn search_lines(repo: String, commit: Option<String>, query: String, paths: Vec<String>, diff_only: bool) -> HashMap<String, search::LineHits> {
     let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
-    search::lines(Path::new(&repo), Span::new(base.as_deref(), target.as_deref()), &query, &paths, diff_only)
+    search::lines(Path::new(&repo), Span::new(commit.as_deref()), &query, &paths, diff_only)
 }
 
 #[tauri::command(async)]
@@ -185,8 +202,14 @@ fn pull(repo: String, name: String) -> Result<String> {
 }
 
 #[tauri::command(async)]
-fn delete_branch(repo: String, branch: String, remote: bool) -> Result<String> {
-    actions::delete_branch(&branch, remote, Path::new(&repo))
+fn delete_branch(repo: String, branch: String, base: String, targets: Vec<String>, remote: bool) -> Result<String> {
+    actions::delete_branch(&branch, &base, &targets, remote, Path::new(&repo))
+}
+
+/// Fetches, then whether `branch` can be deleted and where it is: the delete dialog's options.
+#[tauri::command(async)]
+fn deletion(repo: String, branch: String, base: String, targets: Vec<String>) -> actions::Deletion {
+    actions::deletion(&branch, &base, &targets, Path::new(&repo))
 }
 
 #[tauri::command(async)]
@@ -209,9 +232,10 @@ fn move_branch(repo: String, branch: String, expected: Option<String>, target: S
     actions::move_branch(&branch, expected.as_deref(), &target, Path::new(&repo))
 }
 
+/// Pushes `branch` (setting its upstream the first time); `force` with --force-with-lease.
 #[tauri::command(async)]
-fn force_push(repo: String, branch: String) -> Result<()> {
-    actions::force_push(&branch, Path::new(&repo))
+fn push(repo: String, branch: String, force: bool) -> Result<actions::Pushed> {
+    actions::push(&branch, force, Path::new(&repo))
 }
 
 #[tauri::command(async)]
@@ -251,11 +275,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            list_repos, is_repo, open_file,
+            list_repos, is_repo, open_file, list_editors,
             load_history, load_changes, load_diff, commit_info, blame, branch_status, merged_into, branch_tip, last_commit_message,
             changed_file_count, git_logs,
             search_commits, search_code, search_lines, commit_places,
-            sync, checkout, pull, delete_branch, update_branch, base_status, start_feature, move_branch, force_push,
+            sync, checkout, pull, delete_branch, deletion, update_branch, base_status, start_feature, move_branch, push,
             discard_file, discard_all, discard_hunk, stage, unstage, commit,
         ])
         .run(tauri::generate_context!())

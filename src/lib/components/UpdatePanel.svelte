@@ -34,7 +34,7 @@
 
   async function push() {
     error = null;
-    const result = await model.forcePush(card.local);
+    const result = await model.push(card.local, true);
     if (result.ok) step = "pushed";
     else error = result.error;
   }

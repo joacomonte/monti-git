@@ -11,7 +11,7 @@
   {#each options as option (option.value)}
     <button role="radio" aria-checked={value === option.value} class:on={value === option.value} id="{id}-{option.value}"
       title={option.title} disabled={option.disabled} onclick={() => onchange(option.value)}>
-      {#if option.icon}<option.icon size={13} />{/if}{option.label ?? ""}
+      {#if option.icon}<option.icon size={13} />{/if}{#if option.label}<span class="label">{option.label}</span>{/if}
     </button>
   {/each}
 </div>

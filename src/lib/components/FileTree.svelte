@@ -1,7 +1,7 @@
 <!-- Files of the selected commit: only the changed ones, or the whole repo with changes highlighted. -->
 <script lang="ts">
-  import { Check, ChevronRight, ChevronsDownUp, Copy, Folder, FolderOpen, History, List, ListTree, LoaderCircle, Search, SquareArrowOutUpRight, Sparkles, Square, SquareCheck, SquareMinus, X } from "@lucide/svelte";
-  import { api, WORKTREE_ID, type LineHits } from "$lib/api";
+  import { CaseSensitive, Check, ChevronRight, ChevronsDownUp, Copy, Diff, FileText, Folder, FolderOpen, History, Layers, List, ListTree, LoaderCircle, Search, SquareArrowOutUpRight, Sparkles, Square, SquareCheck, SquareMinus, TextSearch, X } from "@lucide/svelte";
+  import { api, WORKTREE_ID, type Editor, type LineHits, type OpenWith } from "$lib/api";
   import { Switch } from "$lib/components/ui/switch";
   import type { RepoModel } from "$lib/model.svelte";
   import { CopyFlash } from "$lib/clipboard.svelte";
@@ -89,13 +89,24 @@
 
   const EXPLORER = navigator.userAgent.includes("Windows") ? "Explorer" : "Finder";
 
-  /** Opens with the system's default app, or `reveal`s it selected in Finder / Explorer. */
-  async function openFile(path: string, reveal: boolean) {
+  async function openFile(path: string, how: OpenWith) {
     try {
-      await api.openFile(model.repo!, path, reveal);
+      await api.openFile(model.repo!, path, how);
     } catch (error) {
       model.syncStatus = `Couldn't open ${path}: ${error}`;
     }
+  }
+
+  // "Open": in the editor last picked from the menu (⌥-click or right-click); the default app until then, or once it's gone.
+  let editors = $state.raw<Editor[]>([]);
+  api.listEditors().then((found) => (editors = found));
+  let openWith = $state(prefs.get("openWith", null));
+  const editor = $derived(editors.find((e) => e.id === openWith) ?? null);
+  const openHow = (e: Editor | null): OpenWith => (e ? { editor: e.id } : "default");
+  function openIn(path: string, choice: Editor | null) {
+    openWith = choice?.id ?? null;
+    prefs.set("openWith", openWith);
+    openFile(path, openHow(choice));
   }
 
   const everything = $derived(model.stageState(""));
@@ -116,52 +127,57 @@
   </span>
 {/snippet}
 
-{#snippet tool(id: string, title: string, action: () => void, children: import("svelte").Snippet)}
+{#snippet tool(id: string, title: string, action: (e: MouseEvent | KeyboardEvent) => void, children: import("svelte").Snippet)}
   <!-- A span, not a button: it sits inside the row's <button>. -->
-  <span role="button" tabindex="-1" class="tool-icon" {id} {title} onclick={(e) => { e.stopPropagation(); action(); }}
-    onkeydown={(e) => { if (e.key === "Enter") { e.stopPropagation(); action(); } }}>{@render children()}</span>
+  <span role="button" tabindex="-1" class="tool-icon" {id} {title} onclick={(e) => { e.stopPropagation(); action(e); }}
+    onkeydown={(e) => { if (e.key === "Enter") { e.stopPropagation(); action(e); } }}>{@render children()}</span>
 {/snippet}
 
 <div class="flex h-full flex-col">
   {#if model.isWorktreeSelected}<CommitBox {model} />
   {:else if model.selected}{#key model.selected.id}<CommitDetails {model} id={model.selected.id} />{/key}{/if}
-  <div class="flex items-center gap-1.5 p-2">
-    <!-- View controls on the left (layout, collapse, what to list); actions on the right. -->
-    <Segmented id="file-tree-layout" value={flat ? "flat" : "tree"} onchange={(v) => setFlat(v === "flat")}
-      options={[{ value: "tree", icon: ListTree, title: "Folder tree" }, { value: "flat", icon: List, title: "Flat list: one row per file, its folder dimmed" }]} />
-    {#if !flat}
-      <button class="collapse-all" id="file-tree-collapse-all" title="Collapse all folders" disabled={!model.expandedDirs.size}
-        onclick={() => (model.expandedDirs = new Set())}><ChevronsDownUp size={14} /></button>
-    {/if}
-    <label class="ml-1 flex items-center gap-1.5 text-[11px] font-medium whitespace-nowrap text-muted-foreground"
-      title="On: only the files that changed. Off: every file in the repo, changed ones marked">
-      <Switch checked={!model.showAllFiles} onCheckedChange={(on) => model.setShowAllFiles(!on)} id="file-tree-changes-only" />Show changes only
-    </label>
-    <span class="flex-1"></span>
-    {#if model.isWorktreeSelected && everything.files.length}
-      <button class="tool" id="stage-all" onclick={() => model.setStaged(everything.files, !everything.all)}
-        title={everything.all ? "Unstage all: nothing goes into the next commit" : "Stage all: every changed file goes into the next commit"}>
-        {#if everything.all}<SquareMinus size={10} strokeWidth={2.5} />Unstage all{:else}<SquareCheck size={10} strokeWidth={2.5} />Stage all{/if}
-      </button>
-    {/if}
-    {#if model.isWorktreeSelected && model.changedOrder.length}
-      <DiscardButton title="Discard all" label id="discard-all" onconfirm={() => model.discardAll()}
-        hint="Throws away every uncommitted change, back to the last commit. New files get deleted too." />
-    {/if}
-  </div>
-  <div class="flex items-center gap-1.5 px-2 pb-1.5">
-    <label class="search">
-      {#if searchingLines}<LoaderCircle size={12} class="shrink-0 animate-spin" />{:else}<Search size={12} class="shrink-0" />{/if}
-      <input id="file-tree-search" placeholder={mode === "names" ? "Search file names" : mode === "lines" ? "Search lines" : "Search files and lines"}
-        bind:value={query} onkeydown={(e) => e.key === "Escape" && (query = "")} />
-      {#if query}<button id="file-tree-search-clear" title="Clear" onclick={() => (query = "")}><X size={12} /></button>{/if}
-    </label>
-    <Segmented id="file-tree-search-mode" value={mode} onchange={setMode}
-      options={[{ value: "names", label: "Names" }, { value: "lines", label: "Lines" }, { value: "both", label: "Both" }]} />
-    {#if mode !== "names" && !model.showAllFiles}
-      <Segmented id="file-tree-search-scope" value={diffOnly ? "diff" : "whole"} onchange={(v) => setDiffOnly(v === "diff")}
-        options={[{ value: "diff", label: "Diff", title: "Only the lines added or removed here" }, { value: "whole", label: "Whole file", title: "Anywhere in the changed files" }]} />
-    {/if}
+  <!-- Narrow pane: texts become icons first (their titles stay as tooltips), then what still doesn't fit wraps. -->
+  <div class="toolbar">
+    <div class="flex flex-wrap items-center gap-1.5 p-2">
+      <!-- View controls on the left (layout, collapse, what to list); actions on the right. -->
+      <Segmented id="file-tree-layout" value={flat ? "flat" : "tree"} onchange={(v) => setFlat(v === "flat")}
+        options={[{ value: "tree", icon: ListTree, title: "Folder tree" }, { value: "flat", icon: List, title: "Flat list: one row per file, its folder dimmed" }]} />
+      {#if !flat}
+        <button class="collapse-all" id="file-tree-collapse-all" title="Collapse all folders" disabled={!model.expandedDirs.size}
+          onclick={() => (model.expandedDirs = new Set())}><ChevronsDownUp size={14} /></button>
+      {/if}
+      <label class="ml-1 flex items-center gap-1.5 text-[11px] font-medium whitespace-nowrap text-muted-foreground"
+        title="Show changes only. On: only the files that changed. Off: every file in the repo, changed ones marked">
+        <Switch checked={!model.showAllFiles} onCheckedChange={(on) => model.setShowAllFiles(!on)} id="file-tree-changes-only" /><span class="label">Show changes only</span>
+      </label>
+      <div class="ml-auto flex items-center gap-1.5">
+        {#if model.isWorktreeSelected && everything.files.length}
+          <button class="tool" id="stage-all" onclick={() => model.setStaged(everything.files, !everything.all)}
+            title={everything.all ? "Unstage all: nothing goes into the next commit" : "Stage all: every changed file goes into the next commit"}>
+            {#if everything.all}<SquareMinus size={10} strokeWidth={2.5} /><span class="label">Unstage all</span>{:else}<SquareCheck size={10} strokeWidth={2.5} /><span class="label">Stage all</span>{/if}
+          </button>
+        {/if}
+        {#if model.isWorktreeSelected && model.changedOrder.length}
+          <DiscardButton title="Discard all" label id="discard-all" onconfirm={() => model.discardAll()}
+            hint="Discard all: throws away every uncommitted change, back to the last commit. New files get deleted too." />
+        {/if}
+      </div>
+    </div>
+    <div class="flex flex-wrap items-center gap-1.5 px-2 pb-1.5">
+      <label class="search">
+        {#if searchingLines}<LoaderCircle size={12} class="shrink-0 animate-spin" />{:else}<Search size={12} class="shrink-0" />{/if}
+        <input id="file-tree-search" placeholder={mode === "names" ? "Search file names" : mode === "lines" ? "Search lines" : "Search files and lines"}
+          bind:value={query} onkeydown={(e) => e.key === "Escape" && (query = "")} />
+        {#if query}<button id="file-tree-search-clear" title="Clear" onclick={() => (query = "")}><X size={12} /></button>{/if}
+      </label>
+      <Segmented id="file-tree-search-mode" value={mode} onchange={setMode}
+        options={[{ value: "names", label: "Names", icon: CaseSensitive, title: "Search file names" }, { value: "lines", label: "Lines", icon: TextSearch, title: "Search lines" },
+          { value: "both", label: "Both", icon: Layers, title: "Search file names and lines" }]} />
+      {#if mode !== "names" && !model.showAllFiles}
+        <Segmented id="file-tree-search-scope" value={diffOnly ? "diff" : "whole"} onchange={(v) => setDiffOnly(v === "diff")}
+          options={[{ value: "diff", label: "Diff", icon: Diff, title: "Only the lines added or removed here" }, { value: "whole", label: "Whole file", icon: FileText, title: "Anywhere in the changed files" }]} />
+      {/if}
+    </div>
   </div>
   {#if searching && !rows.length && !searchingLines}<span class="px-3 py-2 text-[12px] text-muted-foreground">No matches</span>{/if}
   <div class="flex-1 overflow-auto px-1.5 pb-2" id="file-tree" role="tree" bind:clientHeight={viewHeight}
@@ -192,10 +208,13 @@
           {@render tool(`file-copy-${node.path}`, "Copy full path", () => flash.copy(node.path, `${model.repo}/${node.path}`), copyIcon)}
           {#if status !== "D"}
             {#snippet revealIcon()}<FolderOpen size={12} />{/snippet}
-            {@render tool(`file-reveal-${node.path}`, `Show in ${EXPLORER}`, () => openFile(node.path, true), revealIcon)}
+            {@render tool(`file-reveal-${node.path}`, `Show in ${EXPLORER}`, () => openFile(node.path, "reveal"), revealIcon)}
             {#if !isFolder}
               {#snippet openIcon()}<SquareArrowOutUpRight size={12} />{/snippet}
-              {@render tool(`file-open-${node.path}`, "Open with the default app", () => openFile(node.path, false), openIcon)}
+              {@render tool(`file-open-${node.path}`, `Open in ${editor?.name ?? "the default app"} (⌥-click: choose)`, (e) => {
+                if (!e.altKey || !(e instanceof MouseEvent)) return openFile(node.path, openHow(editor));
+                menu = { path: node.path, isFolder, deleted: false, x: e.clientX, y: e.clientY };
+              }, openIcon)}
             {/if}
           {/if}
         </span>
@@ -236,13 +255,17 @@
         title="The graph shows only the commits that touched it">
         <History size={13} />History
       </button>
-      <button role="menuitem" class="menu-item" id="file-menu-reveal" onclick={() => { openFile(m.path, true); close(); }}>
+      <button role="menuitem" class="menu-item" id="file-menu-reveal" onclick={() => { openFile(m.path, "reveal"); close(); }}>
         <FolderOpen size={13} />Show in {EXPLORER}
       </button>
       {#if !m.isFolder}
-        <button role="menuitem" class="menu-item" id="file-menu-open" onclick={() => { openFile(m.path, false); close(); }}>
-          <SquareArrowOutUpRight size={13} />Open with default app
-        </button>
+        <div class="menu-separator"></div>
+        {#each [...editors, null] as choice (choice?.id ?? "default")}
+          <button role="menuitem" class="menu-item" id="file-menu-open-{choice?.id ?? 'default'}" onclick={() => { openIn(m.path, choice); close(); }}>
+            <SquareArrowOutUpRight size={13} />{choice ? `Open in ${choice.name}` : "Open with default app"}
+            {#if (choice?.id ?? null) === (editor?.id ?? null)}<Check size={12} class="ml-auto" />{/if}
+          </button>
+        {/each}
       {/if}
     {/if}
   </ContextMenu>
@@ -250,7 +273,14 @@
 
 <style>
   .file:hover { background: var(--quinary); }
-  .search { display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 7px; color: var(--tertiary); background: oklch(0.5 0 0 / 0.08); }
+  .toolbar { container-type: inline-size; }
+  /* Wide: segments that carry an icon for the narrow layout show just their text. */
+  .toolbar :global(.seg button:has(.label) svg) { display: none; }
+  @container (max-width: 440px) {
+    .toolbar :global(.label) { display: none; }
+    .toolbar :global(.seg button:has(.label) svg) { display: block; }
+  }
+  .search { display: flex; flex: 1; min-width: 240px; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 7px; color: var(--tertiary); background: oklch(0.5 0 0 / 0.08); }
   .search input { flex: 1; min-width: 0; font-size: 12px; color: var(--foreground); background: none; outline: none; }
   .search button:hover { color: var(--foreground); }
   .hits { flex-shrink: 0; padding: 0 5px; border-radius: 99px; font-size: 10px; font-weight: 600; color: var(--primary); background: color-mix(in oklab, var(--primary) 16%, transparent); }

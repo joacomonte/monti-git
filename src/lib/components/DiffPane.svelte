@@ -1,6 +1,6 @@
 <!-- Bottom pane: one file at a time, before on the left, after on the right. -->
 <script lang="ts">
-  import { ChevronLeft, ChevronRight, FileSearch } from "@lucide/svelte";
+  import { ChevronDown, ChevronLeft, ChevronRight, FileSearch } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button";
   import { api, WORKTREE_ID, type Blame, type Side } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
@@ -76,6 +76,7 @@
       {#if index >= 0}<span class="text-muted-foreground">{index + 1} / {model.changedOrder.length}</span>{/if}
       <Button variant="ghost" size="icon-xs" disabled={index <= 0} onclick={() => model.stepFile(-1)} title="Previous file (⌥←)" id="diff-previous-file"><ChevronLeft /></Button>
       <Button variant="ghost" size="icon-xs" disabled={index < 0 || index >= model.changedOrder.length - 1} onclick={() => model.stepFile(1)} title="Next file (⌥→)" id="diff-next-file"><ChevronRight /></Button>
+      <Button variant="secondary" size="lg" class="ml-1 px-6 text-[13px]" onclick={() => (model.diffOpen = false)} title="Hide the diff pane" id="diff-hide"><ChevronDown />Hide</Button>
     </div>
     <!-- Subject of the commit behind this file's change. -->
     {#if model.selected && model.selected.id !== WORKTREE_ID}

@@ -13,7 +13,7 @@
   async function add(kind: "repo" | "folder") {
     model.onboarding = true; // stay mounted once hasSources flips, so the favorites step can show
     await model.addRepos(kind, await pickFolders(kind));
-    const list = model.hasSources ? await model.listedRepos() : [];
+    const list = model.hasSources ? await model.refreshRepos() : [];
     if (list.length > 1) added = list.sort((a, b) => b.lastActivity - a.lastActivity);
     else finish(list);
   }

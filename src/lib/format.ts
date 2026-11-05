@@ -1,5 +1,5 @@
 // How times, counts and names read in the UI.
-import { WORKTREE_ID, type Commit } from "./api";
+import { WORKTREE_ID, type Commit, type GitLog } from "./api";
 
 /** "5m ago", "3d ago", "2mo ago", "1y ago". `now` in ms, for views that tick. */
 export function ago(seconds: number, now = Date.now()) {
@@ -46,3 +46,10 @@ export function lineName(commit: Commit, name: string | null) {
   if (commit.shelved) return `WIP saved from ${commit.shelved}`;
   return name;
 }
+
+/** A logged git command as a terminal line: arguments with spaces or shell characters quoted, so it can be pasted. */
+export const gitCommand = (l: GitLog) => "git " + l.args.map((a) => (/[\s"'$`\\|&;<>()*?]/.test(a) ? `'${a.replace(/'/g, `'\\''`)}'` : a)).join(" ");
+
+/** The commands an action ran: same repo, from when it started until it was recorded (plus a moment for the last). */
+export const ranBy = (l: GitLog, action: { repo: string; started?: number; at: number }) =>
+  action.started != null && l.repo === action.repo && l.at >= action.started && l.at <= action.at + 500;

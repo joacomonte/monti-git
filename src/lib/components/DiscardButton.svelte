@@ -28,7 +28,7 @@
 {:else}
   <span role="button" tabindex="0" class="flex h-[18px] shrink-0 items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground {label ? 'px-[7px]' : 'px-1'}"
     title={hint} {id} {...activate(() => (isConfirming = true))}>
-    <Undo2 size={10} strokeWidth={2.5} />{#if label}{title}{/if}
+    <Undo2 size={10} strokeWidth={2.5} />{#if label}<span class="label">{title}</span>{/if}
   </span>
 {/if}
 

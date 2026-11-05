@@ -3,7 +3,7 @@
 //! the repo's lock, so a background sync can't interleave with a checkout's stash, switch and pop.
 use crate::git::{self, read_opt, run, write, write_input};
 use crate::refs::{self, current_branch, local_name, DEFAULT_REMOTE};
-use crate::{patch, wip};
+use crate::{branches, patch, wip};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -269,23 +269,77 @@ fn switch_to(name: &str, wip: Option<WipMode>, fetch_first: bool, repo: &Path) -
 
 // MARK: Branches
 
-/// Deletes a shipped branch: `git branch -d` (git itself refuses if it isn't merged), then, if asked, the same
-/// branch on its remote. Never the checked-out one.
-pub fn delete_branch(branch: &str, remote: bool, repo: &Path) -> Result<String, String> {
+/// Where a branch is and whether deleting it can lose work: the delete dialog's options.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Deletion {
+    local: bool,
+    remote: bool,      // on origin
+    current: bool,     // checked out: deleting switches to the base first
+    dirty: bool,       // checked out with uncommitted changes: that switch is refused
+    missing: Vec<String>, // targets (base, environments) its work isn't in yet: then nothing can be deleted
+    target: bool,      // it's the base or an environment itself: never deleted from here
+    fetched: bool,     // false: offline, judged on what we last fetched
+}
+
+/// Fetches, then checks `branch` against the base and every target (merged, fast-forwarded, cherry-picked or squashed
+/// all count: `branches::status` decides, same as the "Safe to delete" label).
+pub fn deletion(branch: &str, base: &str, targets: &[String], repo: &Path) -> Deletion {
     exclusive(repo, || {
-        if current_branch(repo).as_deref() == Some(branch) {
-            return Err(format!("{branch} is checked out: switch to another branch first"));
+        let fetched = fetch(repo).is_ok();
+        Deletion { fetched, ..check_deletion(branch, base, targets, repo) }
+    })
+}
+
+fn check_deletion(branch: &str, base: &str, targets: &[String], repo: &Path) -> Deletion {
+    let exists = |full: &str| run(&["rev-parse", "--verify", "-q", full], repo).is_ok();
+    let local = exists(&format!("refs/heads/{branch}"));
+    let remote = exists(&format!("refs/remotes/{DEFAULT_REMOTE}/{branch}"));
+    let current = current_branch(repo).as_deref() == Some(branch);
+    let reference = if local { branch.to_string() } else { format!("{DEFAULT_REMOTE}/{branch}") };
+    let missing = branches::status(repo, std::slice::from_ref(&reference), base, targets)
+        .into_iter()
+        .flat_map(|s| s.promotion)
+        .filter(|(_, count, _)| *count > 0)
+        .map(|(target, _, _)| local_name(&target).to_string())
+        .collect();
+    let target = std::iter::once(base).chain(targets.iter().map(String::as_str)).any(|t| local_name(t) == branch);
+    Deletion { local, remote, current, dirty: current && changed_files(repo) > 0, missing, target, fetched: true }
+}
+
+/// Deletes a shipped branch here and, with `remote`, on origin. Checked again right before (the dialog may be stale):
+/// refused while its work is missing from a target. Squashed or cherry-picked work isn't merged as far as git knows,
+/// so `-D` is what deletes it, safe because the check above already found its contents in every target.
+/// The checked-out branch switches to `base` first, never with uncommitted changes.
+pub fn delete_branch(branch: &str, base: &str, targets: &[String], remote: bool, repo: &Path) -> Result<String, String> {
+    exclusive(repo, || {
+        let check = check_deletion(branch, base, targets, repo);
+        if check.target {
+            return Err(format!("{branch} is the base or an environment: it isn't deleted from here"));
         }
-        let origin = read_opt(&["config", &format!("branch.{branch}.remote")], repo).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        write(&["branch", "-d", branch], repo)?;
-        if !remote {
-            return Ok(format!("Deleted {branch}"));
+        if !check.missing.is_empty() {
+            return Err(format!("{branch} isn't in {} yet: deleting it would lose work", check.missing.join(", ")));
         }
-        let Some(origin) = origin else { return Ok(format!("Deleted {branch} (it had no remote)")) };
-        Ok(match write(&["push", &origin, "--delete", branch], repo) {
-            Ok(_) => format!("Deleted {branch} here and on {origin}"),
-            Err(error) => format!("Deleted {branch} here, but not on {origin}: {}", error.lines().next().unwrap_or_default()),
-        })
+        if check.current {
+            if check.dirty {
+                return Err(format!("{branch} is checked out with uncommitted changes: commit or discard them first"));
+            }
+            write(&["checkout", "-q", local_name(base)], repo)?;
+        }
+        let mut done = vec![];
+        if check.local {
+            write(&["branch", "-D", branch], repo)?;
+            done.push("here");
+        }
+        if remote && check.remote {
+            match write(&["push", DEFAULT_REMOTE, "--delete", branch], repo) {
+                Ok(_) => done.push("on the server"),
+                Err(e) if done.is_empty() => return Err(e),
+                Err(e) => return Ok(format!("Deleted {branch} here, but not on the server: {}", e.lines().next().unwrap_or_default())),
+            }
+        }
+        let switched = if check.current { format!(" (switched to {})", local_name(base)) } else { String::new() };
+        Ok(format!("Deleted {branch} {}{switched}", done.join(" and ")))
     })
 }
 
@@ -399,15 +453,32 @@ pub fn move_branch(branch: &str, expected: Option<&str>, target: &str, repo: &Pa
     })
 }
 
-/// Pushes `branch` over its upstream with --force-with-lease: git refuses if the remote has commits we haven't
-/// fetched, so someone else's work is never overwritten.
-pub fn force_push(branch: &str, repo: &Path) -> Result<(), String> {
-    exclusive(repo, || {
-        let config = |key: &str| run(&["config", &format!("branch.{branch}.{key}")], repo).map(|s| s.trim().to_string());
-        let (remote, merge) = (config("remote")?, config("merge")?);
-        write(&["push", "--force-with-lease", &remote, &format!("refs/heads/{branch}:{merge}")], repo)?;
-        Ok(())
-    })
+/// What a push did: `Behind` = refused, the server has commits this branch doesn't (pull first, or force).
+#[derive(Serialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum Pushed {
+    Done,
+    Behind,
+}
+
+pub fn push(branch: &str, force: bool, repo: &Path) -> Result<Pushed, String> {
+    exclusive(repo, || push_branch(branch, force, repo))
+}
+
+/// Pushes `branch` to the branch of the same name on its remote (origin the first time), and makes that its upstream.
+/// Never to a differently named upstream: a feature created from origin/main tracks main, and must not land there.
+/// `force` uses --force-with-lease: git still refuses if the server has commits we haven't fetched, so nobody's work is lost.
+fn push_branch(branch: &str, force: bool, repo: &Path) -> Result<Pushed, String> {
+    let config = |key: &str| read_opt(&["config", &format!("branch.{branch}.{key}")], repo).map(|s| s.trim().to_string());
+    let target = format!("refs/heads/{branch}");
+    let remote = config("remote").filter(|_| config("merge").as_deref() == Some(target.as_str()));
+    let lease = if force { "--force-with-lease" } else { "--no-force-with-lease" };
+    let pushed = write(&["push", "-u", lease, remote.as_deref().unwrap_or(DEFAULT_REMOTE), &format!("{target}:{target}")], repo);
+    match pushed {
+        Ok(_) => Ok(Pushed::Done),
+        Err(e) if e.contains("[rejected]") || e.contains("non-fast-forward") || e.contains("stale info") => Ok(Pushed::Behind),
+        Err(e) => Err(e),
+    }
 }
 
 // MARK: Working tree
@@ -482,13 +553,9 @@ pub fn commit(message: &str, push: bool, repo: &Path) -> Result<String, String> 
         write_input(&["commit", "-q", "-F", "-"], repo, message)?;
         let Some(branch) = branch.filter(|_| push) else { return Ok("Committed".into()) };
         // The commit is done either way: a failed push is reported as a status, not as an error that keeps the form filled.
-        let pushed = if read_opt(&["rev-parse", "--abbrev-ref", "@{u}"], repo).is_some() {
-            write(&["push"], repo)
-        } else {
-            write(&["push", "-u", DEFAULT_REMOTE, &branch], repo)
-        };
-        Ok(match pushed {
-            Ok(_) => format!("Committed and pushed {branch}"),
+        Ok(match push_branch(&branch, false, repo) {
+            Ok(Pushed::Done) => format!("Committed and pushed {branch}"),
+            Ok(Pushed::Behind) => format!("Committed, but not pushed: the server has commits {branch} doesn't. Pull first."),
             Err(e) => format!("Committed, but the push failed: {}", e.lines().next().unwrap_or("unknown error")),
         })
     })
@@ -497,16 +564,6 @@ pub fn commit(message: &str, push: bool, repo: &Path) -> Result<String, String> 
 #[cfg(test)]
 mod tests {
     use crate::testutil::Repo;
-
-    #[test]
-    fn delete_branch_keeps_the_checked_out_one() {
-        let repo = Repo::new("delete");
-        repo.commit("a.txt", "1", "init");
-        repo.git(&["branch", "done"]);
-        assert!(super::delete_branch("main", false, repo.path()).is_err());
-        super::delete_branch("done", false, repo.path()).unwrap();
-        assert!(!repo.git(&["branch"]).contains("done"));
-    }
 
     #[test]
     fn undo_moves_back_only_unpushed_unchanged_branches() {
@@ -521,6 +578,58 @@ mod tests {
         assert_eq!(repo.git(&["diff", "--cached", "--name-only"]).trim(), "a.txt"); // the undone commit's change, staged
         super::move_branch("gone", None, &two, repo.path()).unwrap();
         assert_eq!(repo.git(&["rev-parse", "gone"]).trim(), two);
+    }
+
+    #[test]
+    fn delete_checks_every_target_and_takes_squashed_work() {
+        let repo = Repo::new("delete");
+        repo.commit("a.txt", "1\n", "init");
+        let targets = ["main".to_string()];
+        repo.git(&["checkout", "-q", "-b", "feat/squashed"]);
+        repo.commit("b.txt", "1\n", "b");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.git(&["merge", "-q", "--squash", "feat/squashed"]);
+        repo.git(&["commit", "-q", "-m", "squashed b"]);
+        repo.git(&["checkout", "-q", "-b", "feat/open"]);
+        repo.commit("c.txt", "1\n", "c, not in main");
+        // Checked out and not merged: refused, nothing moves.
+        assert!(super::delete_branch("feat/open", "main", &targets, false, repo.path()).unwrap_err().contains("isn't in main"));
+        assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "feat/open");
+        assert!(super::delete_branch("main", "main", &targets, false, repo.path()).is_err());
+        // Squashed: git's -d would refuse; the contents are in main, so it goes.
+        let status = super::delete_branch("feat/squashed", "main", &targets, false, repo.path()).unwrap();
+        assert_eq!(status, "Deleted feat/squashed here");
+        assert!(repo.git(&["branch", "--list", "feat/squashed"]).trim().is_empty());
+        // Checked out and shipped: switches to the base first.
+        repo.git(&["checkout", "-q", "main"]);
+        repo.git(&["merge", "-q", "feat/open"]);
+        repo.git(&["checkout", "-q", "feat/open"]);
+        let status = super::delete_branch("feat/open", "main", &targets, false, repo.path()).unwrap();
+        assert_eq!(status, "Deleted feat/open here (switched to main)");
+        assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "main");
+    }
+
+    #[test]
+    fn push_sets_upstream_then_refuses_to_overwrite_the_server() {
+        use super::Pushed;
+        let server = Repo::new("push-server");
+        server.commit("a.txt", "1", "one");
+        let repo = Repo::new("push-local");
+        repo.git(&["remote", "add", "origin", &server.path().display().to_string()]);
+        repo.git(&["fetch", "-q", "origin"]);
+        repo.git(&["checkout", "-q", "-b", "feat/x", "origin/main"]);
+        repo.commit("b.txt", "1", "mine");
+        assert_eq!(super::push("feat/x", false, repo.path()).unwrap(), Pushed::Done); // first time: upstream set
+        assert_eq!(repo.git(&["rev-parse", "--abbrev-ref", "feat/x@{u}"]).trim(), "origin/feat/x");
+        server.git(&["checkout", "-q", "feat/x"]);
+        server.commit("c.txt", "1", "theirs");
+        server.git(&["checkout", "-q", "main"]);
+        repo.commit("b.txt", "2", "mine again");
+        assert_eq!(super::push("feat/x", false, repo.path()).unwrap(), Pushed::Behind);
+        assert_eq!(super::push("feat/x", true, repo.path()).unwrap(), Pushed::Behind); // "theirs" not fetched: the lease holds
+        repo.git(&["fetch", "-q", "origin"]);
+        assert_eq!(super::push("feat/x", true, repo.path()).unwrap(), Pushed::Done);
+        assert_eq!(server.git(&["rev-parse", "feat/x"]), repo.git(&["rev-parse", "feat/x"]));
     }
 
     #[test]

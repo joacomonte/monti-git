@@ -1,14 +1,15 @@
 <!-- Virtualized commit list: only the rows on screen are in the DOM. Rows touch so the graph lines stay continuous. -->
 <script lang="ts">
-  import { Archive, Check, ChevronRight, Laptop, CircleCheck, Cloud, CloudOff, Copy, GitBranch, Sparkles, Trash2 } from "@lucide/svelte";
+  import { Archive, Check, ChevronRight, Laptop, CircleCheck, Cloud, Copy, GitBranch, Sparkles, Trash2 } from "@lucide/svelte";
   import { api, WORKTREE_ID, type Card, type Commit } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import { CopyFlash } from "$lib/clipboard.svelte";
   import { plural, subject, when } from "$lib/format";
-  import { isHead, isRemote, isTag, localName, refName } from "$lib/refs";
+  import { branchBadges, isHead, isRemote, isTag, LOCAL_COMMITTED, localName, refName } from "$lib/refs";
   import GraphCell, { LANE, PAD, laneColor } from "./GraphCell.svelte";
   import RefBadge from "./RefBadge.svelte";
   import ActionRow from "./ActionRow.svelte";
+  import DeleteBranch from "./DeleteBranch.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import Modal from "./Modal.svelte";
   import MessagePrompt from "./MessagePrompt.svelte";
@@ -42,16 +43,7 @@
   let dialog = $state<{ kind: "update" | "delete"; card: Card } | { kind: "new"; from: string } | null>(null);
   let writingMessage = $state(false); // the "Message for AI" dialog, from right-click on the uncommitted row
 
-  /** One badge per branch: a remote on the same commit as its local branch folds into the local badge. */
-  function badges(refs: string[]) {
-    const locals = new Set(refs.map(refName));
-    const folded = new Set(refs.filter(isRemote).map(localName).filter((n) => locals.has(n)));
-    return refs.flatMap((ref) => {
-      if (isRemote(ref)) return localName(ref) === "HEAD" || folded.has(localName(ref)) ? [] : [{ ref, isSynced: false }];
-      return [{ ref, isSynced: folded.has(refName(ref)) }];
-    });
-  }
-  const branchOf = (c: Commit) => badges(c.refs).find((b) => !isTag(b.ref));
+  const branchOf = (c: Commit) => branchBadges(c.refs).find((b) => !isTag(b.ref));
 
   // MARK: Branch cards (Commits collapsed): their facts, fetched only for the rows on screen.
 
@@ -71,9 +63,9 @@
     const loaded = commits, repo = model.repo, base = model.history.base;
     if (!model.branchesOnly || model.focus || !base || !repo) return;
     if (asked.for !== loaded) asked = { for: loaded, refs: new Set() };
-    const refs = [...new Set(commits.slice(start, end).flatMap((c) => badges(c.refs).map((b) => refName(b.ref))))].filter((ref) => hasCard(ref) && !asked.refs.has(ref));
+    const refs = [...new Set(commits.slice(start, end).flatMap((c) => branchBadges(c.refs).map((b) => refName(b.ref))))].filter((ref) => hasCard(ref) && !asked.refs.has(ref));
     if (!refs.length) return;
-    const targets = [base, ...model.history.environments];
+    const targets = model.targets;
     let stale = false;
     const timer = setTimeout(async () => {
       refs.forEach((ref) => asked.refs.add(ref)); // here, not before: a scroll cancels the timer and these must be asked again
@@ -102,11 +94,11 @@
   /** Branches only: a branch row is just its cards, count, date and author, on one line (no subject). */
   const bare = (c: Commit) => model.branchesOnly && !model.focus && c.id !== WORKTREE_ID && !c.shelved;
   /** Branches only: the branch whose status line goes under the row (first pill with something to say). */
-  const collapsedOf = (c: Commit) => (bare(c) ? badges(c.refs).map((b) => cardOf(b.ref)).find((card) => card != null && hasStatus(card)) ?? null : null);
+  const collapsedOf = (c: Commit) => (bare(c) ? branchBadges(c.refs).map((b) => cardOf(b.ref)).find((card) => card != null && hasStatus(card)) ?? null : null);
   /** Commits collapsed: the badge drawn as the row's card. The one with something to say, else the one loading, else the first branch. */
   function cardIndex(c: Commit) {
     if (!bare(c)) return -1;
-    const list = badges(c.refs);
+    const list = branchBadges(c.refs);
     const withStatus = list.findIndex((b) => { const card = cardOf(b.ref); return card != null && hasStatus(card); });
     const pending = collapsedOf(c) ? -1 : list.findIndex((b) => isPending(b.ref));
     return withStatus >= 0 ? withStatus : pending >= 0 ? pending : list.findIndex((b) => !isTag(b.ref));
@@ -115,7 +107,7 @@
   // MARK: Layout
 
   const isQuietMerge = (c: Commit) => c.parents.length > 1 && c.refs.length === 0;
-  const isTall = (c: Commit) => c.id === WORKTREE_ID || !!c.shelved || badges(c.refs).length > 0;
+  const isTall = (c: Commit) => c.id === WORKTREE_ID || !!c.shelved || branchBadges(c.refs).length > 0;
   const heightOf = (c: Commit) => (isQuietMerge(c) ? QUIET : isTall(c) && !bare(c) ? ROW : cardIndex(c) >= 0 ? COLLAPSED : bare(c) ? CARD : LINE);
   const offsets = $derived.by(() => {
     const out = new Float64Array(commits.length + 1);
@@ -256,7 +248,7 @@
             {:else}
               <!-- Branches on the left; date and author on the right edge. -->
               <div class="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-                {#each badges(commit.refs) as badge (badge.ref)}
+                {#each branchBadges(commit.refs) as badge (badge.ref)}
                   {#if bare(commit) && !isTag(badge.ref)}
                     <!-- Commits collapsed: every branch is the same solid card, its status and actions inside when it has any
                          (placeholder bars while they load). -->
@@ -264,13 +256,14 @@
                     {@const name = localName(refName(badge.ref))}
                     {@const head = isHead(badge.ref)}
                     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-                    <div class="bcard" id="branch-card-row-{name}" onclick={(e) => openBranchMenu(e, badge.ref, commit)} onmouseenter={() => (spot = model.history.rows[i].color)}
+                    <!-- The card's body opens its menu; its status buttons (Safe to delete, behind…) do their own thing. -->
+                    <div class="bcard" id="branch-card-row-{name}" onclick={(e) => { if (!(e.target as Element).closest(".status button")) openBranchMenu(e, badge.ref, commit); }} onmouseenter={() => (spot = model.history.rows[i].color)}
                       onmouseleave={() => (spot = null)} oncontextmenu={(e) => { e.preventDefault(); openBranchMenu(e, badge.ref, commit); }} class:head
                       style:--lane={laneColor(model.history.rows[i].color)} aria-busy={isPending(badge.ref)}>
                       <button class="bname" id="branch-card-{name}" onclick={(e) => openBranchMenu(e, badge.ref, commit)}>
                         {#if head}<CircleCheck size={13} strokeWidth={2.5} />{:else}<GitBranch size={13} strokeWidth={2.5} />{/if}<span class="truncate">{name}</span>
                         {#if badge.isSynced || isRemote(badge.ref)}<span class="cloud" title="On the server at this commit: nothing to push or pull."><Cloud size={12} strokeWidth={2.5} /></span>
-                        {:else}<span class="local" title="Only on this computer at this commit: not pushed yet, or the server has a different version."><Laptop size={11} strokeWidth={2.5} />Only local</span>{/if}
+                        {:else}<span class="local" title={LOCAL_COMMITTED.title}><Laptop size={11} strokeWidth={2.5} />{LOCAL_COMMITTED.label}</span>{/if}
                       </button>
                       {#if own && hasStatus(own)}{@render status(own)}
                       {:else if isPending(badge.ref)}<div class="status"><span class="skel"></span><span class="skel w-[54px]"></span></div>{/if}
@@ -321,14 +314,11 @@
       {@const label = ways.includes("squashed") ? "Squashed" : ways.includes("cherry-picked") ? "Cherry-picked" : ways.includes("fast-forwarded") ? "Fast-forwarded" : "Merged"}
       {@const explain = { merged: "merged", "fast-forwarded": "fast-forwarded: the base moved up to this branch, no merge commit", "cherry-picked": "same changes copied (cherry-pick or rebase)", squashed: "squashed: its contents are already there", "": "" }}
       {@const how = card.promotion.map(([t, , how]) => `${localName(t)}: ${explain[how]}`).join("\n")}
-      {@const deletable = model.history.local.includes(card.local) && !model.isCurrent(card.ref)}
-      <!-- Hovering the label swaps it for the delete button, in the same spot. -->
-      <span class="swap" class:deletable>
-        <span class="st label" title="{how}\nSafe to delete">✓ {label}</span>
-        {#if deletable}
-          <button class="st del" id="branch-status-delete-{card.local}" title="{how}\nDelete this branch…"
-            onclick={stop(() => (dialog = { kind: "delete", card }))}><Trash2 size={11} strokeWidth={2.5} />&nbsp;Safe to delete</button>
-        {/if}
+      <!-- Hovering the label swaps it for the delete button, in the same spot: the dialog checks with the server first. -->
+      <span class="swap">
+        <span class="st label">✓ {label}</span>
+        <button class="st del" id="branch-status-delete-{card.local}" title={`${how}\nSafe to delete: checks with the server, then shows the options`}
+          onclick={stop(() => (dialog = { kind: "delete", card }))}><Trash2 size={11} strokeWidth={2.5} />&nbsp;Safe to delete</button>
       </span>
     {:else}
       {#if behind}
@@ -382,19 +372,7 @@
   <Modal id="branch-dialog" onclose={close} class="dialog-panel">
     {#if dialog.kind === "new"}<StartFeature {model} from={dialog.from} dismiss={close} />
     {:else if dialog.kind === "update"}<UpdatePanel card={dialog.card} {model} dismiss={close} />
-    {:else}
-      {@const card = dialog.card}
-      <!-- Delete a finished branch; git itself refuses if anything isn't merged. -->
-      <div class="flex w-[400px] flex-col gap-1">
-        <span class="px-1.5 pt-1 text-[13px] font-semibold">Delete {card.local}?</span>
-        <span class="px-1.5 pb-1 text-[12px] text-muted-foreground">Git refuses if it has commits that aren't merged, so no work can get lost.</span>
-        <ActionRow title="Delete branch" detail="Only on your machine (git branch -d). The server copy stays." icon={Trash2} color="#f5a524"
-          id="branch-delete-local" onclick={() => { model.deleteBranch(card.local, false); close(); }} />
-        {#if card.hasUpstream}
-          <ActionRow title="Delete here and on the server" detail="Also removes it from origin, for the whole team." icon={CloudOff} color="#f5a524"
-            id="branch-delete-remote" onclick={() => { model.deleteBranch(card.local, true); close(); }} />
-        {/if}
-      </div>
+    {:else}<DeleteBranch {model} branch={dialog.card.local} dismiss={close} />
     {/if}
   </Modal>
 {/if}
@@ -442,9 +420,12 @@
   .st.warn:hover:not(:disabled) { color: #ffc35c; }
   .swap { display: grid; flex-shrink: 0; }
   .swap > * { grid-area: 1 / 1; transition: opacity 0.12s; }
-  .swap .del { opacity: 0; pointer-events: none; }
-  .swap.deletable:hover .label { opacity: 0; }
-  .swap.deletable:hover .del { opacity: 1; pointer-events: auto; }
+  /* Only the button takes clicks; the label just shows. A faded label (opacity < 1) gets its own layer and is painted over
+     the button, so with pointer events it caught the click and passed it to the card's menu. */
+  .swap .label { pointer-events: none; }
+  .swap .del { opacity: 0; }
+  .swap:hover .label { opacity: 0; }
+  .swap:hover .del { opacity: 1; }
   .local { display: flex; flex-shrink: 0; align-items: center; gap: 4px; margin-left: 6px; font-size: 11.5px; font-weight: 600; color: #f5a524; }
   .st.alert, .bcard.head .st.alert { color: #f5a524; font-weight: 600; }
   /* Behind stays grey on other branches; amber only on the checked-out one or the selected row. */

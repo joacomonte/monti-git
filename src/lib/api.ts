@@ -76,7 +76,13 @@ export type CommitInfo = {
 /** Who last touched each line: `lines[n - 1]` indexes `commits` for line n. An all-zero id = not committed yet. */
 export type Blame = { lines: number[]; commits: { id: string; author: string; date: number; subject: string }[] };
 
-export type RepoEntry = { path: string; owner: string; lastActivity: number; folder: string | null }; // folder: the added folder it came from
+/** A code editor the user has installed (src-tauri/src/editors.rs). */
+export type Editor = { id: string; name: string };
+/** How to open a repo file: selected in Finder / Explorer, with the system's default app, or in an editor. */
+export type OpenWith = "reveal" | "default" | { editor: string };
+
+/** A repo in the sidebar. `folder`: the added folder it came from. `changes`: fingerprint of its uncommitted changes (null = clean). */
+export type RepoEntry = { path: string; owner: string; lastActivity: number; folder: string | null; changes: string | null };
 
 export type Changes = {
   changes: Record<string, string>; // path -> status letter (A, M, D, R, U)
@@ -101,6 +107,10 @@ export type Card = {
   hasUpstream: boolean;
 };
 
+/** Where a branch is and whether it can go (actions::Deletion). `missing`: targets its work isn't in yet; `target`: it's
+ *  the base or an environment; `fetched` false: offline, judged on the last fetch. */
+export type Deletion = { local: boolean; remote: boolean; current: boolean; dirty: boolean; missing: string[]; target: boolean; fetched: boolean };
+
 export type SkipReason = "diverged" | "localChanges" | "checkedOutElsewhere";
 export type SyncResult = { updated: string[]; skipped: { branch: string; reason: SkipReason }[]; log: string[]; changed: boolean };
 
@@ -113,17 +123,17 @@ export type GitLog = {
 /** What to do with uncommitted changes when checking out: stash for this branch, WIP commit, or bring along. */
 export type WipMode = "shelve" | "commit" | "carry";
 
-/** What a selection compares: `target` null = the uncommitted row, `base` null = a root commit. */
-export type Span = { base: string | null; target: string | null };
 
 export const api = {
   listRepos: (folders: string[], repos: string[]) => invoke<RepoEntry[]>("list_repos", { folders, repos }),
   isRepo: (path: string) => invoke<boolean>("is_repo", { path }),
-  openFile: (repo: string, path: string, reveal: boolean) => invoke<void>("open_file", { repo, path, reveal }),
+  openFile: (repo: string, path: string, how: OpenWith) => invoke<void>("open_file", { repo, path, with: how }),
+  listEditors: () => invoke<Editor[]>("list_editors"),
 
   loadHistory: (repo: string, query: HistoryQuery) => invoke<History>("load_history", { repo, query }),
-  loadChanges: (repo: string, span: Span, all: boolean) => invoke<Changes>("load_changes", { repo, ...span, all }),
-  loadDiff: (repo: string, path: string, span: Span, whole: boolean) => invoke<FileDiff>("load_diff", { repo, path, ...span, whole }),
+  /** `commit` null = the uncommitted row. A commit shows what it changed against its real first parent (Span in git.rs). */
+  loadChanges: (repo: string, commit: string | null, all: boolean) => invoke<Changes>("load_changes", { repo, commit, all }),
+  loadDiff: (repo: string, path: string, commit: string | null, whole: boolean) => invoke<FileDiff>("load_diff", { repo, path, commit, whole }),
   commitInfo: (repo: string, id: string) => invoke<CommitInfo>("commit_info", { repo, id }),
   blame: (repo: string, path: string, rev: string | null) => invoke<Blame>("blame", { repo, path, rev }),
   branchStatus: (repo: string, refs: string[], base: string, targets: string[]) =>
@@ -140,19 +150,24 @@ export const api = {
   searchCode: (repos: string[], bases: Record<string, string>, query: string, scope: CodeScope) =>
     invoke<Found<CodeHit>>("search_code", { repos, bases, query, scope }),
   /** Tree search by content: path -> matching lines. `paths` empty = every file. */
-  searchLines: (repo: string, span: Span, query: string, paths: string[], diffOnly: boolean) =>
-    invoke<Record<string, LineHits>>("search_lines", { repo, ...span, query, paths, diffOnly }),
+  searchLines: (repo: string, commit: string | null, query: string, paths: string[], diffOnly: boolean) =>
+    invoke<Record<string, LineHits>>("search_lines", { repo, commit, query, paths, diffOnly }),
   commitPlaces: (repo: string, id: string) => invoke<Place[]>("commit_places", { repo, id }),
 
   sync: (repo: string) => invoke<SyncResult>("sync", { repo }),
   checkout: (repo: string, name: string, wip: WipMode | null) => invoke<string>("checkout", { repo, name, wip }),
   pull: (repo: string, name: string) => invoke<string>("pull", { repo, name }),
-  deleteBranch: (repo: string, branch: string, remote: boolean) => invoke<string>("delete_branch", { repo, branch, remote }),
+  /** Checked again in Rust right before: refused while its work is missing from a target. */
+  deleteBranch: (repo: string, branch: string, base: string, targets: string[], remote: boolean) =>
+    invoke<string>("delete_branch", { repo, branch, base, targets, remote }),
+  /** Fetches, then where `branch` is and whether deleting it can lose work. */
+  deletion: (repo: string, branch: string, base: string, targets: string[]) => invoke<Deletion>("deletion", { repo, branch, base, targets }),
   /** Fetches, then how `base` compares with origin/`base` (`remote` false: no copy there). */
   baseStatus: (repo: string, base: string) => invoke<{ ahead: number; behind: number; remote: boolean }>("base_status", { repo, base }),
   startFeature: (repo: string, name: string, base: string, wip: WipMode | null) => invoke<string>("start_feature", { repo, name, base, wip }),
   updateBranch: (repo: string, branch: string, parent: string, rebase: boolean) => invoke<void>("update_branch", { repo, branch, parent, rebase }),
-  forcePush: (repo: string, branch: string) => invoke<void>("force_push", { repo, branch }),
+  /** Sets the upstream the first time. "behind": refused, the server has commits the branch doesn't. */
+  push: (repo: string, branch: string, force: boolean) => invoke<"done" | "behind">("push", { repo, branch, force }),
   moveBranch: (repo: string, branch: string, expected: string | null, target: string) => invoke<void>("move_branch", { repo, branch, expected, target }),
   discardFile: (repo: string, path: string) => invoke<void>("discard_file", { repo, path }),
   discardAll: (repo: string) => invoke<void>("discard_all", { repo }),

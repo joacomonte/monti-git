@@ -1,8 +1,8 @@
 <!-- Branch/tag pill tinted with its graph line's color; the checked-out branch is filled. Next to a branch, plain-word chips
-     say where it is: Origin (on the server at this commit) or Only local (not on the server at this commit). -->
+     say where it is: a cloud (on the server at this commit) or Local committed (not on the server at this commit). -->
 <script lang="ts">
   import { CircleCheck, Cloud, GitBranch, Laptop, Tag } from "@lucide/svelte";
-  import { isHead as headRef, isRemote as remoteRef, isTag as tagRef, localName, refName } from "$lib/refs";
+  import { isHead as headRef, isRemote as remoteRef, isTag as tagRef, LOCAL_COMMITTED, localName, refName } from "$lib/refs";
 
   // onclick: the pill becomes a button (with hover feedback) that opens the branch's options.
   type Props = { ref: string; isSynced?: boolean; color?: string; onclick?: (e: MouseEvent) => void; oncontextmenu?: (e: MouseEvent) => void };
@@ -29,7 +29,7 @@
     {/if}
   </svelte:element>
   {#if !isTag && !isRemote && !isSynced}
-    <span class="where local" title="Only on this computer at this commit: not pushed yet, or the server has a different version."><Laptop size={11} strokeWidth={2.5} />Only local</span>
+    <span class="where local" title={LOCAL_COMMITTED.title}><Laptop size={11} strokeWidth={2.5} />{LOCAL_COMMITTED.label}</span>
   {/if}
 </span>
 

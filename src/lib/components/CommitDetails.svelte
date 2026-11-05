@@ -1,13 +1,14 @@
 <!-- Above the file tree on a selected commit: title, description and every detail, each one hideable from the ⚙ menu. -->
 <script lang="ts">
-  import { Check, Copy, Settings2 } from "@lucide/svelte";
+  import { Check, CloudUpload, Copy, Settings2, TriangleAlert } from "@lucide/svelte";
   import { api, type CommitInfo } from "$lib/api";
   import * as Popover from "$lib/components/ui/popover";
   import type { RepoModel } from "$lib/model.svelte";
   import { CopyFlash } from "$lib/clipboard.svelte";
   import { ago, plural } from "$lib/format";
   import { prefs } from "$lib/prefs";
-  import { refName } from "$lib/refs";
+  import { refName, unpushed } from "$lib/refs";
+  import { Button } from "$lib/components/ui/button";
 
   let { model, id }: { model: RepoModel; id: string } = $props();
   let info = $state<CommitInfo | null>(null);
@@ -49,6 +50,19 @@
     return () => (stale = true);
   });
 
+  // Push: the local branches ending at this commit that the server doesn't have here. `behind`: the last push was
+  // refused because the server has commits the branch doesn't; the button then offers to force it.
+  const toPush = $derived(model.selected?.id === id ? unpushed(model.selected.refs) : []);
+  let behind = $state<string | null>(null);
+  let pushing = $state(false);
+  async function push(branch: string) {
+    pushing = true;
+    const force = behind === branch;
+    const result = await model.push(branch, force);
+    behind = result.behind && !force ? branch : null;
+    pushing = false;
+  }
+
   const totals = $derived(Object.values(model.counts).reduce(([a, r], [x, y]) => [a + x, r + y], [0, 0]));
   const files = $derived(Object.keys(model.changes).length);
 
@@ -78,6 +92,17 @@
         <button class="more" id="commit-details-more" onclick={() => (expanded = !expanded)}>{expanded ? "Show less" : "Show more"}</button>
       {/if}
     {/if}
+    {#each toPush as branch (branch)}
+      <div class="flex flex-wrap items-center gap-2">
+        <Button size="sm" variant={behind === branch ? "destructive" : "default"} disabled={pushing || model.isSyncing} onclick={() => push(branch)}
+          id="commit-details-push-{branch}" title={behind === branch ? "Replace the server's version with yours (refused if it has commits you haven't fetched)" : `Upload ${branch} to the server`}>
+          <CloudUpload size={13} />{behind === branch ? "Force push" : "Push"} {branch}
+        </Button>
+        {#if behind === branch}
+          <span class="flex items-center gap-1 text-[11px] text-orange-500"><TriangleAlert size={12} />The server has commits {branch} doesn't. Pull first, or force push to replace them.</span>
+        {/if}
+      </div>
+    {/each}
     {#if !open}
       <button class="see" id="commit-details-see-more" onclick={() => (open = true)}>see more…</button>
     {:else}

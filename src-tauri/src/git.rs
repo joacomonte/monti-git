@@ -365,38 +365,34 @@ pub fn line_count(text: &str) -> u32 {
 
 // MARK: Diffs
 
-/// What a selection compares. `Root`: a commit with no parent, against nothing.
+/// What a selection shows: the uncommitted changes (against HEAD), or what a commit changed against its real first
+/// parent, as git has it, never the graph's (a simplified graph links a commit to an older one). For a merge that's
+/// what it brought into the branch it was made on; a root commit, against nothing.
 #[derive(Clone, Copy)]
 pub enum Span<'a> {
     Worktree,
-    Root(&'a str),
-    Between(&'a str, &'a str),
+    Commit(&'a str),
 }
 
 impl<'a> Span<'a> {
-    /// `target` None = the uncommitted-changes row; `base` None = root commit.
-    pub fn new(base: Option<&'a str>, target: Option<&'a str>) -> Span<'a> {
-        match (base, target) {
-            (_, None) => Span::Worktree,
-            (None, Some(t)) => Span::Root(t),
-            (Some(b), Some(t)) => Span::Between(b, t),
-        }
+    /// None = the uncommitted-changes row.
+    pub fn new(commit: Option<&'a str>) -> Span<'a> {
+        commit.map_or(Span::Worktree, Span::Commit)
     }
 
     /// The commit whose files these are; None = the working tree.
     pub fn target(&self) -> Option<&'a str> {
         match self {
             Span::Worktree => None,
-            Span::Root(t) | Span::Between(_, t) => Some(t),
+            Span::Commit(id) => Some(id),
         }
     }
 
-    /// `git diff` (or diff-tree for a root commit) with `flags`, limited to `paths`.
+    /// `git diff` (diff-tree for a commit) with `flags`, limited to `paths`.
     fn diff(&self, flags: &[&str], paths: &[&str], repo: &Path) -> Result<String, String> {
         let mut args: Vec<&str> = match self {
             Span::Worktree => vec!["diff", "--no-ext-diff", "HEAD"],
-            Span::Root(t) => vec!["diff-tree", "--no-ext-diff", "--root", "-r", "--no-commit-id", t],
-            Span::Between(b, t) => vec!["diff", "--no-ext-diff", b, t],
+            Span::Commit(id) => vec!["diff-tree", "--no-ext-diff", "-r", "--root", "--diff-merges=first-parent", "--no-commit-id", id],
         };
         args.splice(1..1, flags.iter().copied());
         args.push("--");
@@ -543,13 +539,28 @@ mod tests {
     }
 
     #[test]
+    fn a_merge_shows_what_it_brought_into_its_branch() {
+        let repo = Repo::new("merge-span");
+        repo.commit("a.txt", "1\n", "init");
+        repo.git(&["checkout", "-q", "-b", "feat"]);
+        repo.commit("feature.txt", "1\n", "feature");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.commit("main.txt", "1\n", "main only");
+        repo.git(&["merge", "-q", "--no-ff", "--no-edit", "feat"]);
+        let merge = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+        let files = super::changed_files(super::Span::Commit(&merge), repo.path()).unwrap();
+        assert_eq!(files.keys().collect::<Vec<_>>(), ["feature.txt"]);
+        let root = repo.git(&["rev-list", "--max-parents=0", "HEAD"]).trim().to_string();
+        assert_eq!(super::changed_files(super::Span::Commit(&root), repo.path()).unwrap().keys().collect::<Vec<_>>(), ["a.txt"]);
+    }
+
+    #[test]
     fn changed_files_and_counts_handle_odd_names() {
         let repo = Repo::new("odd-names");
         repo.commit("a.txt", "1\n", "init");
-        let base = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
         repo.commit("we:ird \"name\".txt", "1\n2\n", "odd");
         let tip = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
-        let span = super::Span::Between(&base, &tip);
+        let span = super::Span::Commit(&tip);
         let files = super::changed_files(span, repo.path()).unwrap();
         assert_eq!(files.get("we:ird \"name\".txt"), Some(&'A'));
         assert_eq!(super::line_counts(span, repo.path()).get("we:ird \"name\".txt"), Some(&(2, 0)));
