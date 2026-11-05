@@ -1,14 +1,14 @@
 //! Repos shown in the sidebar: every git repo directly inside the folders the user added, plus the repos added one by one.
-use crate::git;
+use crate::{git, par};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RepoEntry {
     pub path: String,
     pub owner: String,
-    #[serde(rename = "lastActivity")]
-    pub last_activity: i64, // unix seconds of the newest local branch commit, 0 = no commits yet
+    pub last_activity: i64,     // unix seconds of the newest local branch commit, 0 = no commits yet
     pub folder: Option<String>, // the added folder it was found in; None = added on its own
 }
 
@@ -26,32 +26,19 @@ pub fn discover(folders: &[String], repos: &[String]) -> Vec<RepoEntry> {
     found.retain(|(p, _)| is_repo(p));
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found.dedup_by(|a, b| a.0 == b.0); // added on its own and inside a folder: listed once
-    // Two git calls per repo: a few repos at a time on threads, so a long list doesn't add up their latency (worst on Windows).
-    let batch = std::thread::available_parallelism().map_or(4, |n| n.get()) * 2;
-    found
-        .chunks(batch)
-        .flat_map(|chunk| {
-            std::thread::scope(|s| {
-                let handles: Vec<_> = chunk
-                    .iter()
-                    .map(|(p, folder)| {
-                        s.spawn(move || RepoEntry { path: p.to_string_lossy().into(), owner: owner(p), last_activity: last_activity(p), folder: folder.clone() })
-                    })
-                    .collect();
-                handles.into_iter().filter_map(|h| h.join().ok()).collect::<Vec<_>>()
-            })
-        })
-        .collect()
+    // Two git calls per repo, a few repos at a time, so a long list doesn't add up their latency (worst on Windows).
+    par::map(&found, |(p, folder)| RepoEntry { path: p.to_string_lossy().into(), owner: owner(p), last_activity: last_activity(p), folder: folder.clone() })
 }
 
 fn last_activity(repo: &Path) -> i64 {
-    git::run(&["for-each-ref", "--sort=-committerdate", "--count=1", "--format=%(committerdate:unix)", "refs/heads"], repo)
-        .ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0)
+    git::read_opt(&["for-each-ref", "--sort=-committerdate", "--count=1", "--format=%(committerdate:unix)", "refs/heads"], repo)
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// "git@github.com:owner/repo.git" or "https://github.com/owner/repo" -> "owner".
 fn owner(repo: &Path) -> String {
-    let Ok(url) = git::run(&["remote", "get-url", "origin"], repo) else { return "Local".into() };
+    let Some(url) = git::read_opt(&["remote", "get-url", "origin"], repo) else { return "Local".into() };
     let parts: Vec<&str> = url.trim().split(['/', ':']).filter(|s| !s.is_empty()).collect();
     if parts.len() >= 2 { parts[parts.len() - 2].into() } else { "Local".into() }
 }

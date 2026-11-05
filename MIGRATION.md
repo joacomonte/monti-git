@@ -1,3 +1,25 @@
+# Monti Git: arquitectura actual
+
+App de solo grafo (el dashboard se sacó). Lo de abajo de "Etapa 1" es historia de la migración desde Swift.
+
+Rust (`src-tauri/src/`), un archivo por responsabilidad:
+- `lib.rs`: solo los comandos (una línea cada uno) y los plugins.
+- `git.rs`: correr git (`run` lecturas / `write` cambios, entorno fijo: LC_ALL=C, GIT_OPTIONAL_LOCKS=0, config por
+  GIT_CONFIG_*), Logs con tope de bytes, `LogQuery`, `status()` único (-z), `Span` (worktree / root / entre dos) para diffs.
+- `refs.rs`: nombres de ramas (una sola regla origin/upstream), base, environments, mis ramas (`git var`).
+- `history.rs`: lista del grafo (browse / focus / historial de archivo) + fila uncommitted y WIP.
+- `patch.rs`: el único parser de diff unificado. `diff.rs`: filas lado a lado. `changes.rs`: archivos y diff de una selección.
+- `search.rs`: commits, código (`git grep -z`), líneas del árbol. `blame.rs`, `wip.rs`, `par.rs` (pool acotado), `branches.rs` (tarjetas).
+- `actions.rs`: acciones que escriben, serializadas con un lock por repo.
+
+Front (`src/lib/`): `model.svelte.ts` (estado; selección por id, un token anti-respuesta-vieja por tipo, `act()` único),
+`api.ts` (tipos del contrato), `prefs.ts` (claves tipadas), `refs.ts`, `format.ts`, `fileTree.ts`, `clipboard.svelte.ts`,
+`dialogs.ts`. Componentes compartidos: `Modal`, `ContextMenu`, `Segmented`.
+
+Correr: `pnpm tauri dev`. Tests: `cd src-tauri && cargo test`. Tipos: `pnpm check`. La versión vive solo en `src-tauri/Cargo.toml`.
+
+---
+
 # GitGraph → Tauri: estado de la migración
 
 Fuente original (Swift, sigue intacta): `/Users/monti/.t3/scratch/2026-10-28-best-app-git-graph-i-51136e91/Sources/GitGraph/`.

@@ -8,14 +8,14 @@
   import { cubicOut } from "svelte/easing";
   import { api, type WipMode } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
+  import { localName } from "$lib/refs";
   import Example from "./Example.svelte";
 
   let { model, dismiss, from = null }: { model: RepoModel; dismiss: () => void; from?: string | null } = $props();
 
-  const localName = (ref: string) => (/^(origin|upstream)\//.test(ref) ? ref.slice(ref.indexOf("/") + 1) : ref);
   // `from` (the card it was opened from) first, then the base, the environments and the branch you're on.
   const bases = $derived([...new Set(
-    [from, model.base, ...model.environments, model.current]
+    [from, model.history.base, ...model.history.environments, model.history.current]
       .filter((r): r is string => r != null).map(localName),
   )]);
   let picked = $state<string | null>(null);
@@ -40,7 +40,11 @@
   $effect(() => {
     const repo = model.repo, b = base;
     status = null;
-    if (repo && b) api.baseStatus(repo, b).then((s) => { if (base === b) status = s; }, () => {});
+    if (!repo || !b) return;
+    let stale = false;
+    // Can't reach origin: go on with the local copy, as if it had none there.
+    api.baseStatus(repo, b).then((s) => { if (!stale) status = s; }, () => { if (!stale) status = { ahead: 0, behind: 0, remote: false }; });
+    return () => (stale = true);
   });
   const diverged = $derived(status != null && status.ahead > 0 && status.behind > 0);
   // Pulled fine: a beat to read the result, then on to the next step by itself.
@@ -67,7 +71,7 @@
   async function next() {
     const repo = model.repo;
     if (!repo || !name) return;
-    dirty = await api.changedFileCount(repo);
+    dirty = await api.changedFileCount(repo).catch(() => 0);
     if (dirty) go("changes");
     else create(null);
   }
@@ -76,11 +80,12 @@
     if (!base || !name) return;
     error = "";
     go("working");
-    if (await model.startFeature(name, base, wip)) {
+    const result = await model.startFeature(name, base, wip);
+    if (result.ok) {
       go("done");
       setTimeout(dismiss, 1100);
     } else {
-      error = model.syncStatus;
+      error = result.error;
       go("name", -1);
     }
   }

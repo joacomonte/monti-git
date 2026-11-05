@@ -3,13 +3,17 @@
   import { Check, Copy, Settings2 } from "@lucide/svelte";
   import { api, type CommitInfo } from "$lib/api";
   import * as Popover from "$lib/components/ui/popover";
-  import { prefs, type RepoModel } from "$lib/model.svelte";
+  import type { RepoModel } from "$lib/model.svelte";
+  import { CopyFlash } from "$lib/clipboard.svelte";
+  import { ago, plural } from "$lib/format";
+  import { prefs } from "$lib/prefs";
+  import { refName } from "$lib/refs";
 
   let { model, id }: { model: RepoModel; id: string } = $props();
   let info = $state<CommitInfo | null>(null);
-  let branches = $state<string[] | null>(null);
+  let branches = $state<string[] | null>(null); // the branches that contain it
   let expanded = $state(false); // long description fully shown
-  let copied = $state(false);
+  const flash = new CopyFlash();
   let open = $state(false); // title and description only, until "see more…"; collapsed again on every commit
 
   const FIELDS = [
@@ -24,7 +28,7 @@
     { key: "stats", label: "Files and lines changed" },
   ] as const;
   type Field = (typeof FIELDS)[number]["key"];
-  let hidden = $state<Field[]>(prefs.get("commitDetailsHidden", []));
+  let hidden = $state<Field[]>(prefs.get("commitDetailsHidden", []) as Field[]);
   const shows = (field: Field) => !hidden.includes(field);
 
   function toggle(field: Field) {
@@ -39,27 +43,16 @@
     branches = null;
     expanded = false;
     open = false;
-    api.commitInfo(repo, id).then((result) => { if (result.id === id) info = result; });
-    api.commitPlaces(repo, id).then((names) => { if (model.repo === repo) branches = names; });
+    let stale = false;
+    api.commitInfo(repo, id).then((result) => { if (!stale) info = result; }, () => {});
+    api.commitPlaces(repo, id).then((places) => { if (!stale) branches = places.map((p) => p.name); }, () => {});
+    return () => (stale = true);
   });
 
   const totals = $derived(Object.values(model.counts).reduce(([a, r], [x, y]) => [a + x, r + y], [0, 0]));
   const files = $derived(Object.keys(model.changes).length);
 
-  async function copyHash() {
-    await navigator.clipboard.writeText(id);
-    copied = true;
-    setTimeout(() => (copied = false), 1200);
-  }
-
   const date = (seconds: number) => new Date(seconds * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-  function ago(seconds: number) {
-    const minutes = Math.floor((Date.now() / 1000 - seconds) / 60);
-    if (minutes < 60) return `${minutes}m ago`;
-    if (minutes < 1440) return `${Math.floor(minutes / 60)}h ago`;
-    const days = Math.floor(minutes / 1440);
-    return days < 30 ? `${days}d ago` : days < 365 ? `${Math.floor(days / 30)}mo ago` : `${Math.floor(days / 365)}y ago`;
-  }
 </script>
 
 <div class="details enter-fade" id="commit-details">
@@ -68,7 +61,7 @@
       <span class="min-w-0 flex-1 text-[13px] leading-snug font-semibold select-text">{info.subject}</span>
       {#if open}<Popover.Root>
         <Popover.Trigger class="gear" id="commit-details-settings" title="Choose which details to show"><Settings2 size={13} /></Popover.Trigger>
-        <Popover.Content align="end" class="w-[250px] p-1.5">
+        <Popover.Content align="end" class="w-[250px] p-1.5" id="commit-details-settings-menu">
           <span class="block px-2 pt-1 pb-1 text-[11px] font-semibold text-muted-foreground uppercase">Show</span>
           {#each FIELDS as field (field.key)}
             <button class="pick" id="commit-details-field-{field.key}" onclick={() => toggle(field.key)}>
@@ -92,8 +85,8 @@
       {#if shows("hash")}
         <span class="k">Hash</span>
         <span class="flex items-center gap-1.5"><span class="font-mono select-text" title={info.id}>{info.id.slice(0, 10)}</span>
-          <button class="icon" id="commit-details-copy-hash" title="Copy full hash" onclick={copyHash}>
-            {#if copied}<Check size={11} class="text-green-500" />{:else}<Copy size={11} />{/if}
+          <button class="icon" id="commit-details-copy-hash" title="Copy full hash" onclick={() => flash.copy("hash", id)}>
+            {#if flash.copied === "hash"}<Check size={11} class="text-green-500" />{:else}<Copy size={11} />{/if}
           </button></span>
       {/if}
       {#if shows("author")}<span class="k">Author</span><span class="truncate select-text" title={info.authorEmail}>{info.author} <span class="dim">{info.authorEmail}</span></span>{/if}
@@ -109,7 +102,7 @@
       {/if}
       {#if shows("refs") && info.refs.length}
         <span class="k">Points here</span>
-        <span class="flex flex-wrap gap-1">{#each info.refs as ref (ref)}<span class="chip">{ref.replace("HEAD -> ", "")}</span>{/each}</span>
+        <span class="flex flex-wrap gap-1">{#each info.refs as ref (ref)}<span class="chip">{refName(ref)}</span>{/each}</span>
       {/if}
       {#if shows("branches")}
         <span class="k">In</span>
@@ -124,7 +117,7 @@
       {/if}
       {#if shows("stats") && files}
         <span class="k">Changes</span>
-        <span>{files} {files === 1 ? "file" : "files"} <span class="text-green-500/80">+{totals[0]}</span> <span class="text-red-500/80">−{totals[1]}</span></span>
+        <span>{plural(files, "file")} <span class="text-green-500/80">+{totals[0]}</span> <span class="text-red-500/80">−{totals[1]}</span></span>
       {/if}
     </div>
     <button class="see" id="commit-details-see-less" onclick={() => (open = false)}>see less</button>

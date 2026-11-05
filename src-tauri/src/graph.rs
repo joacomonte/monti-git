@@ -1,5 +1,6 @@
 //! Lane layout of the commit graph, ported 1:1 from GraphLayout.swift.
 use crate::git::Commit;
+use crate::refs::local_name;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
@@ -142,11 +143,6 @@ pub fn compute(commits: &[Commit], main_chain: &HashSet<String>) -> Vec<GraphRow
     rows
 }
 
-/// "origin/x" / "upstream/x" -> "x".
-fn strip_remote(name: &str) -> &str {
-    name.split_once('/').filter(|(r, _)| *r == "origin" || *r == "upstream").map_or(name, |(_, rest)| rest)
-}
-
 /// Branch named in a merge subject: "Merge branch 'x'", "Merge remote-tracking branch 'x'", "Merged in x",
 /// "Merge pull request #N from user/x".
 fn merged_branch(subject: &str) -> Option<&str> {
@@ -180,25 +176,20 @@ pub fn branch_names(commits: &[Commit], main: Option<&str>, main_chain: &HashSet
             id = commit.parents.first().cloned();
         }
     };
-    if let Some(main) = main.map(strip_remote) {
+    if let Some(main) = main.map(local_name) {
         for id in main_chain.iter().filter(|id| by_id.contains_key(id.as_str())) {
             names.insert(id.clone(), main.to_string());
         }
     }
     for commit in commits {
-        if commit.is_worktree() {
-            names.insert(commit.id.clone(), "uncommitted changes".into());
-            continue;
-        }
-        if let Some(branch) = &commit.shelved {
-            names.insert(commit.id.clone(), format!("WIP saved from {branch}"));
-            continue;
+        if commit.is_worktree() || commit.shelved.is_some() {
+            continue; // the UI names these rows itself
         }
         let branches: Vec<&str> =
             commit.refs.iter().filter(|r| !r.starts_with("tag: ") && *r != "HEAD").map(|r| r.trim_start_matches("HEAD -> ")).collect();
         // Prefer the local name; a remote-only branch shows without "origin/".
-        let local = branches.iter().find(|b| strip_remote(b) == **b);
-        if let Some(name) = local.copied().or_else(|| branches.first().map(|b| b.split_once('/').map_or(*b, |(_, r)| r))) {
+        let local = branches.iter().find(|b| local_name(b) == **b);
+        if let Some(name) = local.copied().or_else(|| branches.first().map(|b| local_name(b))) {
             claim(&mut names, &commit.id, name);
         }
     }
@@ -207,7 +198,7 @@ pub fn branch_names(commits: &[Commit], main: Option<&str>, main_chain: &HashSet
             continue;
         }
         if let Some(name) = merged_branch(&commit.subject) {
-            claim(&mut names, &commit.parents[1], &format!("{} (merged)", strip_remote(name)));
+            claim(&mut names, &commit.parents[1], &format!("{} (merged)", local_name(name)));
         }
     }
     names
@@ -226,6 +217,7 @@ mod tests {
             refs: refs.iter().map(|s| s.to_string()).collect(),
             subject: subject.into(),
             shelved: None,
+            stat: None,
         }
     }
 

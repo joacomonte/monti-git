@@ -1,15 +1,18 @@
 <!-- Repos the user added (one by one or a folder of them): Favorites first, then one section per owner; groups and repos ordered by most recent activity. -->
 <script lang="ts">
   import { whatsNew } from "./WhatsNew.svelte";
-  import { fade } from "svelte/transition";
-  import { Check, ChevronRight, ArrowUpRight, CloudDownload, Coffee, Sparkles, Copy, EyeOff, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
+  import { Check, ChevronRight, ArrowUpRight, CloudDownload, Sparkles, Copy, EyeOff, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
   import ActionRow from "./ActionRow.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
   import { Button } from "$lib/components/ui/button";
   import * as Popover from "$lib/components/ui/popover";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getVersion } from "@tauri-apps/api/app";
-  import { api, type RepoEntry } from "$lib/api";
+  import type { RepoEntry, SkipReason } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
+  import { CopyFlash } from "$lib/clipboard.svelte";
+  import { pickFolders } from "$lib/dialogs";
+  import { ago, baseName } from "$lib/format";
 
   let { model }: { model: RepoModel } = $props();
   let repos = $state<RepoEntry[]>([]);
@@ -21,34 +24,26 @@
     const timer = setInterval(() => (now = Date.now()), 20_000);
     return () => clearInterval(timer);
   });
-  const ago = (ms: number) => {
-    const s = (now - ms) / 1000;
-    return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`;
-  };
 
-  async function refresh() {
-    const { folders, repos: added, hidden } = model.sources;
-    repos = (await api.listRepos(folders, added)).filter((r) => !hidden.includes(r.path));
-  }
+  // Relisted whenever a folder or repo is added, removed or hidden; an older listing arriving late is dropped.
   $effect(() => {
-    model.sources; // relist whenever a folder or repo is added, removed or hidden
-    refresh();
+    void model.sources;
+    let stale = false;
+    model.listedRepos().then((list) => { if (!stale) repos = list; }, () => {});
+    return () => (stale = true);
   });
 
   let showAdd = $state(false);
-  const add = (kind: "repo" | "folder") => { showAdd = false; model.addRepos(kind); };
+  async function add(kind: "repo" | "folder") {
+    showAdd = false;
+    model.addRepos(kind, await pickFolders(kind));
+  }
 
   // Right-click menu on a repo row.
   let menu = $state<{ x: number; y: number; repo: RepoEntry } | null>(null);
   // Act first: `repo` in the menu reads `menu.repo`, so closing first would leave it null.
   const run = (action: () => void) => () => { action(); menu = null; };
-
-  let copiedPath = $state<string | null>(null);
-  async function copyPath(path: string) {
-    await navigator.clipboard.writeText(path);
-    copiedPath = path;
-    setTimeout(() => { if (copiedPath === path) copiedPath = null; }, 1200);
-  }
+  const flash = new CopyFlash();
 
   const sections = $derived.by(() => {
     const favorites = model.favorites;
@@ -62,29 +57,18 @@
       ...[...groups].sort((a, b) => b[1][0].lastActivity - a[1][0].lastActivity)];
   });
 
-  const nameOf = (path: string) => path.split(/[\\/]/).pop();
 
   let showLog = $state(false);
   let showFailure = $state(false);
   $effect(() => { showFailure = model.syncFailure != null; }); // opens by itself when a sync skips branches; closing keeps the ⚠
-  let copied = $state(false);
 
-  /** What to do about each skip reason (the labels come from `sync` in src-tauri/src/actions.rs). */
-  function hint(reason: string) {
-    if (reason.endsWith("(diverged)")) return "You and the server both have new commits. If you still need it: check it out and pull with rebase or merge. If it's an old branch, ignore this.";
-    if (reason.endsWith("(local changes)")) return "Commit or stash your changes, then sync again.";
-    if (reason.endsWith("(checked out elsewhere)")) return "It's open in another worktree. Update it from there.";
-    return null;
-  }
-
-  async function copyLog(log: string) {
-    await navigator.clipboard.writeText(log);
-    copied = true;
-    setTimeout(() => (copied = false), 1500);
-  }
+  /** Why sync skipped a branch (SkipReason in src-tauri/src/actions.rs), and what to do about it. */
+  const SKIPPED: Record<SkipReason, { label: string; hint: string }> = {
+    diverged: { label: "diverged", hint: "You and the server both have new commits. If you still need it: check it out and pull with rebase or merge. If it's an old branch, ignore this." },
+    localChanges: { label: "local changes", hint: "Commit or stash your changes, then sync again." },
+    checkedOutElsewhere: { label: "checked out elsewhere", hint: "It's open in another worktree. Update it from there." },
+  };
 </script>
-
-<svelte:window onclick={() => (menu = null)} onkeydown={(e) => { if (e.key === "Escape") menu = null; }} onblur={() => (menu = null)} />
 
 <aside class="flex h-full flex-col bg-sidebar">
   <!-- Room for the window buttons, then the controls; the strip drags the window. -->
@@ -104,9 +88,9 @@
             </div>
           </div>
           <div class="flex flex-col gap-1">
-            {#each failure.reasons as reason (reason)}
-              <span class="flex items-center gap-1.5 text-[12px]"><GitBranch size={12} class="shrink-0" />{reason}</span>
-              {#if hint(reason)}<span class="pl-[18px] text-[11px] text-muted-foreground">{hint(reason)}</span>{/if}
+            {#each failure.reasons as { branch, reason } (branch)}
+              <span class="flex items-center gap-1.5 text-[12px]"><GitBranch size={12} class="shrink-0" />{branch} ({SKIPPED[reason].label})</span>
+              <span class="pl-[18px] text-[11px] text-muted-foreground">{SKIPPED[reason].hint}</span>
             {/each}
           </div>
           {#if failure.log}
@@ -119,7 +103,7 @@
           {/if}
           <div class="flex gap-2">
             {#if failure.log}
-              <Button variant="secondary" size="sm" onclick={() => copyLog(failure.log)} id="sync-failure-copy" title="Copy the raw log, to paste it into an AI agent or a message">{copied ? "Copied" : "Copy log"}</Button>
+              <Button variant="secondary" size="sm" onclick={() => flash.copy("log", failure.log)} id="sync-failure-copy" title="Copy the raw log, to paste it into an AI agent or a message">{flash.copied === "log" ? "Copied" : "Copy log"}</Button>
             {/if}
             <span class="flex-1"></span>
             <Button size="sm" onclick={() => (model.syncFailure = null)} id="sync-failure-dismiss" title="Hide this until the next sync">Dismiss</Button>
@@ -133,13 +117,13 @@
   <button class="sync-button" aria-pressed={model.autoSyncOn} id="auto-sync"
     onclick={() => model.setAutoSync(!model.autoSyncOn)}
     title={`Auto sync: ${model.autoSyncOn ? "on" : "off"}\nKeeps every branch up to date with origin on its own: fetch and safe fast-forwards when you use the app (at most once a minute) and every 5 minutes. Never merges or rewrites anything.`}>
-    <RefreshCw size={12} class="shrink-0 {model.isSyncing ? 'animate-spin' : ''}" />Auto sync {model.autoSyncOn ? "on" : "off"}
+    <RefreshCw size={12} class="shrink-0 {model.isSyncing || model.isAutoSyncing ? 'animate-spin' : ''}" />Auto sync {model.autoSyncOn ? "on" : "off"}
   </button>
   <button class="sync-button pull" onclick={() => model.sync()} disabled={!model.repo || model.isSyncing} id="sync-button"
     title="Downloads the latest from the server and updates every branch that's behind. Safe: it skips branches where you have unpushed commits or uncommitted changes. Ej: main is 3 behind → it catches up.">
     <CloudDownload size={11} class={model.isSyncing ? "animate-pulse" : ""} />Force pull now
   </button>
-  <span class="synced" id="last-synced">{model.isSyncing ? "syncing…" : model.lastSynced ? `synced ${ago(model.lastSynced)}` : ""}</span>
+  <span class="synced" id="last-synced">{model.isSyncing || model.isAutoSyncing ? "syncing…" : model.lastSynced ? `synced ${ago(model.lastSynced / 1000, now)}` : ""}</span>
   <nav class="flex-1 overflow-auto px-2 pb-3" id="repo-sidebar">
     <!-- First item of the list, dashed: add a repo, or a folder whose repos are all listed. -->
     <Popover.Root bind:open={showAdd}>
@@ -165,16 +149,16 @@
           oncontextmenu={(e) => { e.preventDefault(); menu = { x: e.clientX, y: e.clientY, repo }; }}
         >
           <GitBranch size={13} class="shrink-0 text-muted-foreground" />
-          <span class="flex-1 truncate">{nameOf(repo.path)}</span>
+          <span class="flex-1 truncate">{baseName(repo.path)}</span>
           <!-- spans, not buttons: they sit inside the row's <button>. -->
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <span role="button" tabindex="0" class="copy shrink-0" class:on={copiedPath === repo.path} id="copy-path-{nameOf(repo.path)}"
+          <span role="button" tabindex="0" class="copy shrink-0" class:on={flash.copied === repo.path} id="copy-path-{baseName(repo.path)}"
             title="Copy full path: {repo.path}"
-            onclick={(e) => { e.stopPropagation(); copyPath(repo.path); }}>
-            {#if copiedPath === repo.path}<Check size={13} />{:else}<Copy size={13} />{/if}
+            onclick={(e) => { e.stopPropagation(); flash.copy(repo.path, repo.path); }}>
+            {#if flash.copied === repo.path}<Check size={13} />{:else}<Copy size={13} />{/if}
           </span>
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <span role="button" tabindex="0" class="star shrink-0" class:on={isFavorite} id="favorite-toggle-{nameOf(repo.path)}"
+          <span role="button" tabindex="0" class="star shrink-0" class:on={isFavorite} id="favorite-toggle-{baseName(repo.path)}"
             title={isFavorite ? "Remove from Favorites" : "Add to Favorites: keeps this repo at the top of the list."}
             onclick={(e) => { e.stopPropagation(); model.toggleFavorite(repo.path); }}>
             <Star size={14} fill={isFavorite ? "currentColor" : "none"} />
@@ -186,31 +170,30 @@
   {#if menu}
     {@const repo = menu.repo}
     {@const isFavorite = model.favorites.includes(repo.path)}
-    {@const folderName = repo.folder ? nameOf(repo.folder) : ""}
-    <div out:fade={{ duration: 120 }} class="enter-pop fixed z-50 flex w-[230px] flex-col rounded-lg border bg-popover p-1 text-[12.5px] shadow-lg" id="repo-menu"
-      style:left="{Math.min(menu.x, innerWidth - 240)}px" style:top="{Math.min(menu.y, innerHeight - 200)}px">
-      <button class="item" title="Favorites stay at the top of the sidebar" id="repo-menu-favorite" onclick={run(() => model.toggleFavorite(repo.path))}>
+    {@const folderName = repo.folder ? baseName(repo.folder) : ""}
+    <ContextMenu x={menu.x} y={menu.y} id="repo-menu" class="w-[230px]" onclose={() => (menu = null)}>
+      <button class="menu-item" title="Favorites stay at the top of the sidebar" id="repo-menu-favorite" onclick={run(() => model.toggleFavorite(repo.path))}>
         <Star size={13} />{isFavorite ? "Remove from Favorites" : "Add to Favorites"}
       </button>
-      <button class="item" title={repo.path} id="repo-menu-copy-path" onclick={run(() => copyPath(repo.path))}>
+      <button class="menu-item" title={repo.path} id="repo-menu-copy-path" onclick={run(() => flash.copy(repo.path, repo.path))}>
         <Copy size={13} />Copy full path
       </button>
-      <div class="my-1 h-px bg-border"></div>
+      <div class="menu-separator"></div>
       {#if repo.folder}
-        <button class="item" title="Take it out of the list; it comes back if you add it again" id="repo-menu-hide" onclick={run(() => model.hideRepo(repo.path))}><EyeOff size={13} />Hide from sidebar</button>
-        <button class="item" title="Stop listing every repo in this folder. Nothing is deleted from disk." id="repo-menu-remove-folder" onclick={run(() => model.removeFolder(repo.folder!))}>
+        <button class="menu-item" title="Take it out of the list; it comes back if you add it again" id="repo-menu-hide" onclick={run(() => model.hideRepo(repo.path))}><EyeOff size={13} />Hide from sidebar</button>
+        <button class="menu-item" title="Stop listing every repo in this folder. Nothing is deleted from disk." id="repo-menu-remove-folder" onclick={run(() => model.removeFolder(repo.folder!))}>
           <FolderMinus size={13} /><span class="truncate">Remove folder "{folderName}"</span>
         </button>
       {:else}
-        <button class="item" title="Take it out of the sidebar. Nothing is deleted from disk." id="repo-menu-remove" onclick={run(() => model.removeRepo(repo.path))}><X size={13} />Remove from sidebar</button>
+        <button class="menu-item" title="Take it out of the sidebar. Nothing is deleted from disk." id="repo-menu-remove" onclick={run(() => model.removeRepo(repo.path))}><X size={13} />Remove from sidebar</button>
       {/if}
-    </div>
+    </ContextMenu>
   {/if}
   {#if model.syncStatus}
     <!-- Last action's result (sync, checkout, pull…). -->
     <div class="enter line-clamp-2 shrink-0 px-2.5 py-2 text-[10px] text-tertiary" title={model.syncStatus} id="sync-status">{model.syncStatus}</div>
   {/if}
-  <!-- Footer: what's new, GitHub, Cafecito; one full-width row each, with a tinted icon tile. -->
+  <!-- Footer: what's new and GitHub; one full-width row each, with a tinted icon tile. -->
   <div class="flex shrink-0 flex-col gap-1 border-t p-2">
     <!-- Opens this version's "What's new"; the dot stays until it's been read. -->
     <button class="foot-row" style:--tint="#a78bfa" id="app-version" onclick={() => whatsNew.open()}>
@@ -223,11 +206,6 @@
       <span class="tile"><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></span>
       <span class="text"><b>GitHub</b><small>joacomonte</small></span>
       <ArrowUpRight size={14} class="go" />
-    </button>
-    <!-- shortcut: no Cafecito page yet (cafecito.app/joacomonte), so it goes nowhere; add openUrl once it exists. -->
-    <button class="foot-row" style:--tint="#f5a524" id="cafecito-link">
-      <span class="tile"><Coffee size={14} /></span>
-      <span class="text"><b>Invitame un cafecito</b><small>Pronto</small></span>
     </button>
   </div>
 </aside>
@@ -280,6 +258,4 @@
   .copy:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.15); }
   .copy.on { display: block; color: oklch(0.72 0.17 150); }
   .repo:hover .copy { display: block; }
-  .item { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 6px; text-align: left; }
-  .item:hover { background: var(--quinary); }
 </style>

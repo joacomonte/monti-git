@@ -1,16 +1,20 @@
-// Typed wrappers over the Rust commands in src-tauri/src/lib.rs.
+// Typed wrappers over the Rust commands in src-tauri/src/lib.rs. Commands that can fail reject with git's stderr.
 import { invoke } from "@tauri-apps/api/core";
 
 export const WORKTREE_ID = "WORKTREE";
 
+/** Size of a set of changes. The uncommitted row only counts files. */
+export type Stat = { files: number; added: number; removed: number };
+
 export type Commit = {
-  id: string;
+  id: string; // full hash, or WORKTREE_ID for the uncommitted-changes row
   parents: string[];
   author: string;
   date: number; // unix seconds
   refs: string[]; // raw %D decorations, e.g. "HEAD -> main", "origin/main", "tag: v1.0"
-  subject: string;
-  shelved?: string; // stash row: the branch whose uncommitted work Monti Git put aside when leaving it
+  subject: string; // empty on the uncommitted and saved-WIP rows: see `subject` in format.ts
+  shelved?: string; // saved-WIP row: the branch whose uncommitted work Monti Git put aside when leaving it
+  stat?: Stat; // uncommitted and saved-WIP rows: what they hold
 };
 
 /** [target, color, flags]: target = commit index (negative = past the loaded page); flags: 1 behind, 2 current. */
@@ -25,10 +29,22 @@ export type Row = {
   parents: number[]; // same ids as Lane targets
 };
 
+/** What the graph shows (history::Query in src-tauri/src/history.rs). */
+export type HistoryQuery = {
+  limit: number;
+  onlyMine: boolean;
+  branchesOnly: boolean;
+  preferred: string | null; // the base the user picked for this repo
+  focus: string[]; // [branch] or [branch, base]: "Only this branch"
+  path: string | null; // a file's history
+  environments: string[] | null; // the user's environments; null = detected by name
+  only: string[] | null; // a filter's branches
+};
+
 export type History = {
   commits: Commit[];
   rows: Row[];
-  names: (string | null)[];
+  names: (string | null)[]; // branch each commit belongs to, for the line tooltip
   hasMore: boolean;
   current: string | null; // checked-out branch, null when detached
   base: string | null; // the branch pinned to the left
@@ -39,45 +55,56 @@ export type History = {
   fastForwarded: boolean; // "Only this branch": reached the base by a fast-forward, no merge to draw
 };
 
-/** A commit whose title or description matched a global search (see search.rs). */
-export type SearchHit = { repo: string; id: string; author: string; date: number; subject: string; snippet: string | null };
+/** Search results, and whether some repo had more than these. */
+export type Found<T> = { hits: T[]; truncated: boolean };
+/** A commit whose title or description matched the global search. */
+export type CommitHit = { repo: string; id: string; author: string; date: number; subject: string; snippet: string | null };
+/** A line of code found by the global search, in one or more branches; `targets`: those where work ends up (qa, main…). */
+export type CodeHit = { repo: string; id: string; branches: string[]; targets: string[]; path: string; line: number; text: string };
+export type CodeScope = "head" | "base" | "all";
+/** Tree search matches in one file: how many lines, and the first one (`old`: on the "before" side of the diff). */
+export type LineHits = { count: number; line: number; old: boolean };
+/** A branch containing a commit; `target`: work ends up there (an environment, main, production…). */
+export type Place = { name: string; target: boolean };
 
-/** Everything about one commit (see CommitInfo in src-tauri/src/lib.rs). Dates in unix seconds. */
+/** Everything about one commit. Dates in unix seconds. */
 export type CommitInfo = {
   id: string; author: string; authorEmail: string; authorDate: number; committer: string; committerEmail: string; committerDate: number;
   parents: string[]; refs: string[]; subject: string; body: string;
 };
 
-/** Who last touched each line: `lines[n - 1]` indexes `commits` for line n (see blame in src-tauri/src/lib.rs). */
+/** Who last touched each line: `lines[n - 1]` indexes `commits` for line n. An all-zero id = not committed yet. */
 export type Blame = { lines: number[]; commits: { id: string; author: string; date: number; subject: string }[] };
 
 export type RepoEntry = { path: string; owner: string; lastActivity: number; folder: string | null }; // folder: the added folder it came from
 
 export type Changes = {
-  changes: Record<string, string>; // path -> status letter
+  changes: Record<string, string>; // path -> status letter (A, M, D, R, U)
   counts: Record<string, [number, number]>; // path -> added, removed
-  paths: string[];
+  paths: string[]; // what the tree lists
   staged: string[]; // uncommitted-changes row only: files in the index
 };
 
 export type Side = { number: number; text: string; changed: [number, number] | null };
-export type DiffRow = { hunk?: number; left: Side | null; right: Side | null; isChange: boolean };
-export type FileDiff = { rows: DiffRow[]; touching: string[] };
+/** A line pair, or (with `hunk` and `header`) the "@@ … @@" separator that starts a block. */
+export type DiffRow = { hunk?: number; header?: string; left: Side | null; right: Side | null; isChange: boolean };
+export type FileDiff = { rows: DiffRow[]; truncated: boolean };
 
-/** A branch card in "Commits collapsed" (Status in src-tauri/src/branches.rs), fetched only for the rows on screen. */
+export type Promotion = "merged" | "fast-forwarded" | "cherry-picked" | "squashed" | "";
+/** A branch card in "Commits collapsed", fetched only for the rows on screen. */
 export type Card = {
   ref: string; // "qa", or "origin/qa" when there is no local branch
   local: string;
   behindBase: number;
-  // target, own commits not in it yet, and how they got there when 0 ("" while missing)
-  promotion: [string, number, "merged" | "fast-forwarded" | "cherry-picked" | "squashed" | ""][];
+  promotion: [string, number, Promotion][]; // target, own commits not in it yet, how they got there once 0
   firstParentCount: number; // commits "Only this branch" shows: matches the graph when focused
   hasUpstream: boolean;
 };
 
-export type SyncResult = { updated: string[]; skipped: string[]; log: string[]; changed: boolean };
+export type SkipReason = "diverged" | "localChanges" | "checkedOutElsewhere";
+export type SyncResult = { updated: string[]; skipped: { branch: string; reason: SkipReason }[]; log: string[]; changed: boolean };
 
-/** One git command the app ran (src-tauri/src/git.rs `LogEntry`), for the Logs panel. */
+/** One git command the app ran, for the Logs panel. */
 export type GitLog = {
   id: number; at: number; repo: string; args: string[]; ok: boolean; code: number | null; ms: number;
   stdout: string; stderr: string; write: boolean; truncated: boolean;
@@ -86,52 +113,52 @@ export type GitLog = {
 /** What to do with uncommitted changes when checking out: stash for this branch, WIP commit, or bring along. */
 export type WipMode = "shelve" | "commit" | "carry";
 
+/** What a selection compares: `target` null = the uncommitted row, `base` null = a root commit. */
+export type Span = { base: string | null; target: string | null };
+
 export const api = {
   listRepos: (folders: string[], repos: string[]) => invoke<RepoEntry[]>("list_repos", { folders, repos }),
   isRepo: (path: string) => invoke<boolean>("is_repo", { path }),
-  loadHistory: (repo: string, limit: number, onlyMine: boolean, branchesOnly: boolean, preferred: string | null, focus: string[], path: string | null,
-    environments: string[] | null, only: string[] | null) =>
-    invoke<History>("load_history", { repo, limit, onlyMine, branchesOnly, preferred, focus, path, environments, only }),
-  /** Filters, fast pass: every branch and, per target, the ones already in it by history (see branches.rs). */
-  mergedInto: (repo: string, targets: string[], onlyMine: boolean) =>
-    invoke<{ all: string[]; merged: [string, string[]][] }>("merged_into", { repo, targets, onlyMine }),
-  searchCommits: (repos: string[], query: string) => invoke<SearchHit[]>("search_commits", { repos, query }),
-  commitPlaces: (repo: string, id: string) => invoke<string[]>("commit_places", { repo, id }),
+  openFile: (repo: string, path: string, reveal: boolean) => invoke<void>("open_file", { repo, path, reveal }),
+
+  loadHistory: (repo: string, query: HistoryQuery) => invoke<History>("load_history", { repo, query }),
+  loadChanges: (repo: string, span: Span, all: boolean) => invoke<Changes>("load_changes", { repo, ...span, all }),
+  loadDiff: (repo: string, path: string, span: Span, whole: boolean) => invoke<FileDiff>("load_diff", { repo, path, ...span, whole }),
   commitInfo: (repo: string, id: string) => invoke<CommitInfo>("commit_info", { repo, id }),
-  commitPatch: (repo: string, id: string) => invoke<string>("commit_patch", { repo, id }),
   blame: (repo: string, path: string, rev: string | null) => invoke<Blame>("blame", { repo, path, rev }),
-  loadChanges: (repo: string, base: string | null, target: string | null, all: boolean) =>
-    invoke<Changes>("load_changes", { repo, base, target, all }),
-  /** Tree search by content: path -> matching lines. See search_lines in src-tauri/src/lib.rs. */
-  searchLines: (repo: string, base: string | null, target: string | null, query: string, paths: string[] | null, diffOnly: boolean) =>
-    invoke<Record<string, number>>("search_lines", { repo, base, target, query, paths, diffOnly }),
-  loadDiff: (repo: string, path: string, base: string | null, target: string | null, group: string[], whole: boolean) =>
-    invoke<FileDiff>("load_diff", { repo, path, base, target, group, whole }),
   branchStatus: (repo: string, refs: string[], base: string, targets: string[]) =>
     invoke<Omit<Card, "local">[]>("branch_status", { repo, refs, base, targets }),
-  gitLogs: (since: number) => invoke<GitLog[]>("git_logs", { since }),
-  // Actions that change the repo (src-tauri/src/actions.rs); they reject with git's stderr.
-  sync: (repo: string) => invoke<SyncResult>("sync", { repo }),
+  /** Filters, fast pass: every branch and, per target, the ones already in it by history. */
+  mergedInto: (repo: string, targets: string[], onlyMine: boolean) =>
+    invoke<{ all: string[]; merged: [string, string[]][] }>("merged_into", { repo, targets, onlyMine }),
+  branchTip: (repo: string, branch: string) => invoke<string | null>("branch_tip", { repo, branch }),
+  lastCommitMessage: (repo: string) => invoke<string>("last_commit_message", { repo }),
   changedFileCount: (repo: string) => invoke<number>("changed_file_count", { repo }),
+  gitLogs: (since: number) => invoke<GitLog[]>("git_logs", { since }),
+
+  searchCommits: (repos: string[], query: string) => invoke<Found<CommitHit>>("search_commits", { repos, query }),
+  searchCode: (repos: string[], bases: Record<string, string>, query: string, scope: CodeScope) =>
+    invoke<Found<CodeHit>>("search_code", { repos, bases, query, scope }),
+  /** Tree search by content: path -> matching lines. `paths` empty = every file. */
+  searchLines: (repo: string, span: Span, query: string, paths: string[], diffOnly: boolean) =>
+    invoke<Record<string, LineHits>>("search_lines", { repo, ...span, query, paths, diffOnly }),
+  commitPlaces: (repo: string, id: string) => invoke<Place[]>("commit_places", { repo, id }),
+
+  sync: (repo: string) => invoke<SyncResult>("sync", { repo }),
   checkout: (repo: string, name: string, wip: WipMode | null) => invoke<string>("checkout", { repo, name, wip }),
   pull: (repo: string, name: string) => invoke<string>("pull", { repo, name }),
   deleteBranch: (repo: string, branch: string, remote: boolean) => invoke<string>("delete_branch", { repo, branch, remote }),
-  openFile: (repo: string, path: string, reveal: boolean) => invoke<void>("open_file", { repo, path, reveal }),
   /** Fetches, then how `base` compares with origin/`base` (`remote` false: no copy there). */
   baseStatus: (repo: string, base: string) => invoke<{ ahead: number; behind: number; remote: boolean }>("base_status", { repo, base }),
-  startFeature: (repo: string, name: string, base: string, wip: WipMode | null) =>
-    invoke<string>("start_feature", { repo, name, base, wip }),
-  updateBranch: (repo: string, branch: string, parent: string, rebase: boolean, isCurrent: boolean) =>
-    invoke<void>("update_branch", { repo, branch, parent, rebase, isCurrent }),
+  startFeature: (repo: string, name: string, base: string, wip: WipMode | null) => invoke<string>("start_feature", { repo, name, base, wip }),
+  updateBranch: (repo: string, branch: string, parent: string, rebase: boolean) => invoke<void>("update_branch", { repo, branch, parent, rebase }),
   forcePush: (repo: string, branch: string) => invoke<void>("force_push", { repo, branch }),
-  moveBranch: (repo: string, branch: string, expected: string | null, target: string) =>
-    invoke<void>("move_branch", { repo, branch, expected, target }),
-  branchTip: (repo: string, branch: string) => invoke<string | null>("branch_tip", { repo, branch }),
+  moveBranch: (repo: string, branch: string, expected: string | null, target: string) => invoke<void>("move_branch", { repo, branch, expected, target }),
   discardFile: (repo: string, path: string) => invoke<void>("discard_file", { repo, path }),
   discardAll: (repo: string) => invoke<void>("discard_all", { repo }),
-  discardHunk: (repo: string, path: string, index: number) => invoke<void>("discard_hunk", { repo, path, index }),
+  /** The block the diff pane showed as `index`, with its "@@" `header` (refused if the file changed since). */
+  discardHunk: (repo: string, path: string, index: number, header: string) => invoke<void>("discard_hunk", { repo, path, index, header }),
   stage: (repo: string, paths: string[]) => invoke<void>("stage", { repo, paths }),
   unstage: (repo: string, paths: string[]) => invoke<void>("unstage", { repo, paths }),
-  lastCommitMessage: (repo: string) => invoke<string>("last_commit_message", { repo }),
   commit: (repo: string, message: string, push: boolean) => invoke<string>("commit", { repo, message, push }),
 };

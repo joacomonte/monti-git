@@ -4,18 +4,18 @@
   import type { Component } from "svelte";
   import type { RepoModel } from "$lib/model.svelte";
   import type { WipMode } from "$lib/api";
+  import { plural } from "$lib/format";
   import Example from "./Example.svelte";
-  import { fade } from "svelte/transition";
+  import Modal from "./Modal.svelte";
 
-  let { target, model }: { target: string; model: RepoModel } = $props();
-  const n = $derived(model.pendingChangeCount);
-  const from = $derived(model.current ?? "this branch");
+  let { checkout, model }: { checkout: { name: string; changes: number }; model: RepoModel } = $props();
+  const target = $derived(checkout.name);
+  const from = $derived(model.history.current ?? "this branch");
   const cancel = () => (model.pendingCheckout = null);
 
-  /** Enter = Stash (the default), Esc = cancel. */
+  /** Enter = Stash (the default); a focused button (a choice, Cancel) does its own thing on Enter. Esc: the Modal. */
   function keydown(e: KeyboardEvent) {
-    if (e.key === "Escape") cancel();
-    else if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement)) model.runCheckout(target, "shelve");
+    if (e.key === "Enter" && !(e.target instanceof HTMLElement && e.target.closest("button, input, textarea"))) model.runCheckout(target, "shelve");
   }
 </script>
 
@@ -33,13 +33,11 @@
   </button>
 {/snippet}
 
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="backdrop enter-fade" out:fade|global={{ duration: 150 }} id="checkout-prompt" onclick={cancel}>
-  <div class="panel enter-pop" role="dialog" tabindex="-1" aria-labelledby="checkout-prompt-title" onclick={(e) => e.stopPropagation()}>
+<Modal id="checkout-prompt" onclose={cancel} label="Uncommitted changes" class="checkout-panel">
     <div class="flex flex-col gap-3 px-1 pb-4">
       <div class="flex items-center gap-2.5">
         <CircleAlert size={18} class="shrink-0 text-primary" />
-        <span class="text-[14px] font-semibold" id="checkout-prompt-title">{n} file{n === 1 ? "" : "s"} not committed yet</span>
+        <span class="text-[14px] font-semibold" id="checkout-prompt-title">{plural(checkout.changes, "file")} not committed yet</span>
       </div>
       <!-- Where you are → where you're going. -->
       <div class="route">
@@ -64,15 +62,10 @@
       <span class="text-[11px] text-tertiary"><kbd>Enter</kbd> stash · <kbd>Esc</kbd> cancel</span>
       <button class="cancel" id="checkout-prompt-cancel" onclick={cancel}>Cancel</button>
     </div>
-  </div>
-</div>
+</Modal>
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgb(0 0 0 / 0.35); }
-  .panel {
-    display: flex; flex-direction: column; width: 520px; padding: 22px 18px 14px; border-radius: 18px;
-    background: var(--popover); color: var(--popover-foreground); box-shadow: 0 0 0 1px oklch(0.5 0 0 / 0.18), 0 16px 40px rgb(0 0 0 / 0.4);
-  }
+  :global(.checkout-panel) { display: flex; flex-direction: column; width: 520px; padding: 22px 18px 14px; border-radius: 18px; }
   .choice {
     display: flex; align-items: center; gap: 16px; padding: 16px 18px; border-radius: 14px;
     box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.16); transition: box-shadow 0.15s, background 0.15s;

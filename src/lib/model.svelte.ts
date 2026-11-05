@@ -1,150 +1,122 @@
-// App state, ported from RepoModel in ContentView.swift. Prefs keep the Swift UserDefaults key names.
-import { open as pickFolders } from "@tauri-apps/plugin-dialog";
-import { api, WORKTREE_ID, type Card, type Commit, type DiffRow, type Row, type WipMode } from "./api";
-
-export const prefs = {
-  get<T>(key: string, fallback: T): T {
-    const raw = localStorage.getItem(key);
-    return raw == null ? fallback : (JSON.parse(raw) as T);
-  },
-  set(key: string, value: unknown) {
-    localStorage.setItem(key, JSON.stringify(value));
-  },
-};
-
-export type Range = [number, number]; // first, last commit index of a table row; longer than 1 = collapsed group
-
-/** "a/b/c.ts" paths -> nested nodes, folders first, then files, each sorted Finder-style. */
-export type FileNode = { name: string; path: string; children: FileNode[] | null };
-
-const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }).compare;
-
-export function fileTree(paths: Iterable<string>, prefix = ""): FileNode[] {
-  const files: string[] = [];
-  const folders = new Map<string, string[]>();
-  for (const path of paths) {
-    const slash = path.indexOf("/");
-    if (slash < 0) files.push(path);
-    else folders.set(path.slice(0, slash), [...(folders.get(path.slice(0, slash)) ?? []), path.slice(slash + 1)]);
-  }
-  const dirs = [...folders.keys()].sort(byName).map((name) => {
-    let node: FileNode = { name, path: prefix + name, children: fileTree(folders.get(name)!, prefix + name + "/") };
-    // Folders whose only child is a folder collapse into one row: "src/main/java".
-    while (node.children?.length === 1 && node.children[0].children) {
-      const only = node.children[0];
-      node = { name: node.name + "/" + only.name, path: only.path, children: only.children };
-    }
-    return node;
-  });
-  return [...dirs, ...files.sort(byName).map((name) => ({ name, path: prefix + name, children: null }))];
-}
+// App state, ported from RepoModel in ContentView.swift: the open repo's graph, the selected commit's files and diff,
+// the repos in the sidebar, and the git actions. One class, because those three meet in every flow (an action reloads
+// the graph, a reload re-finds the selection, opening a repo resets both).
+import { api, WORKTREE_ID, type Card, type Commit, type DiffRow, type History, type HistoryQuery, type LineHits, type RepoEntry, type SyncResult, type WipMode } from "./api";
+import { fileTree, filesInOrder, parentDirs } from "./fileTree";
+import { lineName } from "./format";
+import { prefs, type Sources } from "./prefs";
+import { localName } from "./refs";
 
 const PAGE = 300;
 
 export type BranchFilter = "pending" | "safe" | "wip";
 
-/** What a repo looked like when we left it, so coming back shows it at once while `reload()` refreshes it. */
-/** `view`: where the user was (tab, commit, file, focus), restored on coming back to compare across repos. */
-type Snapshot = Pick<RepoModel, "commits" | "rows" | "names" | "limit" | "hasMore" | "current" | "base" | "environments" | "localBranches"> & {
-  view: {
-    showGraph: boolean; selectedId: string | null; fileFilter: string | null; diffOpen: boolean; focus: string[] | null; historyPath: string | null;
-  };
+/** Puts things back: switch to the branch you were on, or move a branch back (`expected` null: recreate it). */
+type Undo = { kind: "checkout"; branch: string } | { kind: "move"; branch: string; expected: string | null; target: string };
+/** One action done from the app, for the Logs panel. `started`: when its git commands began (they're grouped under it). */
+export type Activity = { at: number; started?: number; repo: string; text: string; undo?: Undo; undone?: boolean };
+
+/** How a git action went: its one-line status, or why it failed. */
+export type Outcome = { ok: true; status: string } | { ok: false; error: string };
+
+const EMPTY: History = {
+  commits: [], rows: [], names: [], hasMore: false, current: null, base: null, environments: [], allBranches: [], local: [],
+  shelvedBranches: [], fastForwarded: false,
 };
+
+/** What a repo looked like when we left it, so coming back shows it at once while `reload()` refreshes it. */
+type Snapshot = {
+  history: History;
+  limit: number;
+  view: { showGraph: boolean; selectedId: string | null; fileFilter: string | null; diffOpen: boolean; focus: string[] | null; historyPath: string | null };
+};
+
+/** The file in the diff pane: its rows, and whether they're its whole content instead of its diff. */
+type ShownDiff = { path: string; rows: DiffRow[]; truncated: boolean; whole: boolean };
+/** A search result to land on: this line of this file, highlighted and blamed. */
+type Jump = { path: string; line: number; old: boolean };
 
 export class RepoModel {
   repo = $state<string | null>(null);
-  commits = $state.raw<Commit[]>([]);
-  rows = $state.raw<Row[]>([]);
-  names = $state.raw<(string | null)[]>([]); // branch each commit belongs to, for the line tooltip
-  selected = $state.raw<Range | null>(null);
+  history = $state.raw<History>(EMPTY);
   error = $state<string | null>(null);
-  limit = PAGE;
-  viewEnd = 0; // last row on screen (set by the list): a refresh near the top only reloads the first page
-  private growing = false; // the next load is infinite scroll asking for more: keep the bigger limit
-  hasMore = $state(false);
   isLoading = $state(false);
   onlyMine = $state(prefs.get("onlyMine", true)); // hide other people's branches; on by default
   branchesOnly = $state(prefs.get("branchesOnly", true)); // "Commits collapsed", on by default
   focus = $state.raw<string[] | null>(null); // "Only this branch": the branch and its base, the rest of the graph hidden
   historyPath = $state<string | null>(null); // a file's history: the graph shows only the commits that touched it
+  showGraph = $state(true); // the graph is the app; the Dashboard tab is a placeholder for what comes next
+  scrollTo = $state.raw<{ id: string } | null>(null); // a row to bring into view, once (CommitList takes it)
+  private limit = PAGE;
+  private viewEnd = 0; // last row on screen: a refresh near the top only reloads the first page
+  private growing = false; // the next load is infinite scroll asking for more: keep the bigger limit
   private cache = new Map<string, Snapshot>();
 
-  /** Table rows, one per commit. */
-  visible = $derived(this.commits.map((_, i): Range => [i, i]));
+  /** Newest request of each kind: an older response arriving late is dropped. */
+  private latest = new Map<string, number>();
+  private ticket(kind: string) {
+    const n = (this.latest.get(kind) ?? 0) + 1;
+    this.latest.set(kind, n);
+    return () => this.latest.get(kind) === n;
+  }
 
   // column + 1: a tip whose lane ends on its own row (collapsed view) sits past both lane lists.
-  graphLanes = $derived(Math.max(1, ...this.rows.map((r) => Math.max(r.before.length, r.after.length, r.column + 1))));
+  graphLanes = $derived(this.history.rows.reduce((max, r) => Math.max(max, r.before.length, r.after.length, r.column + 1), 1));
+  /** The line tooltip of each commit: its branch, or what the row is. */
+  lineNames = $derived(this.history.commits.map((c, i) => lineName(c, this.history.names[i])));
 
   /** Something is already on screen and a reload is checking it for news: the thin bar at the top. */
   get isRefreshing() {
-    return this.isLoading && this.commits.length > 0;
+    return this.isLoading && this.history.commits.length > 0;
   }
 
   constructor() {
-    const last = prefs.get<string | null>("lastRepo", null);
-    if (last) this.open(last);
+    const last = prefs.get("lastRepo", null);
+    if (last && this.isListed(last)) this.open(last);
   }
 
   open(path: string) {
     if (this.repo && this.repo !== path && !this.error) {
-      const { commits, rows, names, limit, hasMore, current, base, environments, localBranches, showGraph, fileFilter, diffOpen, focus, historyPath } = this;
-      const selectedId = this.selected ? commits[this.selected[0]].id : null;
-      this.cache.set(this.repo, { commits, rows, names, limit, hasMore, current, base, environments, localBranches, view: { showGraph, selectedId, fileFilter, diffOpen, focus, historyPath } });
+      const { showGraph, selectedId, fileFilter, diffOpen, focus, historyPath } = this;
+      this.cache.set(this.repo, { history: this.history, limit: this.limit, view: { showGraph, selectedId, fileFilter, diffOpen, focus, historyPath } });
     }
     this.repo = path;
     prefs.set("lastRepo", path); // reopened on next launch
-    this.selected = null;
     this.error = null;
-    this.focus = null;
-    this.historyPath = null;
     this.filters = [];
     this.filterRefs = null;
-    this.filterRun++;
+    this.ticket("filters");
     this.isFiltering = false;
     this.syncStatus = "";
     this.syncFailure = null;
     this.pendingCheckout = null;
-    this.clearDetail();
-    // Cached: show it right away. Not cached: empty, so the loader shows instead of the previous repo's content.
+    // Cached: the same view as when we left, right away, while reload() refreshes it. Not cached: empty, so the
+    // loader shows instead of the previous repo's content.
     const cached = this.cache.get(path);
-    this.commits = cached?.commits ?? [];
-    this.rows = cached?.rows ?? [];
-    this.names = cached?.names ?? [];
+    this.history = cached?.history ?? EMPTY;
     this.limit = cached?.limit ?? PAGE;
-    this.hasMore = cached?.hasMore ?? false;
-    this.current = cached?.current ?? null;
-    this.base = cached?.base ?? null;
-    this.environments = cached?.environments ?? [];
-    this.localBranches = cached?.localBranches ?? [];
-    this.allBranches = [];
-    // Same view as when we left this repo, shown from the cache right away while reload() refreshes it in the
-    // background. First visit: the graph.
-    const view = cached?.view;
-    this.showGraph = view?.showGraph ?? true;
-    if (view) {
-      this.focus = view.focus;
-      this.historyPath = view.historyPath;
-      this.fileFilter = view.fileFilter;
-      this.diffOpen = view.diffOpen;
-    }
-    this.restoreId = view?.selectedId ?? null;
-    const row = this.restoreId ? this.visible.findIndex(([first]) => this.commits[first].id === this.restoreId) : -1;
-    if (row >= 0) {
-      this.selected = this.visible[row];
-      this.scrollRow = { row };
+    this.showGraph = cached?.view.showGraph ?? true;
+    this.focus = cached?.view.focus ?? null;
+    this.historyPath = cached?.view.historyPath ?? null;
+    this.selectedId = null;
+    this.clearDetail();
+    const selected = cached?.view.selectedId;
+    if (selected && this.history.commits.some((c) => c.id === selected)) {
+      this.selectedId = selected;
+      this.fileFilter = cached.view.fileFilter;
+      this.diffOpen = cached.view.diffOpen;
+      this.scrollTo = { id: selected };
       this.loadTree();
       this.loadDetail();
     }
     this.reload();
   }
 
-  private restoreId: string | null = null; // commit to select once loaded, coming back to a repo
-
   private loading: { repo: string; done: Promise<void> } | null = null;
   private again = false;
 
   /** Reloads the graph. While one load runs for this repo, more calls (focus, sync, actions in a row) fold into one more
-   *  load after it, so they don't stack git processes or land out of order. */
+   *  load after it, so they don't stack git processes. */
   reload(): Promise<void> {
     const repo = this.repo;
     if (!repo) return Promise.resolve();
@@ -167,58 +139,64 @@ export class RepoModel {
   private async loadOnce() {
     const repo = this.repo;
     if (!repo) return;
+    const fresh = this.ticket("history");
     this.isLoading = true;
     // Nothing past the first page on screen or selected: a refresh (focus, sync, action) needs only that page again.
-    const selectedRow = this.selected?.[0] ?? -1;
-    if (!this.growing && !this.restoreId && this.limit > PAGE && this.viewEnd < PAGE - 50 && selectedRow < PAGE - 50) this.limit = PAGE;
+    if (!this.growing && this.limit > PAGE && this.viewEnd < PAGE - 50 && this.selectedIndex < PAGE - 50) this.limit = PAGE;
     this.growing = false;
-    const selectedID = this.selected ? this.commits[this.selected[0]].id : this.restoreId; // indices go stale: re-find by hash
-    const preferred = prefs.get<Record<string, string>>("mainBranches", {})[repo] ?? null;
-    const environments = prefs.get<Record<string, string[]>>("environments", {})[repo] ?? null;
+    const query: HistoryQuery = {
+      limit: this.limit,
+      onlyMine: this.onlyMine,
+      branchesOnly: this.branchesOnly,
+      preferred: prefs.get("mainBranches", {})[repo] ?? null,
+      focus: this.focus ?? [],
+      path: this.historyPath,
+      environments: prefs.get("environments", {})[repo] ?? null,
+      only: this.branchesOnly && !this.focus ? this.filterRefs : null,
+    };
     try {
-      const only = this.branchesOnly && !this.focus ? this.filterRefs : null;
-      const history = await api.loadHistory(repo, this.limit, this.onlyMine, this.branchesOnly, preferred, this.focus ?? [], this.historyPath, environments, only);
-      if (this.repo !== repo) return; // switched repos meanwhile: the newer load owns the state
-      this.commits = history.commits;
-      this.rows = history.rows;
-      this.names = history.names;
-      this.hasMore = history.hasMore;
-      this.current = history.current;
-      this.base = history.base;
-      this.environments = history.environments;
-      this.localBranches = history.local;
-      this.allBranches = history.allBranches;
-      this.fastForwarded = history.fastForwarded;
-      this.shelvedBranches = history.shelvedBranches;
+      const history = await api.loadHistory(repo, query);
+      if (!fresh() || this.repo !== repo) return; // a newer load (or another repo) owns the state
+      this.history = history;
       this.error = null;
     } catch (error) {
-      if (this.repo !== repo) return;
-      this.commits = [];
-      this.rows = [];
+      if (!fresh() || this.repo !== repo) return;
+      this.history = EMPTY;
       this.error = String(error);
     }
     this.isLoading = false;
-    // Same commit still there (e.g. a refresh on focus): keep it open and refresh its files/diff.
-    const range = selectedID ? this.visible.find(([first]) => this.commits[first].id === selectedID) : undefined;
-    this.selected = range ?? null;
-    if (range) {
+    // The selected commit is gone (e.g. the uncommitted row after a commit): nothing selected. Still there: a commit's
+    // files never change, the uncommitted row's do.
+    if (this.selectedId && !this.selected) this.select(null);
+    else if (this.isWorktreeSelected) {
       this.loadTree();
       this.loadDetail();
-      if (this.restoreId) this.scrollRow = { row: this.visible.indexOf(range) };
-      this.restoreId = null;
     }
   }
 
   /** Infinite scroll: the list asks for more when its last rows come into view. */
-  loadMore() {
-    if (!this.hasMore || this.isLoading) return;
+  loadMore(): Promise<void> {
+    if (!this.history.hasMore || this.isLoading) return Promise.resolve();
     this.limit += PAGE;
     this.growing = true;
-    this.reload(); // --topo-order output is prefix-stable, so rows above don't move
+    return this.reload(); // --topo-order output is prefix-stable, so rows above don't move
+  }
+
+  /** The last row the list shows: keeps the loaded pages it needs, and loads the next one near the end. */
+  setViewEnd(row: number) {
+    this.viewEnd = row;
+    if (row >= this.history.commits.length - 30) this.loadMore();
+  }
+
+  /** CommitList brings the requested row into view, once. */
+  takeScrollRequest() {
+    const request = this.scrollTo;
+    this.scrollTo = null;
+    return request;
   }
 
   /** Graph shows only `branch` and its base (where it was cut from, else main); null = everything again. */
-  async setFocus(branch: string | null, base: string | null = this.base) {
+  async setFocus(branch: string | null, base: string | null = this.history.base) {
     this.focus = branch ? [...new Set([branch, base].filter((r): r is string => r != null))] : null;
     this.limit = PAGE;
     await this.reload();
@@ -227,7 +205,7 @@ export class RepoModel {
   /** Graph shows only the commits that touched `path` (null = everything again), keeping the file open. */
   async setHistory(path: string | null) {
     this.historyPath = path;
-    this.setShowGraph(true);
+    this.showGraph = true;
     this.limit = PAGE;
     await this.reload();
   }
@@ -242,15 +220,14 @@ export class RepoModel {
   setOnlyMine(on: boolean) {
     this.onlyMine = on;
     prefs.set("onlyMine", on);
-    if (this.filters.length) this.applyFilters();
-    else this.reload();
+    return this.applyFilters();
   }
 
-  // Commits collapsed filters: the graph keeps only the matching branches (plus the base and the environments).
+  // MARK: Branch filters (Commits collapsed): the graph keeps only the matching branches, plus the base and environments.
+
   filters = $state.raw<BranchFilter[]>([]);
-  filterRefs = $state.raw<string[] | null>(null); // the branches they matched, null = no filter
   isFiltering = $state(false); // confirming squash / cherry-pick merges in the background
-  private filterRun = 0;
+  private filterRefs: string[] | null = null; // the branches they matched, null = no filter
 
   setFilters(filters: BranchFilter[]) {
     this.filters = filters;
@@ -260,51 +237,95 @@ export class RepoModel {
   /** Fast pass from history (one for-each-ref per target), then the branches it couldn't place are confirmed with
    *  the card check (squash / cherry-pick; cached in Rust), reloading only if the result changed. */
   private async applyFilters() {
-    const repo = this.repo, base = this.base, run = ++this.filterRun;
+    const repo = this.repo, base = this.history.base, fresh = this.ticket("filters");
+    this.isFiltering = false;
     if (!repo || !this.filters.length) {
       this.filterRefs = null;
-      this.isFiltering = false;
       return this.reload();
     }
-    const local = (ref: string) => (/^(origin|upstream)\//.test(ref) ? ref.slice(ref.indexOf("/") + 1) : ref);
-    const targets = [...(base ? [base] : []), ...this.environments];
-    const compared = new Set(targets.map(local));
+    const targets = [...(base ? [base] : []), ...this.history.environments];
+    const compared = new Set(targets.map(localName));
     const wants = (done: number) =>
       (this.filters.includes("safe") && done === targets.length) || (this.filters.includes("pending") && done > 0 && done < targets.length);
-    const wip = this.filters.includes("wip")
-      ? [...this.shelvedBranches, ...(this.current && this.commits.some((c) => c.id === WORKTREE_ID) ? [this.current] : [])]
-      : [];
+    const hasWorktree = this.history.commits.some((c) => c.id === WORKTREE_ID);
+    const wip = this.filters.includes("wip") ? [...this.history.shelvedBranches, ...(this.history.current && hasWorktree ? [this.history.current] : [])] : [];
     const { all, merged } = await api.mergedInto(repo, targets, this.onlyMine);
-    if (run !== this.filterRun) return;
+    if (!fresh()) return;
     const sets = merged.map(([, refs]) => new Set(refs));
-    const branches = all.filter((ref) => !compared.has(local(ref)));
+    const branches = all.filter((ref) => !compared.has(localName(ref)));
     const doneOf = (ref: string) => sets.filter((s) => s.has(ref)).length;
     this.filterRefs = [...new Set([...branches.filter((ref) => wants(doneOf(ref))), ...wip])];
     await this.reload();
     const unsure = branches.filter((ref) => doneOf(ref) < targets.length);
-    if (!base || !unsure.length || !this.filters.some((f) => f !== "wip")) return;
+    if (!base || !unsure.length || !this.filters.some((f) => f !== "wip") || !fresh()) return;
     this.isFiltering = true;
-    const found = await api.branchStatus(repo, unsure, base, targets).catch(() => []);
-    if (run !== this.filterRun) return;
-    this.isFiltering = false;
-    const sure = branches.filter((ref) => doneOf(ref) === targets.length && wants(targets.length));
-    const confirmed = found.filter((s) => wants(s.promotion.filter(([, missing]) => missing === 0).length)).map((s) => s.ref);
-    const next = [...new Set([...sure, ...confirmed, ...wip])];
-    if (next.join() !== this.filterRefs?.join()) {
-      this.filterRefs = next;
-      await this.reload();
+    try {
+      const found = await api.branchStatus(repo, unsure, base, targets);
+      if (!fresh()) return;
+      const sure = branches.filter((ref) => doneOf(ref) === targets.length && wants(targets.length));
+      const confirmed = found.filter((s) => wants(s.promotion.filter(([, missing]) => missing === 0).length)).map((s) => s.ref);
+      const next = [...new Set([...sure, ...confirmed, ...wip])];
+      if (next.join() !== this.filterRefs?.join()) {
+        this.filterRefs = next;
+        await this.reload();
+      }
+    } catch (error) {
+      if (fresh()) this.syncStatus = `Couldn't check squash merges: ${firstLine(error)}`;
+    } finally {
+      if (fresh()) this.isFiltering = false;
     }
   }
 
+  // MARK: Selection: the file tree and the diff
 
-  /** Opens the file tree only; the diff pane waits until a file is picked there. */
-  select(range: Range | null) {
-    if (range && this.selected && range[0] === this.selected[0] && range[1] === this.selected[1]) return;
-    this.selected = range;
-    this.restoreId = null;
+  selectedId = $state<string | null>(null);
+  selected = $derived(this.selectedId ? (this.history.commits.find((c) => c.id === this.selectedId) ?? null) : null);
+  selectedIndex = $derived(this.selected ? this.history.commits.indexOf(this.selected) : -1);
+  get isWorktreeSelected() {
+    return this.selectedId === WORKTREE_ID;
+  }
+
+  changes = $state.raw<Record<string, string>>({}); // path -> status letter
+  counts = $state.raw<Record<string, [number, number]>>({});
+  staged = $state.raw(new Set<string>()); // uncommitted-changes row: files in the index (checked in the tree)
+  paths = $state.raw<string[]>([]); // every file the tree lists
+  tree = $derived(fileTree(this.paths));
+  changedOrder = $derived(filesInOrder(this.tree).filter((p) => p in this.changes)); // changed files in tree order, for ⌥←/⌥→
+  changedDirs = $derived(new Set(Object.keys(this.changes).flatMap(parentDirs))); // folders holding a change: highlighted
+  expandedDirs = $state.raw(new Set<string>());
+  showAllFiles = $state(prefs.get("treeShowsAll", false));
+  private treeFor: string | null = null; // the selection the folders were opened for: a refresh keeps the user's collapses
+
+  fileFilter = $state<string | null>(null); // file shown in the diff pane
+  diffOpen = $state(false); // diff pane under the graph: opens on the first file click in the tree
+  diff = $state.raw<ShownDiff | null>(null);
+  diffMessage = $state("Select a file");
+  jump = $state.raw<Jump | null>(null);
+
+  /** Staged files under `path` ("" = all), and whether all / some of them are: a tree checkbox. */
+  stageState = $derived.by(() => {
+    const byDir = new Map<string, { files: string[]; staged: number }>();
+    for (const file of Object.keys(this.changes)) {
+      for (const dir of ["", ...parentDirs(file), file]) {
+        const entry = byDir.get(dir) ?? { files: [], staged: 0 };
+        entry.files.push(file);
+        if (this.staged.has(file)) entry.staged++;
+        byDir.set(dir, entry);
+      }
+    }
+    return (path: string) => {
+      const { files, staged } = byDir.get(path) ?? { files: [], staged: 0 };
+      return { files, all: files.length > 0 && staged === files.length, some: staged > 0 };
+    };
+  });
+
+  /** Opens the file tree only; the diff pane waits until a file is picked there. Null hides the panes. */
+  select(id: string | null) {
+    if (id === this.selectedId) return;
+    this.selectedId = id;
     this.diffOpen = false;
-    if (!range) return; // deselected: the panes hide, nothing to load
     this.clearDetail();
+    if (!id) return;
     this.diffMessage = "Loading…";
     if (this.historyPath) {
       // A file's history: each commit opens straight on that file's diff.
@@ -315,49 +336,29 @@ export class RepoModel {
     this.loadTree();
   }
 
-  // MARK: File tree and diff
-
-  changes = $state.raw<Record<string, string>>({});
-  counts = $state.raw<Record<string, [number, number]>>({});
-  staged = $state.raw(new Set<string>()); // uncommitted-changes row: files in the index (checked in the tree)
-  tree = $state.raw<FileNode[]>([]);
-  treePaths = $state.raw<string[]>([]); // every file the tree lists, for the tree search
-  changedDirs = $state.raw(new Set<string>()); // folders containing a change, highlighted and expanded
-  expandedDirs = $state.raw(new Set<string>());
-  changedOrder = $state.raw<string[]>([]); // changed files in tree order, for ⌥←/⌥→
-  fileFilter = $state<string | null>(null); // file shown in the diff pane
-  diffOpen = $state(false); // diff pane under the graph: opens on the first file click in the tree
-  showAllFiles = $state(prefs.get("treeShowsAll", false));
-  diffRows = $state.raw<DiffRow[]>([]);
-  diffMessage = $state("Select a file");
-  fileCommits = $state.raw<Commit[]>([]); // commits of the selection that touched `fileFilter`, newest first
-
-  get isWorktreeSelected() {
-    return this.selected != null && this.commits[this.selected[0]].id === WORKTREE_ID;
-  }
-
   private clearDetail() {
+    this.ticket("tree");
+    this.ticket("diff");
     this.fileFilter = null;
-    this.diffRows = [];
-    this.fileCommits = [];
-    this.tree = [];
-    this.treePaths = [];
+    this.jump = null;
+    this.diff = null;
+    this.changes = {};
+    this.counts = {};
+    this.staged = new Set();
+    this.paths = [];
   }
 
-  /** base/target of the selection: a group diffs its oldest commit's parent against its newest. */
-  private span(range: Range) {
-    const newest = this.commits[range[0]];
-    const base = (range[0] === range[1] ? newest : this.commits[range[1]]).parents[0] ?? null;
-    return { base, target: newest.id === WORKTREE_ID ? null : newest.id };
+  /** What the selection compares: its commit against its first parent. */
+  private span(commit: Commit) {
+    return { base: commit.parents[0] ?? null, target: commit.id === WORKTREE_ID ? null : commit.id };
   }
 
   /** Tree search by content, on the selection: diff lines, or whole files (only the changed ones unless the tree shows all). */
-  async searchLines(query: string, diffOnly: boolean): Promise<Record<string, number>> {
+  async searchLines(query: string, diffOnly: boolean): Promise<Record<string, LineHits>> {
     if (!this.repo || !this.selected) return {};
-    const { base, target } = this.span(this.selected);
-    const paths = this.showAllFiles ? null : Object.keys(this.changes).filter((p) => this.changes[p] !== "D");
-    if (paths && !paths.length) return {};
-    return api.searchLines(this.repo, base, target, query, paths, diffOnly);
+    const paths = this.showAllFiles ? [] : Object.keys(this.changes).filter((p) => this.changes[p] !== "D");
+    if (!this.showAllFiles && !paths.length) return {};
+    return api.searchLines(this.repo, this.span(this.selected), query, paths, diffOnly);
   }
 
   setShowAllFiles(all: boolean) {
@@ -367,41 +368,40 @@ export class RepoModel {
   }
 
   private async loadTree() {
-    const repo = this.repo, range = this.selected, all = this.showAllFiles;
-    if (!repo || !range) return;
-    const { base, target } = this.span(range);
-    const result = await api.loadChanges(repo, base, target, all);
-    if (this.selected !== range || this.showAllFiles !== all) return; // user moved on while git was running
-    this.changes = result.changes;
-    this.counts = result.counts;
-    this.staged = new Set(result.staged);
-    this.tree = fileTree(result.paths);
-    this.treePaths = result.paths;
-    const dirs = new Set<string>();
-    for (const path of Object.keys(result.changes)) {
-      const parts = path.split("/").slice(0, -1);
-      parts.forEach((_, i) => dirs.add(parts.slice(0, i + 1).join("/")));
+    const repo = this.repo, commit = this.selected, all = this.showAllFiles, fresh = this.ticket("tree");
+    if (!repo || !commit) return;
+    try {
+      const result = await api.loadChanges(repo, this.span(commit), all);
+      if (!fresh()) return; // the user moved on while git was running
+      this.changes = result.changes;
+      this.counts = result.counts;
+      this.staged = new Set(result.staged);
+      this.paths = result.paths;
+    } catch (error) {
+      if (fresh()) this.diffMessage = `Couldn't read the files: ${firstLine(error)}`;
+      return;
     }
-    this.changedDirs = dirs;
-    this.expandedDirs = new Set(dirs);
-    const files = (nodes: FileNode[]): string[] => nodes.flatMap((n) => (n.children ? files(n.children) : [n.path]));
-    this.changedOrder = files(this.tree).filter((p) => p in result.changes);
-    if (this.diffOpen && (!this.fileFilter || !(this.fileFilter in result.changes))) {
-      // New selection: start at the first changed file.
-      this.fileFilter = this.changedOrder[0] ?? null;
+    if (this.treeFor !== commit.id) {
+      this.treeFor = commit.id;
+      this.expandedDirs = new Set(this.changedDirs); // a new selection opens the folders with changes
+    }
+    if (this.diffOpen && !this.jump && (!this.fileFilter || !(this.fileFilter in this.changes))) {
+      this.fileFilter = this.changedOrder[0] ?? null; // new selection: start at the first changed file
       this.loadDetail();
     }
     if (!this.changedOrder.length) this.diffMessage = "No changes";
   }
 
-  /** Picks the file shown in the diff. A folder jumps to its first changed file. */
-  /** Clicking the file already shown hides/shows the bottom pane. */
-  filter(path: string) {
-    if (this.fileFilter === path) {
+  /** Shows `path` in the diff pane (a folder: its first changed file). With `at`, lands on that line; without, clicking
+   *  the file already shown hides/shows the pane. */
+  showFile(path: string, at?: { line: number; old: boolean }) {
+    this.jump = at ? { path, ...at } : null;
+    if (this.fileFilter === path && !at) {
       this.diffOpen = !this.diffOpen;
       return;
     }
     this.diffOpen = true;
+    if (this.fileFilter === path && this.diff?.path === path) return this.landOnJump();
     this.fileFilter = path in this.changes ? path : (this.changedOrder.find((p) => p.startsWith(path + "/")) ?? path);
     this.loadDetail();
   }
@@ -411,45 +411,54 @@ export class RepoModel {
     const index = this.fileFilter ? this.changedOrder.indexOf(this.fileFilter) : -1;
     const path = this.changedOrder[index + offset];
     if (index < 0 || !path) return;
-    const dirs = new Set(this.expandedDirs);
-    const parts = path.split("/").slice(0, -1);
-    parts.forEach((_, i) => dirs.add(parts.slice(0, i + 1).join("/")));
-    this.expandedDirs = dirs;
-    this.filter(path);
+    this.expandedDirs = new Set([...this.expandedDirs, ...parentDirs(path)]);
+    this.showFile(path);
   }
 
-  private async loadDetail() {
-    const repo = this.repo, range = this.selected, path = this.fileFilter;
-    if (!repo || !range || !path) return;
-    const { base, target } = this.span(range);
-    const group = this.commits.slice(range[0], range[1] + 1).filter((c) => c.id !== WORKTREE_ID);
-    const result = await api.loadDiff(repo, path, base, target, group.map((c) => c.id), !(path in this.changes));
-    if (this.selected !== range || this.fileFilter !== path) return;
-    this.fileCommits = group.filter((c) => result.touching.includes(c.id));
-    this.diffRows = result.rows;
-    this.diffMessage = path in this.changes ? "Binary file or no text changes" : "Empty or binary file";
+  toggleDir(path: string) {
+    const dirs = new Set(this.expandedDirs);
+    if (!dirs.delete(path)) dirs.add(path);
+    this.expandedDirs = dirs;
+  }
+
+  /** `whole`: the file's full content instead of its diff (it didn't change here, or a searched line is outside the
+   *  changed blocks). */
+  private async loadDetail(whole = false) {
+    const repo = this.repo, commit = this.selected, path = this.fileFilter, fresh = this.ticket("diff");
+    if (!repo || !commit || !path) return;
+    whole ||= !(path in this.changes) && Object.keys(this.changes).length > 0;
+    try {
+      const result = await api.loadDiff(repo, path, this.span(commit), whole);
+      if (!fresh()) return;
+      this.diff = { path, ...result, whole };
+      this.diffMessage = whole ? "Empty or binary file" : "Binary file or no text changes";
+    } catch (error) {
+      if (fresh()) {
+        this.diff = null;
+        this.diffMessage = firstLine(error);
+      }
+      return;
+    }
+    this.landOnJump();
+  }
+
+  /** A searched line outside the changed blocks: the whole file instead, where every line is. */
+  private landOnJump() {
+    const jump = this.jump, diff = this.diff;
+    if (!jump || !diff || diff.path !== jump.path || diff.whole || jump.old) return;
+    if (!diff.rows.some((row) => row.right?.number === jump.line && row.hunk == null)) this.loadDetail(true);
   }
 
   // MARK: Branches (come with every history load)
 
-  current = $state<string | null>(null); // checked-out branch
-  base = $state<string | null>(null); // the branch pinned to the left
-  environments = $state.raw<string[]>([]); // qa, develop…
-  localBranches = $state.raw<string[]>([]); // for "Change base"
-  allBranches = $state.raw<string[]>([]); // local and origin names, for the environments picker
-  shelvedBranches = $state.raw<string[]>([]); // branches with WIP the app put aside
-  fastForwarded = $state(false); // "Only this branch" on a branch the base fast-forwarded to: no merge to draw
-  showGraph = $state(true); // the graph is the app; the Dashboard tab is a placeholder for what comes next
-  scrollRow = $state<{ row: number } | null>(null); // table row to bring into view; a new object every request
-
-  setShowGraph(value: boolean) {
-    this.showGraph = value;
-  }
-
   /** A remote-only base ("origin/main") counts as current when its local twin is checked out. */
   isCurrent(name: string) {
-    const current = this.current;
-    return current != null && (name === current || name.endsWith("/" + current));
+    return this.history.current != null && localName(name) === this.history.current;
+  }
+
+  /** The user's environments for this repo were picked by hand (else detected by name). */
+  get customEnvironments() {
+    return this.repo != null && this.repo in prefs.get("environments", {});
   }
 
   /** Same "mainBranches" store as the graph's base: the whole repo reloads. */
@@ -462,7 +471,7 @@ export class RepoModel {
   /** The user's environments for this repo, by branch name; null goes back to detecting them by name (qa, develop…). */
   setEnvironments(names: string[] | null) {
     if (!this.repo) return;
-    const { [this.repo]: _, ...others } = prefs.get<Record<string, string[]>>("environments", {});
+    const { [this.repo]: _, ...others } = prefs.get("environments", {});
     prefs.set("environments", names ? { ...others, [this.repo]: names } : others);
     this.reload();
   }
@@ -470,86 +479,77 @@ export class RepoModel {
   /** An older commit may sit past the loaded page: keep loading history until it shows up (or there is no more). */
   private async loadUntil(id: string) {
     const repo = this.repo;
-    const idle = async () => { while (this.isLoading) await new Promise((r) => setTimeout(r, 100)); };
-    await idle();
-    for (let pages = 0; this.repo === repo && pages < 30 && !this.commits.some((c) => c.id === id); pages++) {
-      if (!this.hasMore) break;
-      this.loadMore();
-      await idle();
-    }
-    return this.commits.some((c) => c.id === id);
+    const has = () => this.history.commits.some((c) => c.id === id);
+    await this.reload();
+    for (let pages = 0; this.repo === repo && pages < 30 && !has() && this.history.hasMore; pages++) await this.loadMore();
+    return has();
   }
 
   /** Global search result: opens its repo on the graph with that commit selected. A commit hidden by
    *  "My branches only" (someone else's branch) turns that filter off, so it can be shown. */
   async revealCommit(repo: string, id: string) {
     if (this.repo !== repo) this.open(repo);
-    this.setShowGraph(true);
+    this.showGraph = true;
     if (this.focus) await this.setFocus(null);
     if (this.historyPath) await this.setHistory(null);
     if (!(await this.loadUntil(id)) && this.onlyMine && this.repo === repo) {
-      this.setOnlyMine(false);
+      await this.setOnlyMine(false);
       await this.loadUntil(id);
     }
-    if (this.repo !== repo) return;
-    const index = this.commits.findIndex((c) => c.id === id);
-    const row = this.visible.findIndex(([first, last]) => first <= index && index <= last);
-    if (index < 0 || row < 0) return;
-    this.select(this.visible[row]);
-    this.scrollRow = { row };
+    if (this.repo !== repo || !this.history.commits.some((c) => c.id === id)) return false;
+    this.select(id);
+    this.scrollTo = { id };
+    return true;
   }
 
-  /** Opens the graph on the working-tree row, with its files. */
-  revealWorktree() {
-    this.setShowGraph(true);
-    const row = this.visible.findIndex(([first]) => this.commits[first].id === WORKTREE_ID);
-    if (row < 0) return;
-    this.select(this.visible[row]);
-    this.scrollRow = { row };
+  /** Global code search result: opens the commit it was found at, on that file, landing on the line. */
+  async revealLine(repo: string, id: string, path: string, line: number) {
+    if (await this.revealCommit(repo, id)) this.showFile(path, { line, old: false });
   }
 
   // MARK: Repo sources: what the sidebar lists, added by the user (nothing is scanned by default)
 
-  sources = $state<{ folders: string[]; repos: string[]; hidden: string[] }>(
-    prefs.get("repoSources", { folders: [], repos: [], hidden: [] }), // hidden: repos of an added folder taken out of the list
-  );
-
+  sources = $state<Sources>(prefs.get("repoSources", { folders: [], repos: [], hidden: [] }));
   onboarding = $state(false); // keeps the onboarding up after the first repos are added, for its favorites step
-
-  // Same blob as SidebarPrefs in RepoSidebar.swift; only `favorites` is used so far.
-  favorites = $state<string[]>(prefs.get<{ favorites?: string[] }>("sidebarPrefs", {}).favorites ?? []);
-
-  toggleFavorite(path: string) {
-    this.favorites = this.favorites.includes(path) ? this.favorites.filter((p) => p !== path) : [...this.favorites, path];
-    prefs.set("sidebarPrefs", { ...prefs.get<object>("sidebarPrefs", {}), favorites: this.favorites });
-  }
+  favorites = $state<string[]>(prefs.get("sidebarPrefs", {}).favorites ?? []); // same blob as SidebarPrefs in RepoSidebar.swift
 
   get hasSources() {
     return this.sources.folders.length + this.sources.repos.length > 0;
   }
 
-  private saveSources(next: typeof this.sources) {
+  /** Still in the sidebar: added on its own, or inside an added folder and not hidden. */
+  private isListed(path: string) {
+    const folder = path.replace(/[\\/][^\\/]*$/, "");
+    return this.sources.repos.includes(path) || (this.sources.folders.includes(folder) && !this.sources.hidden.includes(path));
+  }
+
+  /** Every repo the sidebar lists. */
+  async listedRepos(): Promise<RepoEntry[]> {
+    const { folders, repos, hidden } = this.sources;
+    return (await api.listRepos(folders, repos)).filter((r) => !hidden.includes(r.path));
+  }
+
+  toggleFavorite(path: string) {
+    this.favorites = this.favorites.includes(path) ? this.favorites.filter((p) => p !== path) : [...this.favorites, path];
+    prefs.set("sidebarPrefs", { ...prefs.get("sidebarPrefs", {}), favorites: this.favorites });
+  }
+
+  private saveSources(next: Sources) {
     this.sources = next;
     prefs.set("repoSources", next);
   }
 
-  /** Native folder picker. "repo": each pick must be a git repo. "folder": every repo directly inside it, rescanned on refresh. */
-  async addRepos(kind: "repo" | "folder") {
-    const picked = await pickFolders({ directory: true, multiple: true, title: kind === "repo" ? "Add repositories" : "Add a folder of repositories" });
-    const paths = picked == null ? [] : Array.isArray(picked) ? picked : [picked];
+  /** "repo": each path must be a git repo. "folder": every repo directly inside it, rescanned on refresh. */
+  async addRepos(kind: "repo" | "folder", paths: string[]) {
     if (!paths.length) return;
     const s = this.sources;
-    const unhide = (added: string[]) => s.hidden.filter((h) => !added.includes(h));
-    if (kind === "folder") {
-      this.saveSources({ ...s, folders: [...new Set([...s.folders, ...paths])] });
-      return;
-    }
+    if (kind === "folder") return this.saveSources({ ...s, folders: [...new Set([...s.folders, ...paths])] });
     const checks = await Promise.all(paths.map((p) => api.isRepo(p)));
     const repos = paths.filter((_, i) => checks[i]);
     const rejected = paths.filter((_, i) => !checks[i]);
     if (rejected.length) this.syncStatus = `Not a git repository: ${rejected.map((p) => p.split(/[\\/]/).pop()).join(", ")}. Use "Add folder of repos" for a folder that contains several.`;
     if (!repos.length) return;
-    this.saveSources({ ...s, repos: [...new Set([...s.repos, ...repos])], hidden: unhide(repos) });
+    this.saveSources({ ...s, repos: [...new Set([...s.repos, ...repos])], hidden: s.hidden.filter((h) => !repos.includes(h)) });
     if (!this.repo) this.open(repos[0]);
   }
 
@@ -565,48 +565,62 @@ export class RepoModel {
     this.saveSources({ ...this.sources, folders: this.sources.folders.filter((f) => f !== folder) });
   }
 
-  // MARK: Actions (see src-tauri/src/actions.rs)
+  // MARK: Actions (src-tauri/src/actions.rs): one at a time from the UI; Rust also serializes them per repo.
 
-  isSyncing = $state(false); // one git action at a time: sync, checkout or pull
+  isSyncing = $state(false); // a user action is running: sync, checkout, pull, commit…
+  isAutoSyncing = $state(false); // the quiet background sync
   syncStatus = $state(""); // last action's one-line result, at the bottom of the sidebar
-  syncFailure = $state<{ title: string; reasons: string[]; log: string } | null>(null); // stays until dismissed
-  pendingCheckout = $state<string | null>(null); // dirty tree: a dialog asks what to do with the changes
-  pendingChangeCount = $state(0);
+  syncFailure = $state<{ title: string; reasons: SyncResult["skipped"]; log: string } | null>(null); // stays until dismissed
+  pendingCheckout = $state<{ name: string; changes: number; undoing: Activity | null } | null>(null); // dirty tree: a dialog asks what to do
   /** The action running (or just finished), for the bottom toast (ActionToast): what it is, what it does, how it went. */
   toast = $state<{ id: number; title: string; details: string[]; state: "busy" | "done" | "failed"; result: string; started: number } | null>(null);
 
-  /** Runs one git action with the shared busy flag and status line, then reloads. True if it worked. */
-  private async act(busy: string, failed: string, work: (repo: string) => Promise<string>, details: string[] = []) {
-    const repo = this.repo;
-    if (!repo || this.isSyncing) return false;
+  /** Runs one git action with the busy flag, the status line and the toast, then reloads. `work` returns the status. */
+  private async act(busy: string, failed: string, details: string[], work: (repo: string) => Promise<string>): Promise<Outcome & { started: number }> {
+    const repo = this.repo, started = Date.now();
+    if (!repo) return { ok: false, error: "No repository open", started };
+    if (this.isSyncing) {
+      this.syncStatus = "Another git action is still running: try again when it's done";
+      return { ok: false, error: this.syncStatus, started };
+    }
     this.isSyncing = true;
     this.syncStatus = busy;
-    this.actStarted = Date.now();
-    const toast = { id: Date.now(), title: busy, details, state: "busy" as const, result: "", started: Date.now() };
+    const toast = { id: started, title: busy, details, state: "busy" as const, result: "", started };
     this.toast = toast;
-    let done = false;
+    let outcome: Outcome;
     try {
-      this.syncStatus = await work(repo);
-      done = true;
+      outcome = { ok: true, status: await work(repo) };
+      this.syncStatus = outcome.status;
     } catch (error) {
-      this.syncStatus = `${failed}: ${String(error).split("\n")[0] || "unknown error"}`;
+      outcome = { ok: false, error: String(error) };
+      this.syncStatus = `${failed}: ${firstLine(error)}`;
     }
     this.isSyncing = false;
     if (this.toast?.id === toast.id) {
-      this.toast = { ...toast, state: done ? "done" : "failed", result: this.syncStatus };
-      setTimeout(() => { if (this.toast?.id === toast.id) this.toast = null; }, done ? 3500 : 9000);
+      this.toast = { ...toast, state: outcome.ok ? "done" : "failed", result: this.syncStatus };
+      setTimeout(() => { if (this.toast?.id === toast.id) this.toast = null; }, outcome.ok ? 3500 : 9000);
     }
     if (this.repo === repo) this.reload();
-    return done;
+    return { ...outcome, started };
   }
 
   // MARK: Activity: the relevant git actions done from the app, newest first, some with an Undo.
 
   activity = $state<Activity[]>(prefs.get("activity", []));
 
-  private actStarted = 0; // start of the last act()/rewrite(), stamped on its Activity entry
-  private record(repo: string, text: string, undo?: Undo) {
-    this.activity = [{ at: Date.now(), started: this.actStarted || undefined, repo, text, undo }, ...this.activity].slice(0, 50);
+  private record(repo: string, text: string, started: number, undo?: Undo) {
+    this.activity = [{ at: Date.now(), started, repo, text, undo }, ...this.activity].slice(0, 50);
+    prefs.set("activity", this.activity);
+  }
+
+  /** An Undo that moves `branch` back to `before`, if the action moved it. */
+  private async moveBack(repo: string, branch: string, before: string | null): Promise<Undo | undefined> {
+    const after = await api.branchTip(repo, branch);
+    return before && after && before !== after ? { kind: "move", branch, expected: after, target: before } : undefined;
+  }
+
+  private markUndone(entry: Activity) {
+    this.activity = this.activity.map((e) => (e === entry ? { ...e, undone: true } : e));
     prefs.set("activity", this.activity);
   }
 
@@ -615,36 +629,38 @@ export class RepoModel {
   async undo(entry: Activity) {
     const undo = entry.undo;
     if (!undo || entry.undone || entry.repo !== this.repo) return;
-    if (undo.kind === "checkout") return this.checkout(undo.branch);
-    const done = await this.act("Undoing…", "Undo failed", async (repo) => {
-      await api.moveBranch(repo, undo.branch, undo.expected, undo.target);
-      return `Undone: ${entry.text}`;
-    }, [`Moving ${undo.branch} back to ${undo.target.slice(0, 7)}`, "Only if it hasn't moved since and isn't on the remote"]);
-    if (!done) return;
-    this.activity = this.activity.map((e) => (e === entry ? { ...e, undone: true } : e));
-    prefs.set("activity", this.activity);
+    if (undo.kind === "checkout") return this.checkout(undo.branch, entry);
+    const result = await this.act("Undoing…", "Undo failed", [`Moving ${undo.branch} back to ${undo.target.slice(0, 7)}`, "Only if it hasn't moved since and isn't on the remote"],
+      async (repo) => {
+        await api.moveBranch(repo, undo.branch, undo.expected, undo.target);
+        return `Undone: ${entry.text}`;
+      });
+    if (result.ok) this.markUndone(entry);
   }
 
   /** Fetch --all --prune + safe fast-forwards of every branch that's behind. Skipped branches open the failure popover. */
   async sync() {
     this.syncFailure = null;
     const repo = this.repo;
-    if (await this.act("Syncing…", "Sync failed", async (repo) => {
-      try {
-        const result = await api.sync(repo);
+    const result = await this.act("Syncing…", "Sync failed", ["Fetching every remote", "Fast-forwarding branches that are behind", "Skipping anything that isn't a clean fast-forward"],
+      async (repo) => {
+        let result: SyncResult;
+        try {
+          result = await api.sync(repo);
+        } catch (error) {
+          this.syncFailure = { title: "Sync failed", reasons: [], log: String(error) };
+          throw error;
+        }
         this.lastSynced = Date.now();
         if (result.skipped.length) this.syncFailure = { title: "Some branches weren't updated", reasons: result.skipped, log: result.log.join("\n\n") };
         const time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
         const parts = [`Synced ${time}`];
         if (result.updated.length) parts.push("updated: " + result.updated.join(", "));
-        if (result.skipped.length) parts.push("skipped: " + result.skipped.join(", "));
+        if (result.skipped.length) parts.push("skipped: " + result.skipped.map((s) => s.branch).join(", "));
         if (!result.updated.length && !result.skipped.length) parts.push("all branches up to date");
         return parts.join(" · ");
-      } catch (error) {
-        this.syncFailure = { title: "Sync failed", reasons: ["Couldn't reach the remote or run git."], log: String(error) };
-        throw error;
-      }
-    }, ["Fetching every remote", "Fast-forwarding branches that are behind", "Skipping anything that isn't a clean fast-forward"])) this.record(repo!, this.syncStatus);
+      });
+    if (result.ok) this.record(repo!, result.status, result.started);
   }
 
   /** Quiet background sync (every few minutes and on focus): same safe fast-forwards as `sync`, without the status
@@ -661,102 +677,90 @@ export class RepoModel {
 
   async autoSync() {
     const repo = this.repo;
-    if (!repo || !this.autoSyncOn || this.isSyncing || Date.now() - this.lastAutoSync < 60_000) return;
+    if (!repo || !this.autoSyncOn || this.isSyncing || this.isAutoSyncing || Date.now() - this.lastAutoSync < 60_000) return;
     this.lastAutoSync = Date.now();
-    this.isSyncing = true;
+    this.isAutoSyncing = true;
     const result = await api.sync(repo).catch(() => null);
-    this.isSyncing = false;
+    this.isAutoSyncing = false;
     if (result) this.lastSynced = Date.now();
     if (result?.changed && this.repo === repo) this.reload(); // nothing new from origin: focus already reloaded
   }
 
-  /** With uncommitted changes, asks first (stash / WIP commit / move them) via `pendingCheckout`. */
-  async checkout(name: string) {
+  /** With uncommitted changes, asks first (stash / WIP commit / move them) via `pendingCheckout`. `undoing`: the
+   *  Activity entry this checkout undoes, marked once it's done. */
+  async checkout(name: string, undoing: Activity | null = null) {
     const repo = this.repo;
     if (!repo || this.isSyncing) return;
-    if (this.isCurrent(name)) return this.runCheckout(name, null); // same branch: just the pull
-    const count = await api.changedFileCount(repo);
+    if (this.isCurrent(name)) return this.runCheckout(name, null, undoing); // same branch: just the pull
+    const changes = await api.changedFileCount(repo).catch(() => 0);
     if (this.repo !== repo) return;
-    if (count > 0) {
-      this.pendingChangeCount = count;
-      this.pendingCheckout = name;
-    } else {
-      this.runCheckout(name, null);
-    }
+    if (changes > 0) this.pendingCheckout = { name, changes, undoing };
+    else this.runCheckout(name, null, undoing);
   }
 
-  async runCheckout(name: string, wip: WipMode | null) {
+  async runCheckout(name: string, wip: WipMode | null, undoing = this.pendingCheckout?.undoing ?? null) {
     this.pendingCheckout = null;
-    const repo = this.repo, previous = this.current;
-    if (!(await this.act(`Checking out ${name}…`, "Checkout failed", (repo) => api.checkout(repo, name, wip), [
+    const repo = this.repo, previous = this.history.current;
+    const result = await this.act(`Checking out ${name}…`, "Checkout failed", [
       ...(wip === "shelve" ? ["Shelving your changes for the branch you're leaving"] : wip === "commit" ? ["Saving your changes as a WIP commit on the branch you're leaving"]
         : wip === "carry" ? ["Stashing your changes to bring them along"] : []),
       "Fetching from origin",
       `Switching to ${name}`,
       "Fast-forwarding it to its latest (never merges)",
       ...(wip === "carry" ? ["Applying your changes on it"] : []),
-    ]))) return;
-    const back = previous && previous !== name.replace(/^(origin|upstream)\//, "");
-    this.record(repo!, `Checked out ${name}`, back ? { kind: "checkout", branch: previous } : undefined);
+    ], (repo) => api.checkout(repo, name, wip));
+    if (!result.ok) return;
+    if (undoing) this.markUndone(undoing);
+    const back = previous && previous !== localName(name);
+    this.record(repo!, `Checked out ${name}`, result.started, back ? { kind: "checkout", branch: previous } : undefined);
   }
 
   /** Fetch + fast-forward one branch without switching to it. */
   async pull(name: string) {
     const repo = this.repo;
-    if (await this.act(`Pulling ${name}…`, "Pull failed", (repo) => api.pull(repo, name),
-      ["Fetching from origin", `Fast-forwarding ${name}, without switching`, "Never merges or overwrites"])) this.record(repo!, this.syncStatus);
+    const result = await this.act(`Pulling ${name}…`, "Pull failed", ["Fetching from origin", `Fast-forwarding ${name}, without switching`, "Never merges or overwrites"],
+      (repo) => api.pull(repo, name));
+    if (result.ok) this.record(repo!, result.status, result.started);
   }
 
   /** Shipped branch clean-up: local only, or local + its remote. Undo brings back the local one. */
   async deleteBranch(name: string, remote: boolean) {
     const repo = this.repo;
     const tip = repo ? await api.branchTip(repo, name) : null;
-    if (!(await this.act(`Deleting ${name}…`, "Delete failed", (repo) => api.deleteBranch(repo, name, remote),
-      [`Deleting the local branch (git refuses if it isn't merged)`, ...(remote ? [`Deleting origin/${name}`] : [])]))) return;
-    this.record(repo!, this.syncStatus, tip ? { kind: "move", branch: name, expected: null, target: tip } : undefined);
+    const result = await this.act(`Deleting ${name}…`, "Delete failed",
+      ["Deleting the local branch (git refuses if it isn't merged)", ...(remote ? [`Deleting origin/${name}`] : [])],
+      (repo) => api.deleteBranch(repo, name, remote));
+    if (result.ok) this.record(repo!, result.status, result.started, tip ? { kind: "move", branch: name, expected: null, target: tip } : undefined);
   }
 
-  /** Runs a branch-rewriting action and logs it with an Undo back to where the branch was. */
-  private async rewrite(branch: string, text: string, work: (repo: string) => Promise<unknown>) {
+  /** "Start feature": new branch from an up-to-date `base`, checked out. */
+  async startFeature(name: string, base: string, wip: WipMode | null): Promise<Outcome> {
+    const repo = this.repo, previous = this.history.current;
+    const result = await this.act(`Creating ${name}…`, "Couldn't create the branch", [`Bringing ${base} up to date with origin`, `Creating ${name} from it`, `Checking out ${name}`],
+      (repo) => api.startFeature(repo, name, base, wip));
+    if (result.ok) this.record(repo!, `Started ${name} from ${base}`, result.started, previous ? { kind: "checkout", branch: previous } : undefined);
+    return result;
+  }
+
+  /** "Update from main": merge (or rebase) the base into the branch. Undo puts the branch back. */
+  async updateFromParent(card: Card, rebase: boolean): Promise<Outcome> {
+    const repo = this.repo, parent = this.history.base;
+    if (!repo || !parent) return { ok: false, error: "No base branch" };
+    const before = await api.branchTip(repo, card.local);
+    const text = `${rebase ? "Rebased" : "Merged"} ${parent} into ${card.local}`;
+    const result = await this.act(`${rebase ? "Rebasing" : "Merging"} ${parent} into ${card.local}…`, "Update failed",
+      [`${rebase ? "Rebasing" : "Merging"} ${parent} into ${card.local}`, "Aborts cleanly on a conflict"],
+      async (repo) => (await api.updateBranch(repo, card.local, parent, rebase), text));
+    if (result.ok) this.record(repo, text, result.started, await this.moveBack(repo, card.local, before));
+    return result;
+  }
+
+  async forcePush(branch: string): Promise<Outcome> {
     const repo = this.repo;
-    if (!repo) return;
-    this.actStarted = Date.now();
-    const before = await api.branchTip(repo, branch);
-    try {
-      await work(repo);
-    } finally {
-      this.reload();
-    }
-    const after = await api.branchTip(repo, branch);
-    this.record(repo, text, before && after && before !== after ? { kind: "move", branch, expected: after, target: before } : undefined);
-  }
-
-  /** "Start feature": new branch from an up-to-date `base`, checked out. False if git refused (status line says why). */
-  async startFeature(name: string, base: string, wip: WipMode | null) {
-    const repo = this.repo, previous = this.current;
-    const done = await this.act(`Creating ${name}…`, "Couldn't create the branch", (repo) => api.startFeature(repo, name, base, wip),
-      [`Bringing ${base} up to date with origin`, `Creating ${name} from it`, `Checking out ${name}`]);
-    if (done) this.record(repo!, `Started ${name} from ${base}`, previous ? { kind: "checkout", branch: previous } : undefined);
-    return done;
-  }
-
-  /** "Update from main": merge (or rebase) the base into the branch. Throws so the panel can show why. */
-  async updateFromParent(card: Card, rebase: boolean) {
-    const parent = this.base;
-    if (!parent) return;
-    await this.rewrite(card.local, `${rebase ? "Rebased" : "Merged"} ${parent} into ${card.local}`,
-      (repo) => api.updateBranch(repo, card.local, parent, rebase, this.isCurrent(card.ref)));
-  }
-
-  async forcePush(branch: string) {
-    const repo = this.repo;
-    if (!repo) return;
-    try {
-      await api.forcePush(repo, branch);
-      this.record(repo, `Force-pushed ${branch}`);
-    } finally {
-      this.reload();
-    }
+    const result = await this.act(`Force-pushing ${branch}…`, "Force push failed", [`Pushing ${branch} over its upstream`, "Refused if the server has commits you haven't fetched"],
+      async (repo) => (await api.forcePush(repo, branch), `Force-pushed ${branch}`));
+    if (result.ok) this.record(repo!, result.status, result.started);
+    return result;
   }
 
   discardFile(path: string) {
@@ -767,56 +771,51 @@ export class RepoModel {
     this.discard("Discarded all changes", (repo) => api.discardAll(repo));
   }
 
-  discardHunk(index: number) {
+  /** The block shown as `index` with `header` in the diff pane. */
+  discardHunk(index: number, header: string) {
     const path = this.fileFilter;
-    if (path) this.discard(`Discarded a block in ${path}`, (repo) => api.discardHunk(repo, path, index));
+    if (path) this.discard(`Discarded a block in ${path}`, (repo) => api.discardHunk(repo, path, index, header));
   }
 
-  /** Stages or unstages files from the tree's checkboxes; only the tree refreshes. */
+  private async discard(text: string, work: (repo: string) => Promise<void>) {
+    const repo = this.repo;
+    const result = await this.act("Discarding…", "Discard failed", [text], async (repo) => (await work(repo), text));
+    if (result.ok) this.record(repo!, text, result.started);
+  }
+
+  /** Stages or unstages files from the tree's checkboxes; only the tree refreshes (no toast: it's a checkbox). */
   async setStaged(paths: string[], on: boolean) {
     const repo = this.repo;
     if (!repo || !paths.length) return;
     try {
       await (on ? api.stage(repo, paths) : api.unstage(repo, paths));
     } catch (error) {
-      this.syncStatus = `${on ? "Stage" : "Unstage"} failed: ` + String(error);
+      this.syncStatus = `${on ? "Stage" : "Unstage"} failed: ${firstLine(error)}`;
     }
-    if (this.repo !== repo) return;
-    this.loadTree();
+    if (this.repo === repo) this.loadTree();
   }
 
-  /** Commits what's staged (and pushes with `push`). Resolves to false if git refused, so the form keeps the message. */
-  async commit(message: string, push: boolean) {
-    const repo = this.repo, branch = this.current;
+  /** Files checked in the tree: what the next commit takes. */
+  get stagedCount() {
+    return Object.keys(this.changes).filter((p) => this.staged.has(p)).length;
+  }
+
+  /** Commits what's staged (and pushes with `push`). False if git refused, so the form keeps the message. */
+  async commit(title: string, description: string, push: boolean) {
+    const repo = this.repo, branch = this.history.current;
+    const message = title.trim() + (description.trim() ? "\n\n" + description.trim() : "") + "\n";
     const before = repo && branch ? await api.branchTip(repo, branch) : null;
-    let after: string | null = null;
-    const done = await this.act(push ? "Committing and pushing…" : "Committing…", "Commit failed", async (repo) => {
-      const status = await api.commit(repo, message, push);
-      if (branch) after = await api.branchTip(repo, branch);
-      return status;
-    }, ["Committing what's staged", ...(push ? [`Pushing ${branch ?? "the branch"} to origin`] : [])]);
-    if (done) {
-      const subject = message.split("\n")[0];
-      // Undo keeps the changes (staged); none once pushed: that would rewrite shared history.
-      this.record(repo!, `${push ? "Committed and pushed" : "Committed"} “${subject}”`,
-        !push && before && after && branch ? { kind: "move", branch, expected: after, target: before } : undefined);
-    }
-    return done;
-  }
-
-  private async discard(text: string, work: (repo: string) => Promise<void>) {
-    const repo = this.repo;
-    if (!repo) return;
-    try {
-      await work(repo);
-      this.record(repo, text);
-    } catch (error) {
-      this.syncStatus = "Discard failed: " + String(error);
-    }
-    this.reload();
+    const result = await this.act(push ? "Committing and pushing…" : "Committing…", "Commit failed",
+      ["Committing what's staged", ...(push ? [`Pushing ${branch ?? "the branch"} to origin`] : [])], (repo) => api.commit(repo, message, push));
+    if (!result.ok) return false;
+    // Undo keeps the changes (staged); none once pushed: that would rewrite shared history.
+    const undo = !push && branch ? await this.moveBack(repo!, branch, before) : undefined;
+    this.record(repo!, `${push ? "Committed and pushed" : "Committed"} “${title.trim()}”`, result.started, undo);
+    return true;
   }
 }
 
-/** Puts things back: switch to the branch you were on, or move a branch back (`expected` null: recreate it). */
-type Undo = { kind: "checkout"; branch: string } | { kind: "move"; branch: string; expected: string | null; target: string };
-export type Activity = { at: number; started?: number; repo: string; text: string; undo?: Undo; undone?: boolean }; // started: when its git commands began (Logs panel groups them)
+/** First line of an error, for the one-line status. */
+function firstLine(error: unknown) {
+  return String(error).split("\n")[0] || "unknown error";
+}

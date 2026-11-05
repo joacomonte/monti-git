@@ -4,10 +4,12 @@
 <script lang="ts">
   import { AlignLeft, ArrowLeft, Check, Copy, FileText, GitCommitHorizontal, Layers, Lock, PenLine, Sparkles, TextQuote } from "@lucide/svelte";
   import type { Component } from "svelte";
-  import { fade, fly } from "svelte/transition";
+  import { fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import type { RepoModel } from "$lib/model.svelte";
+  import { localName } from "$lib/refs";
   import Example from "./Example.svelte";
+  import Modal from "./Modal.svelte";
 
   let { model, onclose, start = null }: { model: RepoModel; onclose: () => void; start?: "new" | "amend" | null } = $props(); // start: skip "where" with that mode
 
@@ -23,12 +25,12 @@
   // svelte-ignore state_referenced_locally
   let mode = $state<Mode>(start ?? "new");
   let length = $state<Length>("concise");
-  let copied = $state(false);
+  let copied = $state(false); // closes a moment later, so no CopyFlash
 
-  const branch = $derived(model.current ?? "(current)");
-  const base = $derived(model.base?.replace(/^(origin|upstream)\//, "") ?? null);
+  const branch = $derived(model.history.current ?? "(current)");
+  const base = $derived(model.history.base ? localName(model.history.base) : null);
   // A branch of its own (not the base itself): squashing it means its commits since it split from the base.
-  const canSquash = $derived(!!base && !!model.current && model.current !== base);
+  const canSquash = $derived(!!base && !!model.history.current && model.history.current !== base);
 
   const LENGTHS: Record<Exclude<Length, "keep">, string> = {
     concise: "one or two short lines: what changed and why.",
@@ -74,13 +76,7 @@
     copied = true;
     setTimeout(onclose, 700);
   }
-
-  function keydown(e: KeyboardEvent) {
-    if (e.key === "Escape") onclose();
-  }
 </script>
-
-<svelte:window onkeydown={keydown} />
 
 <!-- Big choice card: tinted icon tile, title, explanation, and a hover example. Picking one moves to the next step. -->
 {#snippet choice(id: string, Icon: Component, color: string, title: string, detail: string, example: string, pick: () => void, on: boolean)}
@@ -94,9 +90,7 @@
   </button>
 {/snippet}
 
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="backdrop enter-fade" out:fade|global={{ duration: 150 }} id="message-prompt" onclick={onclose} onmousedown={(e) => e.stopPropagation()}>
-  <div class="panel enter-pop" role="dialog" tabindex="-1" aria-labelledby="message-prompt-title" onclick={(e) => e.stopPropagation()}>
+<Modal id="message-prompt" {onclose} label="Commit message by your AI agent" class="message-panel">
     <div class="flex items-center gap-2.5 px-1 pb-1">
       <Sparkles size={17} class="shrink-0 text-[#a78bfa]" />
       <span class="text-[14px] font-semibold" id="message-prompt-title">Commit message by your AI agent</span>
@@ -151,15 +145,10 @@
         </div>
       {/key}
     </div>
-  </div>
-</div>
+</Modal>
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgb(0 0 0 / 0.35); }
-  .panel {
-    display: flex; flex-direction: column; gap: 14px; width: 560px; max-height: calc(100vh - 48px); overflow: auto; padding: 22px 18px 16px; border-radius: 18px;
-    background: var(--popover); color: var(--popover-foreground); box-shadow: 0 0 0 1px oklch(0.5 0 0 / 0.18), 0 16px 40px rgb(0 0 0 / 0.4);
-  }
+  :global(.message-panel) { display: flex; flex-direction: column; gap: 14px; width: 560px; max-height: calc(100vh - 48px); overflow: auto; padding: 22px 18px 16px; border-radius: 18px; }
   .stage { display: grid; grid-template-columns: minmax(0, 1fr); }
   .label { padding: 0 4px; font-size: 12.5px; font-weight: 600; color: var(--muted-foreground); }
   .dot { width: 6px; height: 6px; border-radius: 999px; background: oklch(0.5 0 0 / 0.25); transition: width 0.3s var(--ease), background 0.3s; }

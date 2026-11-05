@@ -2,27 +2,25 @@
      say where it is: Origin (on the server at this commit) or Only local (not on the server at this commit). -->
 <script lang="ts">
   import { CircleCheck, Cloud, GitBranch, Laptop, Tag } from "@lucide/svelte";
+  import { isHead as headRef, isRemote as remoteRef, isTag as tagRef, localName, refName } from "$lib/refs";
 
   // onclick: the pill becomes a button (with hover feedback) that opens the branch's options.
-  // chipsOnly: just the Checked out / Only local / cloud chips (the name is shown elsewhere, e.g. the collapsed branch card).
-  type Props = { ref: string; isSynced?: boolean; color?: string; onclick?: (e: MouseEvent) => void; oncontextmenu?: (e: MouseEvent) => void; chipsOnly?: boolean };
-  let { ref, isSynced = false, color = "var(--primary)", onclick, oncontextmenu, chipsOnly = false }: Props = $props();
+  type Props = { ref: string; isSynced?: boolean; color?: string; onclick?: (e: MouseEvent) => void; oncontextmenu?: (e: MouseEvent) => void };
+  let { ref, isSynced = false, color = "var(--primary)", onclick, oncontextmenu }: Props = $props();
   // Clicking the pill again closes its menu: keep the window's "mousedown closes menus" from closing it first.
   const stop = (e: MouseEvent) => e.stopPropagation();
-  const isHead = $derived(ref.startsWith("HEAD -> "));
-  const isTag = $derived(ref.startsWith("tag: "));
-  const name = $derived(ref.replace("HEAD -> ", "").replace("tag: ", ""));
-  // shortcut: assumes remotes are named origin/upstream, read `git remote` if other names show up.
-  const isRemote = $derived(/^(origin|upstream)\//.test(name));
-  // The Origin chip already says "remote", so drop the "origin/" prefix.
-  const label = $derived(isRemote ? name.slice(name.indexOf("/") + 1) : name);
+  const isHead = $derived(headRef(ref));
+  const isTag = $derived(tagRef(ref));
+  const name = $derived(refName(ref).replace("tag: ", ""));
+  const isRemote = $derived(remoteRef(name));
+  // The cloud already says "on the server", so drop the "origin/" prefix.
+  const label = $derived(localName(name));
   const remoteName = $derived(isRemote ? name.slice(0, name.indexOf("/")) : "origin");
   const Icon = $derived(isTag ? Tag : isHead ? CircleCheck : GitBranch);
 </script>
 
 <span class="group">
-  {#if !chipsOnly}
-  <svelte:element this={onclick ? "button" : "span"} class="badge" class:head={isHead} class:clickable={onclick} style:--lane={color} id="ref-badge-{ref}" role={onclick ? "button" : undefined} {onclick} {oncontextmenu} onmousedown={onclick ? stop : undefined}>
+  <svelte:element this={onclick ? "button" : "span"} class="badge" class:head={isHead} class:clickable={onclick} style:--lane={color} id="ref-badge-{name.replace(/[^\w/.-]/g, '-')}" role={onclick ? "button" : undefined} {onclick} {oncontextmenu} onmousedown={onclick ? stop : undefined}>
     <Icon size={12} strokeWidth={2.5} class="shrink-0 opacity-80" />
     <span class="truncate">{label}</span>
     <!-- On the server at this commit: a small cloud inside the pill (the collapsed card draws its own). -->
@@ -30,7 +28,6 @@
       <span class="cloud" title={isSynced ? `On ${remoteName} (the server) too, at this same commit: nothing to push or pull.` : `On ${remoteName} (the server) at this commit.`}><Cloud size={12} strokeWidth={2.5} /></span>
     {/if}
   </svelte:element>
-  {/if}
   {#if !isTag && !isRemote && !isSynced}
     <span class="where local" title="Only on this computer at this commit: not pushed yet, or the server has a different version."><Laptop size={11} strokeWidth={2.5} />Only local</span>
   {/if}

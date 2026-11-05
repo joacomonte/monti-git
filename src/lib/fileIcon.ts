@@ -1,13 +1,10 @@
 // File type icons from the VS Code Material Icon Theme: its manifest maps file names and extensions to SVGs.
-import manifest from "material-icon-theme/dist/material-icons.json";
+// Named imports: only these four parts of the manifest are bundled (folder and language maps are left out).
+import { file, fileExtensions as extensions, fileNames as names, iconDefinitions as definitions } from "material-icon-theme/dist/material-icons.json";
 
-type Manifest = {
-  file: string;
-  fileNames: Record<string, string>;
-  fileExtensions: Record<string, string>;
-  iconDefinitions: Record<string, { iconPath: string }>;
-};
-const { file, fileNames, fileExtensions, iconDefinitions } = manifest as unknown as Manifest;
+const fileNames = names as Record<string, string>;
+const fileExtensions = extensions as Record<string, string>;
+const iconDefinitions = definitions as Record<string, { iconPath: string }>;
 
 // Every file icon as a bundled asset URL (folder icons left out: the tree keeps its own folder glyph).
 const DIR = "/node_modules/material-icon-theme/icons/";

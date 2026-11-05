@@ -5,6 +5,9 @@
   import { api, type GitLog } from "$lib/api";
   import * as Popover from "$lib/components/ui/popover";
   import type { Activity, RepoModel } from "$lib/model.svelte";
+  import { CopyFlash } from "$lib/clipboard.svelte";
+  import { ago, baseName } from "$lib/format";
+  import Segmented from "./Segmented.svelte";
 
   let { model }: { model: RepoModel } = $props();
   let open = $state(false);
@@ -14,14 +17,18 @@
   let allRepos = $state(false);
   let kind = $state<"write" | "read" | "all">("write");
   let expanded = $state<number[]>([]);
-  let copied = $state<number | null>(null);
+  const flash = new CopyFlash();
   let now = $state(Date.now());
 
-  // While open: pull new commands every 1.5s (only the ones after the last id seen).
+  // While open: pull new commands every 1.5s (only the ones after the last id seen); a slow pull skips the next tick.
   $effect(() => {
     if (!open) return;
+    let pulling = false;
     const pull = async () => {
-      const fresh = await api.gitLogs(logs.at(-1)?.id ?? 0);
+      if (pulling) return;
+      pulling = true;
+      const fresh = await api.gitLogs(logs.at(-1)?.id ?? 0).catch(() => []);
+      pulling = false;
       if (fresh.length) logs = [...logs, ...fresh].slice(-1500);
       now = Date.now();
     };
@@ -30,11 +37,8 @@
     return () => clearInterval(timer);
   });
 
-  const name = (path: string) => path.split(/[\\/]/).pop();
-  const ago = (ms: number) => {
-    const s = Math.floor((now - ms) / 1000);
-    return s < 60 ? `${Math.max(s, 0)}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`;
-  };
+  const name = baseName;
+  const when = (ms: number) => ago(ms / 1000, now);
   // Arguments with spaces quoted, so the line can be pasted in a terminal.
   const command = (l: GitLog) => "git " + l.args.map((a) => (/[\s"'$`\\|&;<>()*?]/.test(a) ? `'${a.replace(/'/g, `'\\''`)}'` : a)).join(" ");
   const output = (l: GitLog) => [l.stdout, l.stderr].filter(Boolean).join(l.stdout && l.stderr ? "\n--- stderr ---\n" : "");
@@ -62,11 +66,7 @@
   });
 
   const toggle = (id: number) => (expanded = expanded.includes(id) ? expanded.filter((x) => x !== id) : [...expanded, id]);
-  async function copy(l: GitLog) {
-    await navigator.clipboard.writeText(`$ ${command(l)}\n${output(l)}`);
-    copied = l.id;
-    setTimeout(() => (copied = null), 1200);
-  }
+  const copy = (l: GitLog) => flash.copy(String(l.id), `$ ${command(l)}\n${output(l)}`);
 </script>
 
 {#snippet line(l: GitLog)}
@@ -76,12 +76,12 @@
       <ChevronRight size={11} class="shrink-0 transition-transform {isOpen ? 'rotate-90' : ''}" />
       <span class="dot" class:read={!l.write}></span>
       <span class="min-w-0 flex-1 truncate font-mono" title={command(l)}>{command(l)}</span>
-      <span class="meta">{#if !l.ok}exit {l.code ?? "?"} · {/if}{l.ms}ms · {ago(l.at)}{#if allRepos} · {name(l.repo)}{/if}</span>
+      <span class="meta">{#if !l.ok}exit {l.code ?? "?"} · {/if}{l.ms}ms · {when(l.at)}{#if allRepos} · {name(l.repo)}{/if}</span>
     </button>
     {#if isOpen}
       <div class="out">
         <button class="copy" id="log-copy-{l.id}" title="Copy the command and its output" onclick={() => copy(l)}>
-          {#if copied === l.id}<Check size={11} />{:else}<Copy size={11} />{/if}</button>
+          {#if flash.copied === String(l.id)}<Check size={11} />{:else}<Copy size={11} />{/if}</button>
         <pre>{output(l) || "(no output)"}</pre>
         {#if l.truncated}<span class="meta">Output cut: reads keep 8 KB, changes 256 KB.</span>{/if}
       </div>
@@ -101,11 +101,8 @@
       </div>
       <div class="flex items-center gap-1.5">
         <label class="search"><Search size={12} /><input id="logs-search" placeholder="Search commands and output" bind:value={query} /></label>
-        <div class="seg" role="group" aria-label="Kind">
-          {#each [["write", "Changes"], ["read", "Reads"], ["all", "All"]] as [id, label] (id)}
-            <button id="logs-kind-{id}" class:on={kind === id} onclick={() => (kind = id as typeof kind)}>{label}</button>
-          {/each}
-        </div>
+        <Segmented id="logs-kind" value={kind} onchange={(v) => (kind = v)}
+          options={[{ value: "write", label: "Changes" }, { value: "read", label: "Reads" }, { value: "all", label: "All" }]} />
         <button class="chip" id="logs-errors" class:on={errorsOnly} aria-pressed={errorsOnly} onclick={() => (errorsOnly = !errorsOnly)}>Errors</button>
         <button class="chip" id="logs-all-repos" class:on={allRepos} aria-pressed={allRepos} onclick={() => (allRepos = !allRepos)}>All repos</button>
       </div>
@@ -118,7 +115,7 @@
             <div class="flex items-center gap-2">
               <span class="min-w-0 flex-1">
                 <span class="block truncate text-[12.5px] font-semibold" class:line-through={a.undone} title={a.text}>{a.text}</span>
-                <span class="meta">{ago(a.at)}{a.undone ? " · undone" : ""}{#if allRepos} · {name(a.repo)}{/if}{#if it.commands.length} · {it.commands.length} command{it.commands.length === 1 ? "" : "s"}{/if}</span>
+                <span class="meta">{when(a.at)}{a.undone ? " · undone" : ""}{#if allRepos} · {name(a.repo)}{/if}{#if it.commands.length} · {it.commands.length} command{it.commands.length === 1 ? "" : "s"}{/if}</span>
               </span>
               {#if a.undo && !a.undone && a.repo === model.repo}
                 <button class="undo" id="logs-undo-{a.at}" disabled={model.isSyncing}
@@ -144,9 +141,6 @@
   :global(.logs-trigger:hover), :global(.logs-trigger[data-state="open"]) { color: var(--foreground); background: oklch(0.5 0 0 / 0.1); }
   .search { display: flex; flex: 1; align-items: center; gap: 6px; height: 28px; padding: 0 9px; border-radius: 8px; color: var(--tertiary); background: oklch(0.5 0 0 / 0.08); }
   .search input { flex: 1; min-width: 0; font-size: 12px; color: var(--foreground); background: none; outline: none; }
-  .seg { display: flex; padding: 2px; border-radius: 8px; background: oklch(0.5 0 0 / 0.08); }
-  .seg button { height: 24px; padding: 0 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; color: var(--muted-foreground); }
-  .seg button.on { color: var(--foreground); background: var(--popover); box-shadow: 0 1px 3px rgb(0 0 0 / 0.25); }
   .chip { height: 28px; padding: 0 10px; border-radius: 8px; font-size: 11.5px; font-weight: 600; color: var(--muted-foreground); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.2); }
   .chip.on { color: var(--primary); background: color-mix(in oklab, var(--primary) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 40%, transparent); }
   .list { display: flex; flex-direction: column; gap: 2px; max-height: min(70vh, 640px); overflow: auto; padding: 6px; }
@@ -155,7 +149,7 @@
   .meta { font-size: 10.5px; color: var(--tertiary); white-space: nowrap; }
   .cmd-head { display: flex; width: 100%; align-items: center; gap: 7px; height: 26px; padding: 0 6px; border-radius: 6px; font-size: 11.5px; text-align: left; color: var(--muted-foreground); }
   .cmd-head:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.08); }
-  .dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 99px; background: var(--green, #34c77b); }
+  .dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 99px; background: #34c77b; }
   .dot.read { background: oklch(0.5 0 0 / 0.45); }
   .failed .dot { background: #ef4444; }
   .failed .cmd-head { color: color-mix(in oklab, #ef4444 70%, var(--foreground)); }

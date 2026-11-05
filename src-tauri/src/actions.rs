@@ -1,93 +1,107 @@
-//! Actions that change the repo, ported 1:1 from Git.swift. Same safety rules: fast-forward only, never
-//! a half-done merge/rebase, uncommitted work always stashed or refused, never lost.
-use crate::git::{run, run_input};
+//! Actions that change the repo, ported from Git.swift. Same safety rules: fast-forward only, never a half-done
+//! merge/rebase, uncommitted work always stashed or refused, never lost. One action at a time per repo: each takes
+//! the repo's lock, so a background sync can't interleave with a checkout's stash, switch and pop.
+use crate::git::{self, read_opt, run, write, write_input};
+use crate::refs::{self, current_branch, local_name, DEFAULT_REMOTE};
+use crate::{patch, wip};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 
-fn ok(args: &[&str], repo: &Path) -> Option<String> {
-    run(args, repo).ok()
+/// Runs `action` while holding `repo`'s lock.
+fn exclusive<T>(repo: &Path, action: impl FnOnce() -> T) -> T {
+    static LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
+    let lock = LOCKS.lock().unwrap().entry(repo.to_path_buf()).or_default().clone();
+    let _held = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    action()
 }
 
-fn current_branch(repo: &Path) -> Option<String> {
-    ok(&["symbolic-ref", "--quiet", "--short", "HEAD"], repo).map(|s| s.trim().to_string()) // None when detached
+/// Fast-forwards `branch` to `upstream` (a ref), never merging: the checked-out one with `merge --ff-only`, which
+/// refuses over local changes in the way; any other with a "+"-less local fetch, which git refuses for a branch
+/// checked out in another worktree.
+fn fast_forward(branch: &str, upstream: &str, is_current: bool, repo: &Path) -> Result<String, String> {
+    if is_current {
+        write(&["merge", "--ff-only", upstream], repo)
+    } else {
+        write(&["fetch", ".", &format!("{upstream}:refs/heads/{branch}")], repo)
+    }
 }
 
-// shortcut: same origin/upstream assumption as RefBadge.
-fn strip_remote(name: &str) -> &str {
-    if name.starts_with("origin/") || name.starts_with("upstream/") { &name[name.find('/').unwrap() + 1..] } else { name }
+fn fetch(repo: &Path) -> Result<String, String> {
+    write(&["fetch", "--all", "--prune"], repo)
+}
+
+fn changed_files(repo: &Path) -> usize {
+    git::status(repo).map_or(0, |s| s.files.len())
+}
+
+// MARK: Sync and pull
+
+/// Why sync left a branch as it was.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SkipReason {
+    Diverged,            // commits here and on the server: not a fast-forward
+    LocalChanges,        // the checked-out branch, and uncommitted changes are in the way
+    CheckedOutElsewhere, // checked out in another worktree
+}
+
+#[derive(Serialize)]
+pub struct Skipped {
+    branch: String,
+    reason: SkipReason,
 }
 
 #[derive(Serialize, Default)]
 pub struct SyncResult {
     updated: Vec<String>,
-    skipped: Vec<String>,
+    skipped: Vec<Skipped>,
     log: Vec<String>, // raw git errors of the skipped branches, for debugging
     changed: bool,    // any ref moved (fetch, prune or fast-forward): the graph needs a reload
 }
 
-/// Fetches every remote with --prune, then fast-forwards local branches that are strictly behind
-/// their upstream. Never rewrites history, deletes local branches or touches uncommitted work:
-/// anything that is not a clean fast-forward is skipped and reported. `--prune` only removes
-/// remote-tracking refs (origin/x) whose branch was deleted on the remote.
+/// Fetches every remote with --prune, then fast-forwards local branches that are strictly behind their upstream.
+/// Never rewrites history, deletes local branches or touches uncommitted work: anything that is not a clean
+/// fast-forward is skipped and reported. `--prune` only removes remote-tracking refs whose branch was deleted.
 pub fn sync(repo: &Path) -> Result<SyncResult, String> {
-    let refs = || ok(&["for-each-ref", "--format=%(refname) %(objectname)"], repo);
-    let before = refs();
-    run(&["fetch", "--all", "--prune"], repo)?;
-    let current = current_branch(repo);
-    let branches = run(&["for-each-ref", "--format=%(refname:short)%09%(upstream)%09%(upstream:track)", "refs/heads"], repo)?;
-    let mut result = SyncResult::default();
-    for line in branches.lines() {
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() != 3 || fields[1].is_empty() || !fields[2].contains("behind") {
-            continue;
-        }
-        let (branch, upstream) = (fields[0], fields[1]);
-        if fields[2].contains("ahead") {
-            result.skipped.push(format!("{branch} (diverged)"));
-            result.log.push(diverged_report(branch, upstream, fields[2], repo));
-            continue;
-        }
-        let is_current = current.as_deref() == Some(branch);
-        let outcome = if is_current {
-            run(&["merge", "--ff-only", "@{u}"], repo) // refuses on its own if it would overwrite local changes
-        } else {
-            // Local fetch without "+": fast-forward only, and git refuses branches checked out in any other worktree.
-            run(&["fetch", ".", &format!("{upstream}:refs/heads/{branch}")], repo)
-        };
-        match outcome {
-            Ok(_) => result.updated.push(branch.to_string()),
-            Err(error) => {
-                result.log.push(format!("[{branch}] {}", error.trim()));
-                result.skipped.push(format!("{branch} ({})", if is_current { "local changes" } else { "checked out elsewhere" }));
+    exclusive(repo, || {
+        let refs = || read_opt(&["for-each-ref", "--format=%(refname) %(objectname)"], repo);
+        let before = refs();
+        fetch(repo)?;
+        let current = current_branch(repo);
+        let branches = run(&["for-each-ref", "--format=%(refname:short)%09%(upstream)%09%(upstream:track)", "refs/heads"], repo)?;
+        let mut result = SyncResult::default();
+        for line in branches.lines() {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let [branch, upstream, track] = fields[..] else { continue };
+            if upstream.is_empty() || !track.contains("behind") {
+                continue;
+            }
+            if track.contains("ahead") {
+                result.skipped.push(Skipped { branch: branch.into(), reason: SkipReason::Diverged });
+                result.log.push(diverged_report(branch, upstream, track, repo));
+                continue;
+            }
+            let is_current = current.as_deref() == Some(branch);
+            match fast_forward(branch, upstream, is_current, repo) {
+                Ok(_) => result.updated.push(branch.to_string()),
+                Err(error) => {
+                    result.log.push(format!("[{branch}] {}", error.trim()));
+                    let reason = if is_current { SkipReason::LocalChanges } else { SkipReason::CheckedOutElsewhere };
+                    result.skipped.push(Skipped { branch: branch.into(), reason });
+                }
             }
         }
-    }
-    result.changed = before.is_none() || refs() != before;
-    Ok(result)
-}
-
-/// Deletes a shipped branch: `git branch -d` (git itself refuses if it isn't merged), then, if asked, the same
-/// branch on its remote. Never the checked-out one.
-pub fn delete_branch(branch: &str, remote: bool, repo: &Path) -> Result<String, String> {
-    if current_branch(repo).as_deref() == Some(branch) {
-        return Err(format!("{branch} is checked out: switch to another branch first"));
-    }
-    let origin = ok(&["config", &format!("branch.{branch}.remote")], repo).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    run(&["branch", "-d", branch], repo)?;
-    if !remote {
-        return Ok(format!("Deleted {branch}"));
-    }
-    let Some(origin) = origin else { return Ok(format!("Deleted {branch} (it had no remote)")) };
-    Ok(match run(&["push", &origin, "--delete", branch], repo) {
-        Ok(_) => format!("Deleted {branch} here and on {origin}"),
-        Err(error) => format!("Deleted {branch} here, but not on {origin}: {}", error.lines().next().unwrap_or_default()),
+        result.changed = before.is_none() || refs() != before;
+        Ok(result)
     })
 }
 
 /// Raw details of a diverged branch for the sync log: what each side has, and commands that fix it.
 fn diverged_report(branch: &str, upstream: &str, track: &str, repo: &Path) -> String {
-    let remote = upstream.strip_prefix("refs/remotes/").unwrap_or(upstream);
-    let oneline = |range: String| ok(&["log", "--format=  %h %an, %ar: %s", "-5", &range], repo).unwrap_or_default().trim_matches('\n').to_string();
+    let remote = refs::short_name(upstream);
+    let oneline = |range: String| read_opt(&["log", "--format=  %h %an, %ar: %s", "-5", &range], repo).unwrap_or_default().trim_matches('\n').to_string();
     let path = repo.display();
     let mut lines = vec![
         format!("[{branch}] not updated: diverged from {remote} {track}. Sync only fast-forwards, so it left it as is."),
@@ -96,7 +110,7 @@ fn diverged_report(branch: &str, upstream: &str, track: &str, repo: &Path) -> St
         "Only on the server (newest 5):".into(),
         oneline(format!("{branch}..{remote}")),
     ];
-    if remote.split('/').skip(1).collect::<Vec<_>>().join("/") != branch {
+    if remote.split_once('/').map(|(_, name)| name) != Some(branch) {
         lines.push(format!("Note: {branch} follows {remote}, a branch with a different name. Usually a mistake: stop tracking it."));
     }
     lines.extend([
@@ -109,120 +123,141 @@ fn diverged_report(branch: &str, upstream: &str, track: &str, repo: &Path) -> St
     lines.join("\n")
 }
 
+/// Fetch, then fast-forward one branch to its upstream without checking it out. Returns a one-line status.
+pub fn pull(name: &str, repo: &Path) -> Result<String, String> {
+    exclusive(repo, || {
+        fetch(repo)?;
+        let branch = local_name(name);
+        let info = read_opt(&["for-each-ref", "--format=%(upstream)%09%(upstream:track)", &format!("refs/heads/{branch}")], repo).unwrap_or_default();
+        let info = info.trim_end_matches('\n');
+        if info.is_empty() {
+            return Ok(format!("Fetched {name}")); // remote-only branch: fetching was the pull
+        }
+        let (upstream, track) = info.split_once('\t').unwrap_or((info, ""));
+        Ok(match () {
+            _ if upstream.is_empty() => format!("{branch} has no upstream"),
+            _ if track.contains("gone") => format!("{branch}: upstream branch was deleted"),
+            _ if !track.contains("behind") => format!("{branch} up to date"),
+            _ if track.contains("ahead") => format!("{branch} diverged from upstream, not pulled"),
+            _ => {
+                let is_current = current_branch(repo).as_deref() == Some(branch);
+                match fast_forward(branch, upstream, is_current, repo) {
+                    Ok(_) => format!("Pulled {branch}"),
+                    Err(_) if is_current => format!("{branch} not pulled: local changes in the way"),
+                    Err(_) => format!("{branch} not pulled: checked out elsewhere"),
+                }
+            }
+        })
+    })
+}
+
+// MARK: Checkout
+
 /// What to do with uncommitted changes when checking out another branch (asked every time).
 #[derive(Deserialize, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum WipMode {
     Shelve, // stash them for the branch I'm leaving; restored when I come back to it
-    Carry, // bring them along to the target branch
-    Commit, // "WIP [monti-git]" commit on the branch I'm leaving; undone when I come back to it
+    Carry,  // bring them along to the target branch
+    Commit, // WIP commit on the branch I'm leaving; undone when I come back to it
 }
 
-pub const WIP_SUBJECT: &str = "WIP [monti-git]";
-
-fn shelve_message(branch: &str) -> String {
-    format!("monti-git: {branch}")
-}
-
-/// Staged, unstaged and untracked files.
-pub fn changed_file_count(repo: &Path) -> usize {
-    ok(&["status", "--porcelain"], repo).unwrap_or_default().lines().count()
-}
-
-fn is_dirty(repo: &Path) -> bool {
-    changed_file_count(repo) > 0
-}
-
-/// The stash saved for `branch` when leaving it with Shelve, e.g. "stash@{2}".
-fn shelved_stash(branch: &str, repo: &Path) -> Option<String> {
-    // Subject of `stash push -m X` is "On <branch>: X".
-    let suffix = format!(": {}", shelve_message(branch));
-    let list = ok(&["stash", "list", "--format=%gd%x09%gs"], repo).unwrap_or_default();
-    list.lines().find(|l| l.ends_with(&suffix)).map(|l| l.split('\t').next().unwrap().to_string())
-}
-
-/// Applies a stash onto a clean tree; on conflict undoes the half-applied result (the tree was clean
-/// before, so reset + clean only removes what the apply wrote) and leaves the stash where it is.
+/// Applies a stash onto a clean tree; on conflict undoes the half-applied result (the tree was clean before, so
+/// reset + clean only removes what the apply wrote) and leaves the stash where it is.
 fn apply_cleanly(reference: &str, repo: &Path) -> bool {
-    if run(&["stash", "apply", reference], repo).is_ok() {
+    if write(&["stash", "apply", reference], repo).is_ok() {
         return true;
     }
-    let _ = run(&["reset", "--hard", "--quiet"], repo);
-    let _ = run(&["clean", "-fd", "--quiet"], repo);
+    let _ = write(&["reset", "--hard", "--quiet"], repo);
+    let _ = write(&["clean", "-fd", "--quiet"], repo);
     false
 }
 
-/// Fetch, switch to the branch, then fast-forward it to its upstream. Never merges or overwrites: the pull
-/// is --ff-only, so a diverged branch is switched to but left as is. Uncommitted changes are stashed first
-/// (`wip`), so the switch never fails because of them, and are only re-applied when that applies cleanly:
-/// otherwise they stay in the stash (or go back where they came from).
+/// Fetch, switch to the branch, then fast-forward it to its upstream. Never merges or overwrites: a diverged branch
+/// is switched to but left as is. Uncommitted changes are put aside first (`wip`), so the switch never fails because
+/// of them, and only re-applied when that applies cleanly: otherwise they stay in the stash or go back where they were.
 pub fn checkout(name: &str, wip: Option<WipMode>, repo: &Path) -> Result<String, String> {
-    let fetched = run(&["fetch", "--all", "--prune"], repo).is_ok();
-    let branch = strip_remote(name);
-    let has_local = run(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], repo).is_ok();
-    let original = current_branch(repo).unwrap_or_else(|| "HEAD".into());
+    exclusive(repo, || switch_to(name, wip, true, repo))
+}
 
-    let mut stashed = false;
-    let mut committed = false;
-    if wip == Some(WipMode::Commit) && is_dirty(repo) {
-        // Staged, unstaged and untracked alike; --no-verify: a WIP snapshot shouldn't run lint hooks.
-        run(&["add", "--all"], repo)?;
-        run(&["commit", "--no-verify", "--quiet", "-m", WIP_SUBJECT], repo)?;
-        committed = true;
-    } else if let Some(mode) = wip.filter(|_| is_dirty(repo)) {
-        let message = if mode == WipMode::Shelve { shelve_message(&original) } else { format!("monti-git-carry: {original}") };
-        run(&["stash", "push", "--include-untracked", "-m", &message], repo)?;
-        stashed = true;
+fn switch_to(name: &str, wip: Option<WipMode>, fetch_first: bool, repo: &Path) -> Result<String, String> {
+    let fetched = !fetch_first || fetch(repo).is_ok();
+    let branch = local_name(name);
+    let has_local = refs::tip(&format!("refs/heads/{branch}"), repo).is_some();
+    // Where we were, to come back to: the branch, or HEAD's commit when detached.
+    let original = current_branch(repo);
+    let back_to: Vec<String> = match &original {
+        Some(b) => vec![b.clone()],
+        None => vec!["--detach".into(), refs::tip("HEAD", repo).unwrap_or_default()],
+    };
+    let left = original.clone().unwrap_or_else(|| "HEAD".into());
+    let dirty = changed_files(repo) > 0;
+
+    let (mut stashed, mut committed) = (false, false);
+    match wip.filter(|_| dirty) {
+        Some(WipMode::Commit) => {
+            // Staged, unstaged and untracked alike; --no-verify: a WIP snapshot shouldn't run lint hooks.
+            write(&["add", "--all"], repo)?;
+            write(&["commit", "--no-verify", "--quiet", "-m", wip::COMMIT_SUBJECT], repo)?;
+            committed = true;
+        }
+        Some(mode) => {
+            let message = if mode == WipMode::Shelve { wip::shelve_message(&left) } else { wip::carry_message(&left) };
+            write(&["stash", "push", "--include-untracked", "-m", &message], repo)?;
+            stashed = true;
+        }
+        None => {}
     }
-    let switched = if has_local { run(&["switch", branch], repo) } else { run(&["switch", "--track", name], repo) };
+    let switched = if has_local { write(&["switch", branch], repo) } else { write(&["switch", "--track", name], repo) };
     if let Err(error) = switched {
         if stashed {
-            let _ = run(&["stash", "pop"], repo); // still on the original branch: clean pop
+            let _ = write(&["stash", "pop"], repo); // still on the original branch: clean pop
         }
         if committed {
-            let _ = run(&["reset", "--quiet", "HEAD~1"], repo); // back to uncommitted
+            let _ = write(&["reset", "--quiet", "HEAD~1"], repo); // back to uncommitted
         }
         return Err(error);
     }
 
     let mut status = format!("On {branch}");
-    if run(&["rev-parse", "--abbrev-ref", "@{u}"], repo).is_ok() {
-        let before = run(&["rev-parse", "HEAD"], repo)?;
-        if run(&["merge", "--ff-only", "@{u}"], repo).is_err() {
+    if read_opt(&["rev-parse", "--abbrev-ref", "@{u}"], repo).is_some() {
+        let before = refs::tip("HEAD", repo);
+        if write(&["merge", "--ff-only", "@{u}"], repo).is_err() {
             status += " · not pulled (diverged or local changes)";
-        } else if run(&["rev-parse", "HEAD"], repo)? != before {
+        } else if refs::tip("HEAD", repo) != before {
             status += " · pulled";
         }
     }
 
     if stashed && wip == Some(WipMode::Carry) {
         if apply_cleanly("stash@{0}", repo) {
-            let _ = run(&["stash", "drop", "stash@{0}"], repo);
+            let _ = write(&["stash", "drop", "stash@{0}"], repo);
             status += " · changes brought along";
         } else {
             // Would conflict here: go back and put the changes where they were (same base, always clean).
-            run(&["switch", if original == "HEAD" { "-" } else { &original }], repo)?;
-            run(&["stash", "pop"], repo)?;
-            return Ok(format!("Couldn't bring the changes to {branch} without conflicts: back on {original}, changes untouched"));
+            let back: Vec<&str> = std::iter::once("switch").chain(back_to.iter().map(String::as_str)).collect();
+            write(&back, repo).map_err(|e| format!("Couldn't go back to {left} ({e}): your changes are safe in the stash (stash@{{0}})"))?;
+            write(&["stash", "pop"], repo).map_err(|e| format!("Back on {left}, but your changes stayed in the stash (stash@{{0}}): {e}"))?;
+            return Ok(format!("Couldn't bring the changes to {branch} without conflicts: back on {left}, changes untouched"));
         }
     } else {
         if stashed {
-            status += &format!(" · changes of {original} stashed");
+            status += &format!(" · changes of {left} stashed");
         }
         if committed {
-            status += &format!(" · changes of {original} committed as WIP");
+            status += &format!(" · changes of {left} committed as WIP");
         }
-        // Coming back to a branch left with a WIP commit: undo it (changes return as uncommitted),
-        // unless it was pushed meanwhile, then it's real history and stays.
-        let tip = ok(&["log", "-1", "--format=%s"], repo).map(|s| s.trim_end_matches('\n').to_string());
+        // Coming back to a branch left with a WIP commit: undo it (changes return as uncommitted), unless it was
+        // pushed meanwhile: then it's real history and stays.
+        let tip_subject = read_opt(&["log", "-1", "--format=%s"], repo).map(|s| s.trim_end().to_string());
         let pushed = run(&["merge-base", "--is-ancestor", "HEAD", "@{u}"], repo).is_ok();
-        if tip.as_deref() == Some(WIP_SUBJECT) && !pushed && !is_dirty(repo) {
-            run(&["reset", "--quiet", "HEAD~1"], repo)?;
+        if tip_subject.as_deref() == Some(wip::COMMIT_SUBJECT) && !pushed && changed_files(repo) == 0 {
+            write(&["reset", "--quiet", "HEAD~1"], repo)?;
             status += " · restored its WIP commit as uncommitted changes";
         }
-        if let Some(reference) = shelved_stash(branch, repo).filter(|_| !is_dirty(repo)) {
+        if let Some(reference) = wip::shelved_stash(branch, repo).filter(|_| changed_files(repo) == 0) {
             if apply_cleanly(&reference, repo) {
-                let _ = run(&["stash", "drop", &reference], repo);
+                let _ = write(&["stash", "drop", &reference], repo);
                 status += " · restored its saved changes";
             } else {
                 status += " · its saved changes conflict now, kept in the stash";
@@ -232,70 +267,57 @@ pub fn checkout(name: &str, wip: Option<WipMode>, repo: &Path) -> Result<String,
     Ok(if fetched { status } else { status + " · fetch failed, used local refs" })
 }
 
-/// Fetch, then fast-forward one branch to its upstream without checking it out. Same rules as `sync`:
-/// --ff-only for the checked-out branch, a "+"-less local fetch for the others, so nothing is ever
-/// merged, rewritten or overwritten. Returns a one-line status.
-pub fn pull(name: &str, repo: &Path) -> Result<String, String> {
-    run(&["fetch", "--all", "--prune"], repo)?;
-    let branch = strip_remote(name);
-    let info = ok(&["for-each-ref", "--format=%(upstream)%09%(upstream:track)", &format!("refs/heads/{branch}")], repo).unwrap_or_default();
-    let info = info.trim_end_matches('\n');
-    if info.is_empty() {
-        return Ok(format!("Fetched {name}")); // remote-only branch: fetching was the pull
-    }
-    let fields: Vec<&str> = info.split('\t').collect();
-    let (upstream, track) = (fields[0], fields.get(1).copied().unwrap_or(""));
-    if upstream.is_empty() {
-        return Ok(format!("{branch} has no upstream"));
-    }
-    if track.contains("gone") {
-        return Ok(format!("{branch}: upstream branch was deleted"));
-    }
-    if !track.contains("behind") {
-        return Ok(format!("{branch} up to date"));
-    }
-    if track.contains("ahead") {
-        return Ok(format!("{branch} diverged from upstream, not pulled"));
-    }
-    let is_current = current_branch(repo).as_deref() == Some(branch);
-    let outcome = if is_current {
-        run(&["merge", "--ff-only", "@{u}"], repo) // refuses if it would overwrite local changes
-    } else {
-        run(&["fetch", ".", &format!("{upstream}:refs/heads/{branch}")], repo)
-    };
-    Ok(match outcome {
-        Ok(_) => format!("Pulled {branch}"),
-        Err(_) if is_current => format!("{branch} not pulled: local changes in the way"),
-        Err(_) => format!("{branch} not pulled: checked out elsewhere"),
+// MARK: Branches
+
+/// Deletes a shipped branch: `git branch -d` (git itself refuses if it isn't merged), then, if asked, the same
+/// branch on its remote. Never the checked-out one.
+pub fn delete_branch(branch: &str, remote: bool, repo: &Path) -> Result<String, String> {
+    exclusive(repo, || {
+        if current_branch(repo).as_deref() == Some(branch) {
+            return Err(format!("{branch} is checked out: switch to another branch first"));
+        }
+        let origin = read_opt(&["config", &format!("branch.{branch}.remote")], repo).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        write(&["branch", "-d", branch], repo)?;
+        if !remote {
+            return Ok(format!("Deleted {branch}"));
+        }
+        let Some(origin) = origin else { return Ok(format!("Deleted {branch} (it had no remote)")) };
+        Ok(match write(&["push", &origin, "--delete", branch], repo) {
+            Ok(_) => format!("Deleted {branch} here and on {origin}"),
+            Err(error) => format!("Deleted {branch} here, but not on {origin}: {}", error.lines().next().unwrap_or_default()),
+        })
     })
 }
 
-/// Brings `parent`'s new commits into `branch` by merge (or rebase). Never leaves a half-done state: on a
-/// conflict it aborts and returns the conflicting files. A branch that isn't checked out is updated in a
-/// temporary worktree, so the user's checkout is never touched. The checked-out branch must have no
-/// uncommitted tracked changes: `merge --abort` can't always restore those, so we refuse up front.
-pub fn update(branch: &str, parent: &str, rebase: bool, is_current: bool, repo: &Path) -> Result<(), String> {
-    let integrate = |dir: &Path| -> Result<(), String> {
-        let outcome = if rebase { run(&["rebase", parent], dir) } else { run(&["merge", "--no-edit", parent], dir) };
-        outcome.map(|_| ()).map_err(|error| {
-            let conflicts = ok(&["diff", "--name-only", "--diff-filter=U"], dir).unwrap_or_default().trim().to_string();
-            let _ = run(&[if rebase { "rebase" } else { "merge" }, "--abort"], dir);
-            if conflicts.is_empty() { error.trim().to_string() } else { format!("Conflicts in:\n{conflicts}") }
-        })
-    };
-    if is_current {
-        if !ok(&["status", "--porcelain", "--untracked-files=no"], repo).unwrap_or_default().trim().is_empty() {
-            return Err("You have uncommitted changes on this branch. Commit or stash them first, so nothing can get lost if the update hits a conflict.".into());
+/// Brings `parent`'s new commits into `branch` by merge (or rebase). Never leaves a half-done state: on a conflict
+/// it aborts and returns the conflicting files. A branch that isn't checked out is updated in a temporary worktree,
+/// so the user's checkout is never touched. The checked-out branch must have no uncommitted tracked changes:
+/// `merge --abort` can't always restore those, so we refuse up front.
+pub fn update(branch: &str, parent: &str, rebase: bool, repo: &Path) -> Result<(), String> {
+    exclusive(repo, || {
+        let integrate = |dir: &Path| -> Result<(), String> {
+            let outcome = if rebase { write(&["rebase", parent], dir) } else { write(&["merge", "--no-edit", parent], dir) };
+            outcome.map(|_| ()).map_err(|error| {
+                let conflicts = read_opt(&["diff", "--name-only", "--diff-filter=U"], dir).unwrap_or_default().trim().to_string();
+                let _ = write(&[if rebase { "rebase" } else { "merge" }, "--abort"], dir);
+                if conflicts.is_empty() { error.trim().to_string() } else { format!("Conflicts in:\n{conflicts}") }
+            })
+        };
+        if current_branch(repo).as_deref() == Some(branch) {
+            let status = git::status(repo)?;
+            if status.files.len() > status.untracked.len() {
+                return Err("You have uncommitted changes on this branch. Commit or stash them first, so nothing can get lost if the update hits a conflict.".into());
+            }
+            return integrate(repo);
         }
-        return integrate(repo);
-    }
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("monti-git-update-{}-{nanos}", std::process::id()));
-    let dir_str = dir.to_string_lossy().into_owned();
-    run(&["worktree", "add", "--quiet", &dir_str, branch], repo)?;
-    let result = integrate(&dir);
-    let _ = run(&["worktree", "remove", "--force", &dir_str], repo);
-    result
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("monti-git-update-{}-{nanos}", std::process::id()));
+        let dir_str = dir.to_string_lossy().into_owned();
+        write(&["worktree", "add", "--quiet", &dir_str, branch], repo)?;
+        let result = integrate(&dir);
+        let _ = write(&["worktree", "remove", "--force", &dir_str], repo);
+        result
+    })
 }
 
 /// How a local branch compares with its copy on origin. `remote` false: there's none, use the local one as is.
@@ -308,47 +330,48 @@ pub struct BaseStatus {
 
 /// Fetches, then compares `base` with origin/`base`: is it safe to start a branch from it?
 pub fn base_status(base: &str, repo: &Path) -> BaseStatus {
-    let _ = run(&["fetch", "--all", "--prune"], repo);
-    compare_with_origin(base, repo)
+    exclusive(repo, || {
+        let _ = fetch(repo);
+        compare_with_remote(base, repo)
+    })
 }
 
-fn compare_with_origin(base: &str, repo: &Path) -> BaseStatus {
-    let remote = format!("refs/remotes/origin/{base}");
-    if ok(&["rev-parse", "--verify", "--quiet", &remote], repo).is_none() {
+fn compare_with_remote(base: &str, repo: &Path) -> BaseStatus {
+    let remote = format!("refs/remotes/{DEFAULT_REMOTE}/{base}");
+    if refs::tip(&remote, repo).is_none() {
         return BaseStatus { ahead: 0, behind: 0, remote: false };
     }
-    let counts = ok(&["rev-list", "--left-right", "--count", &format!("refs/heads/{base}...{remote}")], repo).unwrap_or_default();
+    let counts = read_opt(&["rev-list", "--left-right", "--count", &format!("refs/heads/{base}...{remote}")], repo).unwrap_or_default();
     let mut n = counts.split_whitespace().map(|c| c.parse().unwrap_or(0));
     BaseStatus { ahead: n.next().unwrap_or(0), behind: n.next().unwrap_or(0), remote: true } // no local base: 0/0, starts from origin
 }
 
-/// "Start feature": brings `base` up to date with origin (fast-forward only, refuses if it diverged), creates
-/// `name` from it without tracking it, and checks it out like `checkout` (`wip`: what to do with uncommitted changes).
+/// "Start feature": brings `base` up to date with origin (fast-forward only, refuses if it diverged), creates `name`
+/// from it without tracking it, and checks it out like `checkout` (`wip`: what to do with uncommitted changes).
 pub fn start_feature(name: &str, base: &str, wip: Option<WipMode>, repo: &Path) -> Result<String, String> {
-    run(&["check-ref-format", "--branch", name], repo).map_err(|_| format!("\"{name}\" isn't a valid branch name"))?;
-    let status = base_status(base, repo);
-    if status.ahead > 0 && status.behind > 0 {
-        return Err(format!("{base} diverged from origin ({} only here, {} only there): sort that out first", status.ahead, status.behind));
-    }
-    if status.behind > 0 {
-        // Fast-forward to origin's copy even if it doesn't track it; same moves as `pull`, never a merge.
-        let moved = if current_branch(repo).as_deref() == Some(base) {
-            run(&["merge", "--ff-only", &format!("origin/{base}")], repo)
-        } else {
-            run(&["fetch", ".", &format!("refs/remotes/origin/{base}:refs/heads/{base}")], repo)
-        };
-        moved.map_err(|_| format!("Couldn't bring {base} up to date (local changes in the way, or checked out elsewhere)"))?;
-    }
-    let has_local = ok(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{base}")], repo).is_some();
-    let start = if has_local { base.to_string() } else { format!("origin/{base}") };
-    run(&["branch", "--no-track", name, &start], repo)?;
-    match checkout(name, wip, repo) {
-        Ok(status) => Ok(format!("Created {name} from {base} · {status}")),
-        Err(error) => {
-            let _ = run(&["branch", "-D", name], repo); // brand new and never checked out: nothing to lose
-            Err(error)
+    exclusive(repo, || {
+        run(&["check-ref-format", "--branch", name], repo).map_err(|_| format!("\"{name}\" isn't a valid branch name"))?;
+        let _ = fetch(repo);
+        let status = compare_with_remote(base, repo);
+        if status.ahead > 0 && status.behind > 0 {
+            return Err(format!("{base} diverged from origin ({} only here, {} only there): sort that out first", status.ahead, status.behind));
         }
-    }
+        let remote = format!("refs/remotes/{DEFAULT_REMOTE}/{base}");
+        if status.behind > 0 {
+            // Up to origin's copy even if it doesn't track it; never a merge.
+            fast_forward(base, &remote, current_branch(repo).as_deref() == Some(base), repo)
+                .map_err(|_| format!("Couldn't bring {base} up to date (local changes in the way, or checked out elsewhere)"))?;
+        }
+        let start = if refs::tip(&format!("refs/heads/{base}"), repo).is_some() { format!("refs/heads/{base}") } else { remote };
+        write(&["branch", "--no-track", name, &start], repo)?;
+        match switch_to(name, wip, false, repo) {
+            Ok(status) => Ok(format!("Created {name} from {base} · {status}")),
+            Err(error) => {
+                let _ = write(&["branch", "-D", name], repo); // brand new and never checked out: nothing to lose
+                Err(error)
+            }
+        }
+    })
 }
 
 /// Undo for the activity panel: puts `branch` back at `target`. `expected` None recreates a deleted branch;
@@ -356,107 +379,128 @@ pub fn start_feature(name: &str, base: &str, wip: Option<WipMode>, repo: &Path) 
 /// remote, so undoing never rewrites shared history. The checked-out branch moves with `reset --soft`: the
 /// working tree stays and an undone commit's changes come back staged.
 pub fn move_branch(branch: &str, expected: Option<&str>, target: &str, repo: &Path) -> Result<(), String> {
-    let Some(expected) = expected else {
-        run(&["branch", branch, target], repo)?;
-        return Ok(());
-    };
-    let now = ok(&["rev-parse", &format!("refs/heads/{branch}")], repo).map(|s| s.trim().to_string());
-    if now.as_deref() != Some(expected) {
-        return Err(format!("{branch} changed since then: nothing was undone"));
-    }
-    if !ok(&["branch", "-r", "--contains", expected], repo).unwrap_or_default().trim().is_empty() {
-        return Err("Already pushed: undoing it would rewrite shared history".into());
-    }
-    if current_branch(repo).as_deref() == Some(branch) {
-        run(&["reset", "--soft", target], repo)?;
-    } else {
-        run(&["update-ref", "-m", "monti-git: undo", &format!("refs/heads/{branch}"), target, expected], repo)?;
-    }
-    Ok(())
+    exclusive(repo, || {
+        let Some(expected) = expected else {
+            write(&["branch", branch, target], repo)?;
+            return Ok(());
+        };
+        if refs::tip(&format!("refs/heads/{branch}"), repo).as_deref() != Some(expected) {
+            return Err(format!("{branch} changed since then: nothing was undone"));
+        }
+        if !read_opt(&["branch", "-r", "--contains", expected], repo).unwrap_or_default().trim().is_empty() {
+            return Err("Already pushed: undoing it would rewrite shared history".into());
+        }
+        if current_branch(repo).as_deref() == Some(branch) {
+            write(&["reset", "--soft", target], repo)?;
+        } else {
+            write(&["update-ref", "-m", "monti-git: undo", &format!("refs/heads/{branch}"), target, expected], repo)?;
+        }
+        Ok(())
+    })
 }
 
-/// Pushes `branch` over its upstream with --force-with-lease: git refuses if the remote has commits
-/// we haven't fetched, so someone else's work is never overwritten.
+/// Pushes `branch` over its upstream with --force-with-lease: git refuses if the remote has commits we haven't
+/// fetched, so someone else's work is never overwritten.
 pub fn force_push(branch: &str, repo: &Path) -> Result<(), String> {
-    let config = |key: &str| run(&["config", &format!("branch.{branch}.{key}")], repo).map(|s| s.trim().to_string());
-    let (remote, merge) = (config("remote")?, config("merge")?);
-    run(&["push", "--force-with-lease", &remote, &format!("refs/heads/{branch}:{merge}")], repo)?;
-    Ok(())
+    exclusive(repo, || {
+        let config = |key: &str| run(&["config", &format!("branch.{branch}.{key}")], repo).map(|s| s.trim().to_string());
+        let (remote, merge) = (config("remote")?, config("merge")?);
+        write(&["push", "--force-with-lease", &remote, &format!("refs/heads/{branch}:{merge}")], repo)?;
+        Ok(())
+    })
 }
+
+// MARK: Working tree
 
 /// Throws away uncommitted changes of one file: back to HEAD, or deleted if HEAD doesn't have it.
 /// shortcut: a staged rename only reverts its new path, upgrade if renames need discarding.
 pub fn discard(path: &str, repo: &Path) -> Result<(), String> {
+    exclusive(repo, || discard_file(path, repo))
+}
+
+fn discard_file(path: &str, repo: &Path) -> Result<(), String> {
     if run(&["cat-file", "-e", &format!("HEAD:{path}")], repo).is_ok() {
-        run(&["checkout", "HEAD", "--", path], repo)?;
+        write(&["checkout", "HEAD", "--", path], repo)?;
     } else if run(&["ls-files", "--error-unmatch", "--", path], repo).is_ok() {
-        run(&["rm", "-f", "--", path], repo)?; // staged new file
+        write(&["rm", "-f", "--", path], repo)?; // staged new file
     } else {
-        std::fs::remove_file(repo.join(path)).map_err(|e| e.to_string())?; // untracked
+        std::fs::remove_file(git::repo_file(repo, path)?).map_err(|e| e.to_string())?; // untracked
     }
     Ok(())
 }
 
 /// Working tree and index back to HEAD, untracked files deleted (ignored ones stay).
 pub fn discard_all(repo: &Path) -> Result<(), String> {
-    run(&["reset", "--hard", "HEAD"], repo)?;
-    run(&["clean", "-fdq"], repo)?;
-    Ok(())
+    exclusive(repo, || {
+        write(&["reset", "--hard", "HEAD"], repo)?;
+        write(&["clean", "-fdq"], repo)?;
+        Ok(())
+    })
 }
 
-/// Reverts one hunk of `diff` (the `git diff HEAD` of a single file) in the working tree, and in the
-/// index too when the change was staged.
-pub fn discard_hunk(index: usize, diff: &str, repo: &Path) -> Result<(), String> {
-    let lines: Vec<&str> = diff.split('\n').collect();
-    let starts: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].starts_with("@@")).collect();
-    let (Some(&first), Some(&start)) = (starts.first(), starts.get(index)) else { return Ok(()) };
-    let end = starts.get(index + 1).copied().unwrap_or(lines.len());
-    let mut patch = [&lines[..first], &lines[start..end]].concat().join("\n");
-    if !patch.ends_with('\n') {
-        patch.push('\n');
-    }
-    if run_input(&["apply", "-R", "--index"], repo, Some(&patch)).is_err() {
-        run_input(&["apply", "-R"], repo, Some(&patch))?;
-    }
-    Ok(())
+/// Reverts one block of `path`'s uncommitted diff, the one the diff pane showed as block `index` with `header`
+/// ("@@ -3,2 +3,4 @@"). If the file changed since and that block isn't there anymore, nothing is touched.
+/// A file git doesn't know yet is a single block: the whole file goes.
+pub fn discard_hunk(path: &str, index: usize, header: &str, repo: &Path) -> Result<(), String> {
+    exclusive(repo, || {
+        let text = git::patch(git::Span::Worktree, &[path], 3, repo)?;
+        let Some(file) = patch::parse(&text).into_iter().next() else {
+            return if index == 0 { discard_file(path, repo) } else { Err(changed_since(path)) };
+        };
+        let hunk = file.hunks.get(index).filter(|h| h.header == header).ok_or_else(|| changed_since(path))?;
+        let patch: String = file.header.iter().map(|l| format!("{l}\n")).chain([hunk.text()]).collect();
+        // Index and working tree agree on this file: revert it in both; otherwise only in the working tree.
+        let in_sync = run(&["diff", "--quiet", "--", path], repo).is_ok();
+        let args: &[&str] = if in_sync { &["apply", "-R", "--index"] } else { &["apply", "-R"] };
+        write_input(args, repo, &patch).map(|_| ())
+    })
+}
+
+fn changed_since(path: &str) -> String {
+    format!("{path} changed since it was shown: nothing was discarded. Look at it again and retry.")
 }
 
 /// Adds files to the index (new, modified or deleted alike).
 pub fn stage(paths: &[String], repo: &Path) -> Result<(), String> {
     let args: Vec<&str> = ["add", "-A", "--"].into_iter().chain(paths.iter().map(String::as_str)).collect();
-    run(&args, repo).map(|_| ())
+    exclusive(repo, || write(&args, repo).map(|_| ()))
 }
 
 /// Takes files out of the index; their changes stay in the working tree.
 pub fn unstage(paths: &[String], repo: &Path) -> Result<(), String> {
     let args: Vec<&str> = ["reset", "-q", "--"].into_iter().chain(paths.iter().map(String::as_str)).collect();
-    run(&args, repo).map(|_| ())
+    exclusive(repo, || write(&args, repo).map(|_| ()))
 }
 
 /// Commits what's staged. With `push`, pushes the current branch too, setting its upstream the first time.
 pub fn commit(message: &str, push: bool, repo: &Path) -> Result<String, String> {
-    run_input(&["commit", "-q", "-F", "-"], repo, Some(message))?;
-    if !push {
-        return Ok("Committed".into());
-    }
-    // The commit is done either way: a failed push is reported as a status, not as an error that keeps the form filled.
-    let branch = run(&["symbolic-ref", "--short", "HEAD"], repo)?.trim().to_string();
-    let pushed = if run(&["rev-parse", "--abbrev-ref", "@{u}"], repo).is_ok() {
-        run(&["push"], repo)
-    } else {
-        run(&["push", "-u", "origin", &branch], repo)
-    };
-    Ok(match pushed {
-        Ok(_) => format!("Committed and pushed {branch}"),
-        Err(e) => format!("Committed, but the push failed: {}", e.lines().next().unwrap_or("unknown error")),
+    exclusive(repo, || {
+        let branch = current_branch(repo);
+        if push && branch.is_none() {
+            return Err("No branch checked out (detached HEAD): nothing to push to. Commit without pushing.".into());
+        }
+        write_input(&["commit", "-q", "-F", "-"], repo, message)?;
+        let Some(branch) = branch.filter(|_| push) else { return Ok("Committed".into()) };
+        // The commit is done either way: a failed push is reported as a status, not as an error that keeps the form filled.
+        let pushed = if read_opt(&["rev-parse", "--abbrev-ref", "@{u}"], repo).is_some() {
+            write(&["push"], repo)
+        } else {
+            write(&["push", "-u", DEFAULT_REMOTE, &branch], repo)
+        };
+        Ok(match pushed {
+            Ok(_) => format!("Committed and pushed {branch}"),
+            Err(e) => format!("Committed, but the push failed: {}", e.lines().next().unwrap_or("unknown error")),
+        })
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::testutil::Repo;
+
     #[test]
     fn delete_branch_keeps_the_checked_out_one() {
-        let repo = crate::testutil::Repo::new("delete");
+        let repo = Repo::new("delete");
         repo.commit("a.txt", "1", "init");
         repo.git(&["branch", "done"]);
         assert!(super::delete_branch("main", false, repo.path()).is_err());
@@ -466,7 +510,7 @@ mod tests {
 
     #[test]
     fn undo_moves_back_only_unpushed_unchanged_branches() {
-        let repo = crate::testutil::Repo::new("undo");
+        let repo = Repo::new("undo");
         repo.commit("a.txt", "1", "one");
         let one = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
         repo.commit("a.txt", "2", "two");
@@ -481,9 +525,9 @@ mod tests {
 
     #[test]
     fn start_feature_updates_the_base_first() {
-        let server = crate::testutil::Repo::new("start-server");
+        let server = Repo::new("start-server");
         server.commit("a.txt", "1", "one");
-        let repo = crate::testutil::Repo::new("start-local");
+        let repo = Repo::new("start-local");
         repo.git(&["remote", "add", "origin", &server.path().display().to_string()]);
         repo.git(&["fetch", "-q", "origin"]);
         repo.git(&["reset", "-q", "--hard", "origin/main"]);
@@ -495,5 +539,35 @@ mod tests {
         assert_eq!(repo.git(&["rev-parse", "HEAD"]), tip);
         assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "feat/x");
         assert!(super::start_feature("bad name", "main", None, repo.path()).is_err());
+    }
+
+    #[test]
+    fn discard_hunk_reverts_only_the_block_shown() {
+        let repo = Repo::new("discard-hunk");
+        let lines: String = (1..=20).map(|n| format!("{n}\n")).collect();
+        repo.commit("a.txt", &lines, "init");
+        std::fs::write(repo.path().join("a.txt"), lines.replace("2\n", "two\n").replace("19\n", "nineteen\n")).unwrap();
+        assert!(super::discard_hunk("a.txt", 1, "@@ -1,5 +1,5 @@", repo.path()).is_err(), "wrong header: untouched");
+        let text = crate::git::patch(crate::git::Span::Worktree, &["a.txt"], 3, repo.path()).unwrap();
+        let header = crate::patch::parse(&text)[0].hunks[1].header.to_string();
+        super::discard_hunk("a.txt", 1, &header, repo.path()).unwrap();
+        let now = std::fs::read_to_string(repo.path().join("a.txt")).unwrap();
+        assert!(now.contains("two\n") && now.contains("\n19\n"));
+    }
+
+    #[test]
+    fn carry_brings_changes_and_shelve_restores_them() {
+        let repo = Repo::new("wip-modes");
+        repo.commit("a.txt", "1", "init");
+        repo.git(&["branch", "other"]);
+        std::fs::write(repo.path().join("a.txt"), "2").unwrap();
+        super::checkout("other", Some(super::WipMode::Shelve), repo.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(repo.path().join("a.txt")).unwrap(), "1");
+        let back = super::checkout("main", None, repo.path()).unwrap();
+        assert!(back.contains("restored its saved changes"), "{back}");
+        assert_eq!(std::fs::read_to_string(repo.path().join("a.txt")).unwrap(), "2");
+        super::checkout("other", Some(super::WipMode::Carry), repo.path()).unwrap();
+        assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "other");
+        assert_eq!(std::fs::read_to_string(repo.path().join("a.txt")).unwrap(), "2");
     }
 }

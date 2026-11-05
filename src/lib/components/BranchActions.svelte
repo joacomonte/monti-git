@@ -30,7 +30,7 @@
       <ChevronLeft size={12} strokeWidth={2.5} />Base branch
     </button>
     <div class="flex max-h-[260px] flex-col gap-0.5 overflow-auto">
-      {#each model.localBranches as branch (branch)}
+      {#each model.history.local as branch (branch)}
         <button class="base flex h-[30px] items-center justify-between gap-2 rounded-[10px] px-2.5 text-[13px]" id="branch-actions-base-{branch}"
           onclick={run(() => model.setBaseBranch(branch))}>
           <span class="truncate">{branch}</span>

@@ -4,7 +4,8 @@
   import { Check, ChevronDown, ChevronUp, LoaderCircle, X } from "@lucide/svelte";
   import { fade } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
-  import { prefs, type RepoModel } from "$lib/model.svelte";
+  import type { RepoModel } from "$lib/model.svelte";
+  import { prefs } from "$lib/prefs";
 
   let { model }: { model: RepoModel } = $props();
   let folded = $state(prefs.get("actionToastFolded", false));

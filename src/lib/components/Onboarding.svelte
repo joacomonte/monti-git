@@ -2,28 +2,29 @@
 <script lang="ts">
   import { ArrowRight, FolderGit2, FolderTree, Star } from "@lucide/svelte";
   import type { Component } from "svelte";
-  import { api, type RepoEntry } from "$lib/api";
+  import type { RepoEntry } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
+  import { pickFolders } from "$lib/dialogs";
+  import { baseName } from "$lib/format";
 
   let { model }: { model: RepoModel } = $props();
   let added = $state<RepoEntry[]>([]); // non-empty = favorites step
 
   async function add(kind: "repo" | "folder") {
     model.onboarding = true; // stay mounted once hasSources flips, so the favorites step can show
-    await model.addRepos(kind);
-    const { folders, repos, hidden } = model.sources;
-    const list = model.hasSources ? (await api.listRepos(folders, repos)).filter((r) => !hidden.includes(r.path)) : [];
+    await model.addRepos(kind, await pickFolders(kind));
+    const list = model.hasSources ? await model.listedRepos() : [];
     if (list.length > 1) added = list.sort((a, b) => b.lastActivity - a.lastActivity);
     else finish(list);
   }
 
   function finish(list = added) {
     model.onboarding = false;
-    model.setShowGraph(true);
+    model.showGraph = true;
     if (!model.repo && list.length) model.open((list.find((r) => model.favorites.includes(r.path)) ?? list[0]).path);
   }
 
-  const nameOf = (path: string) => path.split(/[\\/]/).pop();
+  const nameOf = baseName;
   const starred = $derived(added.filter((r) => model.favorites.includes(r.path)).length);
 </script>
 

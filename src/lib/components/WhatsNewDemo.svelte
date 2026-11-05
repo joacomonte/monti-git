@@ -206,6 +206,12 @@
     <div class="file ts-hit">● db/v8_migration.sql <span class="ts-n">4</span></div>
     <div class="file ts-out">○ app/routes.ts</div>
     <div class="file ts-hit">● api/sims.ts <span class="ts-n">2</span></div>
+  {:else if name === "code-search"}
+    <!-- ⌘K in Code mode: a line found in two repos; picking it opens the file on that line, with who wrote it. -->
+    <div class="ts-bar"><span class="typed">v8 migration</span><span class="caret"></span><span class="ts-seg"><em>Commits</em><em class="on">Code</em></span></div>
+    <div class="file cs-hit">db/v8_migration.sql:1 <span class="env">✓ main</span></div>
+    <div class="file cs-hit">app/run.ts:12 <span class="env">✓ qa</span></div>
+    <div class="cs-line"><span class="cs-code">-- V8 Migration</span><span class="cs-blame">a1b2c3d · Ana · 2d ago</span></div>
   {/if}
 </div>
 
@@ -496,5 +502,9 @@
   .ts-n { padding: 0 5px; border-radius: 99px; font-size: 9.5px; font-weight: 600; color: var(--primary); background: color-mix(in oklab, var(--primary) 16%, transparent); animation-name: fl-show; }
   .ts-out { overflow: hidden; animation-name: fl-fold; }
   .ts-bar .typed { width: auto; animation-name: none; }
+  .cs-hit { animation-name: fl-show; }
+  .cs-line { display: flex; gap: 8px; margin-top: 4px; padding: 2px 6px; border-radius: 4px; font-family: var(--font-mono, ui-monospace); animation-name: fl-show;
+    background: color-mix(in oklab, var(--primary) 16%, transparent); box-shadow: inset 2px 0 0 var(--primary); }
+  .cs-blame { margin-left: auto; font-family: var(--font-sans, system-ui); color: var(--muted-foreground); }
   @media (prefers-reduced-motion: reduce) { .demo * { animation: none !important; } }
 </style>

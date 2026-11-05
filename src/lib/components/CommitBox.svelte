@@ -3,6 +3,7 @@
 <script lang="ts">
   import { ChevronDown, CloudUpload, GitCommitHorizontal, PenLine, Sparkles } from "@lucide/svelte";
   import { api } from "$lib/api";
+  import { plural } from "$lib/format";
   import type { RepoModel } from "$lib/model.svelte";
   import * as Popover from "$lib/components/ui/popover";
   import MessagePrompt from "./MessagePrompt.svelte";
@@ -14,24 +15,25 @@
   let showMenu = $state(false);
   let showAi = $state<"pick" | "new" | "amend" | null>(null); // the "Message for AI" dialog: pick a mode, or start on one
 
-  const stagedCount = $derived(Object.keys(model.changes).filter((p) => model.staged.has(p)).length);
   const total = $derived(Object.keys(model.changes).length);
-  const canCommit = $derived(stagedCount > 0 && title.trim() !== "" && !model.isSyncing);
+  const canCommit = $derived(model.stagedCount > 0 && title.trim() !== "" && !model.isSyncing);
 
   $effect(() => {
     const repo = model.repo;
     if (!repo) return;
+    let stale = false;
     api.lastCommitMessage(repo).then((message) => {
+      if (stale) return;
       const [first, ...rest] = message.split("\n");
       previous = { title: first, description: rest.join("\n").trim() };
-    });
+    }, () => {});
+    return () => (stale = true);
   });
 
   async function commit(push: boolean) {
     showMenu = false;
     if (!canCommit) return;
-    const message = title.trim() + (description.trim() ? "\n\n" + description.trim() : "") + "\n";
-    if (await model.commit(message, push)) {
+    if (await model.commit(title, description, push)) {
       previous = { title: title.trim(), description: description.trim() };
       title = description = "";
     }
@@ -64,7 +66,7 @@
     class="h-[64px] resize-none rounded-md bg-quinary px-2 py-1.5 text-[12px] outline-none focus:ring-2 focus:ring-primary/40"></textarea>
   <div class="flex items-center gap-2">
     <span class="flex-1 truncate text-[11px] text-muted-foreground" id="commit-staged-count">
-      {stagedCount ? `${stagedCount} of ${total} file${total === 1 ? "" : "s"} staged` : "Check files below to stage them"}
+      {model.stagedCount ? `${model.stagedCount} of ${plural(total, "file")} staged` : "Check files below to stage them"}
     </span>
     <button class="ai-message" id="commit-message-for-ai" onclick={() => (showAi = "pick")}><Sparkles size={12} />Message for AI</button>
     {#if showAi}<MessagePrompt {model} start={showAi === "pick" ? null : showAi} onclose={() => (showAi = null)} />{/if}
@@ -73,10 +75,10 @@
       <button class="px-3 text-[12px] font-semibold" id="commit-button" disabled={!canCommit} onclick={() => commit(false)}
         title="Commit the staged files (⌘↩)">Commit</button>
       <Popover.Root bind:open={showMenu}>
-        <Popover.Trigger class="border-l border-white/25 px-1.5" id="commit-menu" disabled={!canCommit} title="More commit options">
+        <Popover.Trigger class="border-l border-white/25 px-1.5" id="commit-options" disabled={!canCommit} title="More commit options">
           <ChevronDown size={11} strokeWidth={3} />
         </Popover.Trigger>
-        <Popover.Content align="end" class="w-auto p-1">
+        <Popover.Content align="end" class="w-auto p-1" id="commit-options-menu">
           <button class="option flex h-8 items-center gap-2 rounded-md px-2.5 text-[12px]" id="commit-and-push" onclick={() => commit(true)}
             title="Commit the staged files, then push them to the server (sets the upstream if it has none)">
             <CloudUpload size={13} />Commit & Push

@@ -5,6 +5,11 @@
   type Props = { title: string; hint: string; id: string; label?: boolean; onconfirm: () => void };
   let { title, hint, id, label = false, onconfirm }: Props = $props();
   let isConfirming = $state(false);
+  /** Spans, not buttons (they sit inside the tree's row <button>s): Enter and Space work like a click. */
+  const activate = (action: () => void) => ({
+    onclick: (e: MouseEvent) => { e.stopPropagation(); action(); },
+    onkeydown: (e: KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); action(); } },
+  });
 
   $effect(() => {
     if (!isConfirming) return;
@@ -15,17 +20,14 @@
 
 {#if isConfirming}
   <span class="flex shrink-0 items-center gap-1">
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <span role="button" tabindex="0" class="circle bg-quinary text-muted-foreground" title="Cancel" id="{id}-cancel"
-      onclick={(e) => { e.stopPropagation(); isConfirming = false; }}><X size={8} strokeWidth={3.5} /></span>
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+      {...activate(() => (isConfirming = false))}><X size={8} strokeWidth={3.5} /></span>
     <span role="button" tabindex="0" class="circle bg-primary text-white" title="Confirm. This can't be undone." id="{id}-confirm"
-      onclick={(e) => { e.stopPropagation(); isConfirming = false; onconfirm(); }}><Check size={8} strokeWidth={3.5} /></span>
+      {...activate(() => { isConfirming = false; onconfirm(); })}><Check size={8} strokeWidth={3.5} /></span>
   </span>
 {:else}
-  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <span role="button" tabindex="0" class="flex h-[18px] shrink-0 items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground {label ? 'px-[7px]' : 'px-1'}"
-    title={hint} {id} onclick={(e) => { e.stopPropagation(); isConfirming = true; }}>
+    title={hint} {id} {...activate(() => (isConfirming = true))}>
     <Undo2 size={10} strokeWidth={2.5} />{#if label}{title}{/if}
   </span>
 {/if}

@@ -3,20 +3,21 @@
   // environments (qa, develop…: detected by name until the user picks).
   import { Check, ChevronDown, Search } from "@lucide/svelte";
   import * as Popover from "$lib/components/ui/popover";
-  import { prefs, type RepoModel } from "$lib/model.svelte";
+  import type { RepoModel } from "$lib/model.svelte";
+  import { localName } from "$lib/refs";
+  import Segmented from "./Segmented.svelte";
 
   let { model }: { model: RepoModel } = $props();
   let query = $state("");
   let tab = $state<"base" | "environments">("base");
 
-  const localName = (ref: string) => (/^(origin|upstream)\//.test(ref) ? ref.slice(ref.indexOf("/") + 1) : ref);
-  const base = $derived(localName(model.base ?? ""));
-  const chosen = $derived(model.environments.map(localName));
-  // Re-read whenever a reload brings new environments (prefs itself isn't reactive).
-  const custom = $derived(model.environments && model.repo != null && model.repo in prefs.get<Record<string, string[]>>("environments", {}));
+  const base = $derived(localName(model.history.base ?? ""));
+  const chosen = $derived(model.history.environments.map(localName));
+  // Re-read whenever a reload brings new environments (the picks live in prefs, which isn't reactive).
+  const custom = $derived(model.history.environments && model.customEnvironments);
   const matches = (name: string) => !query.trim() || name.toLowerCase().includes(query.trim().toLowerCase());
-  const bases = $derived(model.localBranches.filter(matches));
-  const environments = $derived([...chosen, ...model.allBranches.filter((name) => name !== base && !chosen.includes(name))].filter(matches));
+  const bases = $derived(model.history.local.filter(matches));
+  const environments = $derived([...chosen, ...model.history.allBranches.filter((name) => name !== base && !chosen.includes(name))].filter(matches));
 
   function toggle(name: string) {
     model.setEnvironments(chosen.includes(name) ? chosen.filter((n) => n !== name) : [...chosen, name]);
@@ -31,10 +32,8 @@
     <ChevronDown size={12} class="shrink-0" />
   </Popover.Trigger>
   <Popover.Content align="start" class="w-[280px] p-1.5" id="compare-panel">
-    <div class="tabs">
-      <button class:on={tab === "base"} id="compare-tab-base" onclick={() => (tab = "base")}>Base branch</button>
-      <button class:on={tab === "environments"} id="compare-tab-environments" onclick={() => (tab = "environments")}>Environments</button>
-    </div>
+    <div class="mx-0.5 mb-1.5"><Segmented id="compare-tab" stretch value={tab} onchange={(v) => (tab = v)}
+      options={[{ value: "base", label: "Base branch" }, { value: "environments", label: "Environments" }]} /></div>
     <label class="search"><Search size={12} /><input id="compare-search" placeholder="Filter branches" bind:value={query} /></label>
     <div class="max-h-[280px] overflow-y-auto">
       {#if tab === "base"}
@@ -66,9 +65,6 @@
   :global(.env-trigger:hover), :global(.env-trigger[data-state="open"]) { color: var(--foreground); background: oklch(0.5 0 0 / 0.1); }
   .base { flex-shrink: 0; font-weight: 600; color: var(--muted-foreground); }
   .names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tabs { display: flex; gap: 2px; margin: 0 2px 6px; padding: 2px; border-radius: 8px; background: oklch(0.5 0 0 / 0.08); }
-  .tabs button { flex: 1; height: 24px; border-radius: 6px; font-size: 12px; font-weight: 600; color: var(--muted-foreground); }
-  .tabs button.on { color: var(--foreground); background: oklch(0.5 0 0 / 0.16); }
   .reset { display: block; margin: 6px 8px 2px; font-size: 11.5px; color: var(--primary); }
   .reset:hover { text-decoration: underline; }
   .search { display: flex; align-items: center; gap: 6px; height: 28px; margin: 0 2px 4px; padding: 0 8px; border-radius: 7px; color: var(--tertiary); background: oklch(0.5 0 0 / 0.08); }

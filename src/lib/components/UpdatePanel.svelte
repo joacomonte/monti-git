@@ -4,17 +4,19 @@
   import { ArrowUpDown, CircleCheck, GitMerge, LoaderCircle, TriangleAlert } from "@lucide/svelte";
   import type { Card } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
+  import { localName } from "$lib/refs";
+  import { plural } from "$lib/format";
   import { Button } from "$lib/components/ui/button";
   import ActionRow from "./ActionRow.svelte";
 
-  type Props = { card: Card; model: RepoModel; isCurrent: boolean; dismiss: () => void };
-  let { card, model, isCurrent, dismiss }: Props = $props();
+  type Props = { card: Card; model: RepoModel; dismiss: () => void };
+  let { card, model, dismiss }: Props = $props();
+  const isCurrent = $derived(model.isCurrent(card.ref));
   let step = $state<"choose" | "working" | "done" | "pushed">("choose");
   let error = $state<string | null>(null);
   let usedRebase = $state(false);
 
-  const localName = (ref: string) => (/^(origin|upstream)\//.test(ref) ? ref.slice(ref.indexOf("/") + 1) : ref);
-  const parentName = $derived(model.base ? localName(model.base) : "its base");
+  const parentName = $derived(model.history.base ? localName(model.history.base) : "its base");
   const isPushed = $derived(card.hasUpstream);
   const n = $derived(card.behindBase);
 
@@ -22,23 +24,19 @@
     usedRebase = rebase;
     error = null;
     step = "working";
-    try {
-      await model.updateFromParent(card, rebase);
-      step = "done";
-    } catch (e) {
-      error = String(e);
+    const result = await model.updateFromParent(card, rebase);
+    if (result.ok) step = "done";
+    else {
+      error = result.error;
       step = "choose";
     }
   }
 
   async function push() {
     error = null;
-    try {
-      await model.forcePush(card.local);
-      step = "pushed";
-    } catch (e) {
-      error = String(e);
-    }
+    const result = await model.forcePush(card.local);
+    if (result.ok) step = "pushed";
+    else error = result.error;
   }
 </script>
 
@@ -55,9 +53,9 @@
 <div class="flex w-[420px] flex-col gap-3 p-1.5">
   {#if step === "choose"}
     <div class="flex flex-col gap-1 px-2">
-      <span class="text-[13px] font-semibold">Bring in {parentName}'s {n} new commit{n === 1 ? "" : "s"}</span>
+      <span class="text-[13px] font-semibold">Bring in {parentName}'s {plural(n, "new commit")}</span>
       <span class="text-[12px] leading-snug text-muted-foreground">
-        Your teammates added {n} change{n === 1 ? "" : "s"} to {parentName} after you created this branch.
+        Your teammates added {plural(n, "change")} to {parentName} after you created this branch.
         Bring them in so you work with the latest code and your PR doesn't hit surprises. Your own work isn't lost.
       </span>
     </div>

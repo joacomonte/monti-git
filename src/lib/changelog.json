@@ -1,5 +1,16 @@
 [
   {
+    "version": "1.3.0",
+    "changes": [
+      { "kind": "new", "title": "Search code in every repo", "demo": "code-search", "detail": "⌘K now finds lines of code too, in the current branch, the base or every branch of each repo. Picking one opens the file on that line, with its commit, author and date." },
+      { "kind": "improved", "title": "One action at a time, per repo", "detail": "Git actions on the same repo now wait for each other, so a background sync can no longer get in the middle of a checkout." },
+      { "kind": "improved", "title": "Says when results are cut", "detail": "Very long diffs and searches with many matches tell you only the first ones are shown." },
+      { "kind": "improved", "title": "Folders stay as you left them", "detail": "Folders you collapse in the file tree stay collapsed when the graph refreshes." },
+      { "kind": "improved", "title": "Smaller and faster", "detail": "A lighter app, fewer git processes per refresh, and one look for every switch control." },
+      { "kind": "fixed", "title": "Safer discards and searches", "detail": "Discarding a block checks the file didn't change since you saw it, file names with unusual characters are found, and a repo removed from the sidebar doesn't reopen." }
+    ]
+  },
+  {
     "version": "1.2.0",
     "changes": [
       { "kind": "new", "title": "Search in the file tree", "demo": "tree-search", "detail": "Find files by name, by lines or both. With Show changes only, lines come from the diff or from the whole changed files; with every file, from the whole repo at that commit." },

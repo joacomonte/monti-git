@@ -1,4 +1,4 @@
-# Push a tag like v0.2.0 (same version as src-tauri/tauri.conf.json, with its entry in src/lib/changelog.json):
+# Push a tag like v0.2.0 (same version as src-tauri/Cargo.toml, with its entry in src/lib/changelog.json):
 # a draft release is created, Mac and Windows build in parallel and upload to it, then the last job writes
 # latest.json (which installed apps check at launch) and publishes the release.
 name: release

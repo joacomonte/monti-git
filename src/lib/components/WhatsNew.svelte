@@ -11,7 +11,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import type { Component } from "svelte";
   import changelog from "$lib/changelog.json";
-  import { prefs } from "$lib/model.svelte";
+  import { prefs } from "$lib/prefs";
 
   type Kind = "new" | "improved" | "fixed";
   type Release = { version: string; changes: { kind: Kind; title: string; detail: string; demo?: string }[] }; // demo: see WhatsNewDemo
@@ -37,12 +37,12 @@
 
   getVersion().then((version) => {
     current = version;
-    whatsNew.unread = prefs.get<string | null>("notesRead", null) !== version && notesOf(version).length > 0;
+    whatsNew.unread = prefs.get("notesRead", null) !== version && notesOf(version).length > 0;
     whatsNew.open = () => {
       from = null;
       releases = notesOf(version);
     };
-    const seen = prefs.get<string | null>("lastSeenVersion", null);
+    const seen = prefs.get("lastSeenVersion", null);
     prefs.set("lastSeenVersion", version);
     // Nothing saved: a fresh install shows nothing; someone updating from 0.1.5 (before this screen existed) has other
     // prefs already, so they get this version's notes.
