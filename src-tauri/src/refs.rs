@@ -76,31 +76,77 @@ struct Listed {
     full: String,
     author: String,
     email: String,
+    date: i64, // its newest commit, unix seconds
+    subject: String,
+    tip: String,
 }
 
 fn list_branches(repo: &Path) -> Vec<Listed> {
     let out = read_opt(
-        &["for-each-ref", "--sort=-committerdate", "--format=%(refname)%09%(authorname)%09%(authoremail:trim)", "refs/heads", "refs/remotes"],
+        &["for-each-ref", "--sort=-committerdate", "--format=%(refname)%09%(authorname)%09%(authoremail:trim)%09%(committerdate:unix)%09%(objectname)%09%(contents:subject)", "refs/heads", "refs/remotes"],
         repo,
     )
     .unwrap_or_default();
     out.lines()
         .filter_map(|line| {
             let mut f = line.split('\t');
-            let (full, author, email) = (f.next()?, f.next()?, f.next()?);
-            (!is_alias(short_name(full))).then(|| Listed { full: full.into(), author: author.into(), email: email.into() })
+            let (full, author, email, date, tip) = (f.next()?, f.next()?, f.next()?, f.next()?, f.next()?);
+            let subject = f.next().unwrap_or_default();
+            (!is_alias(short_name(full))).then(|| Listed {
+                full: full.into(), author: author.into(), email: email.into(), date: date.parse().unwrap_or(0), subject: subject.into(), tip: tip.into(),
+            })
         })
         .collect()
 }
 
-/// Local and remote branches (full refnames) whose newest commit was authored by the identity git commits with.
-pub fn my_branches(repo: &Path) -> Vec<String> {
+/// Whether a branch's newest commit was authored by the identity git commits with in `repo`.
+fn mine(repo: &Path) -> impl Fn(&Listed) -> bool {
     // "Ana <ana@x.com> 1700000000 +0100": the effective name and email, wherever they are configured.
     let ident = run(&["var", "GIT_AUTHOR_IDENT"], repo).unwrap_or_default();
     let (name, rest) = ident.split_once(" <").unwrap_or_default();
     let email = rest.split_once('>').map(|(e, _)| e).unwrap_or_default();
-    let same = |a: &str, b: &str| !b.is_empty() && a.eq_ignore_ascii_case(b);
-    list_branches(repo).into_iter().filter(|b| same(&b.author, name) || same(&b.email, email)).map(|b| b.full).collect()
+    let (name, email) = (name.to_string(), email.to_string());
+    move |b: &Listed| {
+        let same = |a: &str, b: &str| !b.is_empty() && a.eq_ignore_ascii_case(b);
+        same(&b.author, &name) || same(&b.email, &email)
+    }
+}
+
+/// Local and remote branches (full refnames) whose newest commit is yours.
+pub fn my_branches(repo: &Path) -> Vec<String> {
+    let is_mine = mine(repo);
+    list_branches(repo).into_iter().filter(|b| is_mine(b)).map(|b| b.full).collect()
+}
+
+/// A branch with a commit since `since` (unix seconds), newest first, for the dashboard. Named by the local branch when
+/// there is one (that's what Commit and Push act on), else by its copy on the server; dated by whichever copy is newest,
+/// so a teammate's push shows even if yours is older. `only_mine`: only those whose newest commit is yours. `keep`: a
+/// branch that shows whatever its date (the checked-out one, with uncommitted work).
+#[derive(serde::Serialize, Clone)]
+pub struct Recent {
+    pub name: String, // "x", or "origin/x" when there's no local branch
+    pub tip: String,
+    pub date: i64,
+    pub author: String,
+    pub subject: String,
+}
+
+pub fn recent(repo: &Path, since: i64, only_mine: bool, keep: Option<&str>) -> Vec<Recent> {
+    let listed = list_branches(repo);
+    let is_mine = mine(repo);
+    let local: HashSet<&str> = listed.iter().filter_map(|b| b.full.strip_prefix("refs/heads/")).collect();
+    let mut seen: HashSet<&str> = HashSet::new();
+    listed
+        .iter()
+        // Sorted newest first: the first copy of a name is its newest.
+        .filter(|b| seen.insert(local_name(short_name(&b.full))))
+        .filter(|b| keep == Some(local_name(short_name(&b.full))) || (b.date >= since && (!only_mine || is_mine(b))))
+        .map(|b| {
+            let short = short_name(&b.full);
+            let name = if local.contains(local_name(short)) { local_name(short) } else { short };
+            Recent { name: name.into(), tip: b.tip.clone(), date: b.date, author: b.author.clone(), subject: b.subject.clone() }
+        })
+        .collect()
 }
 
 /// What the graph needs to know about branches besides the log.

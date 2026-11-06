@@ -493,25 +493,69 @@ fn discard_file(path: &str, repo: &Path) -> Result<(), String> {
     if run(&["cat-file", "-e", &format!("HEAD:{path}")], repo).is_ok() {
         write(&["checkout", "HEAD", "--", path], repo)?;
     } else if run(&["ls-files", "--error-unmatch", "--", path], repo).is_ok() {
-        write(&["rm", "-f", "--", path], repo)?; // staged new file
+        // A staged new file goes. A repo inside this one (staged as a link to it) only leaves the index: its folder
+        // has its own history, and `git rm -f` refuses it anyway without a .gitmodules entry.
+        let nested = run(&["ls-files", "-s", "--", path], repo).is_ok_and(|s| s.starts_with("160000"));
+        if nested { write(&["rm", "--cached", "-f", "-q", "--", path], repo)? } else { write(&["rm", "-f", "--", path], repo)? };
     } else {
-        std::fs::remove_file(git::repo_file(repo, path)?).map_err(|e| e.to_string())?; // untracked
+        // Untracked: git has no copy, so it only goes through `delete_untracked` (and its dialog).
+        return Err(format!("{path} is untracked: deleting it can't be undone, use Delete."));
     }
     Ok(())
 }
 
-/// Working tree and index back to HEAD, untracked files deleted (ignored ones stay).
+/// Working tree and index back to HEAD. Untracked files stay: deleting them is `delete_untracked`, after its dialog.
 pub fn discard_all(repo: &Path) -> Result<(), String> {
+    exclusive(repo, || write(&["reset", "--hard", "HEAD"], repo).map(|_| ()))
+}
+
+/// What deleting an untracked path loses, for its dialog. A repo inside this one says what only it has.
+#[derive(Serialize)]
+pub struct Doomed {
+    path: String,
+    nested: Option<Nested>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Nested {
+    unpushed: u32,    // commits on no remote: lost for good
+    uncommitted: u32, // its own changed files
+    has_remote: bool,
+}
+
+pub fn untracked_check(paths: &[String], repo: &Path) -> Result<Vec<Doomed>, String> {
+    paths
+        .iter()
+        .map(|path| {
+            let dir = git::repo_file(repo, path)?;
+            let nested = dir.join(".git").exists().then(|| Nested {
+                unpushed: run(&["rev-list", "--count", "HEAD", "--not", "--remotes"], &dir).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0),
+                uncommitted: git::status(&dir).map_or(0, |s| s.files.len() as u32),
+                has_remote: run(&["remote"], &dir).is_ok_and(|s| !s.trim().is_empty()),
+            });
+            Ok(Doomed { path: path.clone(), nested })
+        })
+        .collect()
+}
+
+/// Deletes untracked files and folders from disk, a repo inside this one included (`git clean -ff`: it never touches
+/// tracked or ignored files, and it shows in Logs). Only paths git lists as untracked right now: anything that became
+/// tracked since the dialog is refused and nothing is deleted.
+pub fn delete_untracked(paths: &[String], repo: &Path) -> Result<(), String> {
     exclusive(repo, || {
-        write(&["reset", "--hard", "HEAD"], repo)?;
-        write(&["clean", "-fdq"], repo)?;
-        Ok(())
+        let untracked = git::status(repo)?.untracked;
+        if let Some(path) = paths.iter().find(|p| !untracked.contains(p)) {
+            return Err(format!("{path} isn't untracked anymore: nothing was deleted. Look at it again and retry."));
+        }
+        let args: Vec<&str> = ["clean", "-ffdq", "--"].into_iter().chain(paths.iter().map(String::as_str)).collect();
+        write(&args, repo).map(|_| ())
     })
 }
 
 /// Reverts one block of `path`'s uncommitted diff, the one the diff pane showed as block `index` with `header`
 /// ("@@ -3,2 +3,4 @@"). If the file changed since and that block isn't there anymore, nothing is touched.
-/// A file git doesn't know yet is a single block: the whole file goes.
+/// A file git doesn't know yet is refused: it only goes through `delete_untracked`.
 pub fn discard_hunk(path: &str, index: usize, header: &str, repo: &Path) -> Result<(), String> {
     exclusive(repo, || {
         let text = git::patch(git::Span::Worktree, &[path], 3, repo)?;
@@ -543,18 +587,65 @@ pub fn unstage(paths: &[String], repo: &Path) -> Result<(), String> {
     exclusive(repo, || write(&args, repo).map(|_| ()))
 }
 
-/// Commits what's staged. With `push`, pushes the current branch too, setting its upstream the first time.
-pub fn commit(message: &str, push: bool, repo: &Path) -> Result<String, String> {
+/// What a commit does with what's staged.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CommitKind {
+    New,
+    Amend,             // folded into the last commit
+    Squash(String),    // the branch's own commits since this base, plus what's staged, become one commit
+}
+
+/// Commits what's staged: a new commit, folded into the last one (`message` None keeps its message), or the branch
+/// squashed into one. Amending and squashing are refused once those commits are on the server: that would rewrite shared
+/// history. With `push`, pushes the current branch too, setting its upstream the first time.
+pub fn commit(message: Option<&str>, kind: &CommitKind, push: bool, repo: &Path) -> Result<String, String> {
     exclusive(repo, || {
         let branch = current_branch(repo);
         if push && branch.is_none() {
             return Err("No branch checked out (detached HEAD): nothing to push to. Commit without pushing.".into());
         }
-        write_input(&["commit", "-q", "-F", "-"], repo, message)?;
-        let Some(branch) = branch.filter(|_| push) else { return Ok("Committed".into()) };
+        let on_server = |rev: &str| !read_opt(&["branch", "-r", "--contains", rev], repo).unwrap_or_default().trim().is_empty();
+        let done = match (kind, message) {
+            (CommitKind::New, Some(message)) => {
+                write_input(&["commit", "-q", "-F", "-"], repo, message)?;
+                "Committed".to_string()
+            }
+            (CommitKind::New | CommitKind::Squash(_), None) => return Err("It needs a message".into()),
+            (CommitKind::Amend, message) => {
+                if on_server("HEAD") {
+                    return Err("The last commit is already pushed: amending it would rewrite shared history. Make a new commit instead.".into());
+                }
+                match message {
+                    None => write(&["commit", "-q", "--amend", "--no-edit"], repo)?,
+                    Some(message) => write_input(&["commit", "-q", "--amend", "-F", "-"], repo, message)?,
+                };
+                "Amended the last commit".to_string()
+            }
+            (CommitKind::Squash(base), Some(message)) => {
+                let fork = run(&["merge-base", base, "HEAD"], repo)?.trim().to_string();
+                let own: Vec<String> = run(&["rev-list", "HEAD", &format!("^{fork}")], repo)?.lines().map(String::from).collect();
+                if own.is_empty() {
+                    return Err(format!("Nothing to squash: the branch has no commits of its own since {base}"));
+                }
+                // One git call: of its own commits, those on no remote. Fewer than all = some are pushed.
+                let local = run(&["rev-list", "--count", "HEAD", &format!("^{fork}"), "--not", "--remotes"], repo)?;
+                if local.trim().parse::<usize>().ok() != Some(own.len()) {
+                    return Err("Some of these commits are already pushed: squashing them would rewrite shared history.".into());
+                }
+                let tip = run(&["rev-parse", "HEAD"], repo)?.trim().to_string();
+                write(&["reset", "-q", "--soft", &fork], repo)?;
+                if let Err(e) = write_input(&["commit", "-q", "-F", "-"], repo, message) {
+                    let _ = write(&["reset", "-q", "--soft", &tip], repo); // back as it was: nothing lost
+                    return Err(e);
+                }
+                format!("Squashed {} commits into one", own.len())
+            }
+        };
+        let Some(branch) = branch.filter(|_| push) else { return Ok(done) };
         // The commit is done either way: a failed push is reported as a status, not as an error that keeps the form filled.
         Ok(match push_branch(&branch, false, repo) {
-            Ok(Pushed::Done) => format!("Committed and pushed {branch}"),
+            Ok(Pushed::Done) => format!("{done} and pushed {branch}"),
             Ok(Pushed::Behind) => format!("Committed, but not pushed: the server has commits {branch} doesn't. Pull first."),
             Err(e) => format!("Committed, but the push failed: {}", e.lines().next().unwrap_or("unknown error")),
         })
@@ -564,6 +655,45 @@ pub fn commit(message: &str, push: bool, repo: &Path) -> Result<String, String> 
 #[cfg(test)]
 mod tests {
     use crate::testutil::Repo;
+
+    #[test]
+    fn amend_folds_into_the_last_commit_until_it_is_pushed() {
+        let server = Repo::new("amend-server");
+        server.commit("a.txt", "1", "init");
+        let repo = Repo::new("amend-local");
+        repo.git(&["remote", "add", "origin", &server.path().display().to_string()]);
+        repo.git(&["fetch", "-q", "origin"]);
+        repo.git(&["checkout", "-q", "-b", "feat", "origin/main", "--no-track"]);
+        repo.commit("b.txt", "1", "first try");
+        std::fs::write(repo.path().join("b.txt"), "2").unwrap();
+        repo.git(&["add", "b.txt"]);
+        let amend = super::CommitKind::Amend;
+        assert_eq!(super::commit(None, &amend, false, repo.path()).unwrap(), "Amended the last commit");
+        assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "first try", "no message: it keeps its own");
+        assert_eq!(repo.git(&["rev-list", "--count", "origin/main..HEAD"]).trim(), "1", "still one commit");
+        super::commit(Some("better title\n"), &amend, false, repo.path()).unwrap();
+        assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "better title");
+        repo.git(&["push", "-q", "origin", "feat"]);
+        assert!(super::commit(None, &amend, false, repo.path()).unwrap_err().contains("already pushed"));
+        assert!(super::commit(None, &super::CommitKind::New, false, repo.path()).is_err(), "a new commit needs a message");
+    }
+
+    #[test]
+    fn squash_makes_the_branch_one_commit_until_it_is_pushed() {
+        let repo = Repo::new("squash");
+        repo.commit("a.txt", "1", "init");
+        repo.git(&["checkout", "-q", "-b", "feat"]);
+        repo.commit("b.txt", "1", "wip");
+        repo.commit("b.txt", "2", "fix typo");
+        std::fs::write(repo.path().join("c.txt"), "1").unwrap();
+        repo.git(&["add", "c.txt"]);
+        let squash = super::CommitKind::Squash("main".into());
+        assert_eq!(super::commit(Some("feat: all of it\n"), &squash, false, repo.path()).unwrap(), "Squashed 2 commits into one");
+        assert_eq!(repo.git(&["rev-list", "--count", "main..feat"]).trim(), "1");
+        assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "feat: all of it");
+        assert_eq!(repo.git(&["show", "--format=", "--name-only", "HEAD"]).trim(), "b.txt\nc.txt", "the staged file went in too");
+        assert!(super::commit(None, &squash, false, repo.path()).is_err(), "it needs a message");
+    }
 
     #[test]
     fn undo_moves_back_only_unpushed_unchanged_branches() {
@@ -662,6 +792,40 @@ mod tests {
         super::discard_hunk("a.txt", 1, &header, repo.path()).unwrap();
         let now = std::fs::read_to_string(repo.path().join("a.txt")).unwrap();
         assert!(now.contains("two\n") && now.contains("\n19\n"));
+    }
+
+    #[test]
+    fn discard_keeps_a_repo_inside_the_repo() {
+        let repo = Repo::new("discard-nested");
+        repo.commit("a.txt", "1", "init");
+        let inner = Repo::new("discard-nested-inner");
+        inner.commit("b.txt", "1", "inner");
+        std::fs::rename(inner.path(), repo.path().join("inner")).unwrap();
+        repo.git(&["add", "-A", "--", "inner/"]);
+        super::discard("inner", repo.path()).unwrap();
+        assert!(repo.git(&["ls-files", "inner"]).is_empty(), "out of the index");
+        assert!(repo.path().join("inner/b.txt").exists(), "its folder stays");
+        assert!(super::discard("inner/", repo.path()).is_err(), "untracked: refused, not deleted");
+        assert!(repo.path().join("inner/b.txt").exists());
+    }
+
+    #[test]
+    fn untracked_go_only_on_purpose() {
+        let repo = Repo::new("delete-untracked");
+        repo.commit("a.txt", "1", "init");
+        std::fs::write(repo.path().join("a.txt"), "2").unwrap();
+        std::fs::write(repo.path().join("new.txt"), "x").unwrap();
+        let inner = Repo::new("delete-untracked-inner");
+        inner.commit("b.txt", "1", "inner");
+        std::fs::rename(inner.path(), repo.path().join("inner")).unwrap();
+        super::discard_all(repo.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(repo.path().join("a.txt")).unwrap(), "1");
+        assert!(repo.path().join("new.txt").exists(), "Discard all leaves untracked files");
+        let found = super::untracked_check(&["inner".into()], repo.path()).unwrap();
+        assert_eq!(found[0].nested.as_ref().map(|n| (n.unpushed, n.has_remote)), Some((1, false)), "its commit is on no remote");
+        assert!(super::delete_untracked(&["a.txt".into()], repo.path()).is_err(), "tracked: refused");
+        super::delete_untracked(&["new.txt".into(), "inner".into()], repo.path()).unwrap();
+        assert!(!repo.path().join("new.txt").exists() && !repo.path().join("inner").exists());
     }
 
     #[test]

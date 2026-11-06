@@ -1,8 +1,8 @@
 <!-- Branch/tag pill tinted with its graph line's color; the checked-out branch is filled. Next to a branch, plain-word chips
      say where it is: a cloud (on the server at this commit) or Local committed (not on the server at this commit). -->
 <script lang="ts">
-  import { CircleCheck, Cloud, GitBranch, Laptop, Tag } from "@lucide/svelte";
-  import { isHead as headRef, isRemote as remoteRef, isTag as tagRef, LOCAL_COMMITTED, localName, refName } from "$lib/refs";
+  import { CircleCheck, Cloud, Laptop, Tag } from "@lucide/svelte";
+  import { isHead as headRef, isRemote as remoteRef, isTag as tagRef, localName, refName } from "$lib/refs";
 
   // onclick: the pill becomes a button (with hover feedback) that opens the branch's options.
   type Props = { ref: string; isSynced?: boolean; color?: string; onclick?: (e: MouseEvent) => void; oncontextmenu?: (e: MouseEvent) => void };
@@ -16,12 +16,13 @@
   // The cloud already says "on the server", so drop the "origin/" prefix.
   const label = $derived(localName(name));
   const remoteName = $derived(isRemote ? name.slice(0, name.indexOf("/")) : "origin");
-  const Icon = $derived(isTag ? Tag : isHead ? CircleCheck : GitBranch);
+  // No icon for a plain branch (it's what every pill is): a check for the checked-out one, a tag for tags.
+  const Icon = $derived(isTag ? Tag : isHead ? CircleCheck : null);
 </script>
 
 <span class="group">
   <svelte:element this={onclick ? "button" : "span"} class="badge" class:head={isHead} class:clickable={onclick} style:--lane={color} id="ref-badge-{name.replace(/[^\w/.-]/g, '-')}" role={onclick ? "button" : undefined} {onclick} {oncontextmenu} onmousedown={onclick ? stop : undefined}>
-    <Icon size={12} strokeWidth={2.5} class="shrink-0 opacity-80" />
+    {#if Icon}<Icon size={12} strokeWidth={2.5} class="shrink-0 opacity-80" />{/if}
     <span class="truncate">{label}</span>
     <!-- On the server at this commit: a small cloud inside the pill (the collapsed card draws its own). -->
     {#if !isTag && (isRemote || isSynced)}
@@ -29,7 +30,7 @@
     {/if}
   </svelte:element>
   {#if !isTag && !isRemote && !isSynced}
-    <span class="where local" title={LOCAL_COMMITTED.title}><Laptop size={11} strokeWidth={2.5} />{LOCAL_COMMITTED.label}</span>
+    <span class="where local" title="Committed on this computer, not pushed yet (or the server has a different version)."><Laptop size={11} strokeWidth={2.5} />Local committed</span>
   {/if}
 </span>
 

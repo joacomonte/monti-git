@@ -2,7 +2,7 @@
 import type { CodeScope } from "./api";
 import type { Activity } from "./model.svelte";
 
-export type Sources = { folders: string[]; repos: string[]; hidden: string[] }; // hidden: repos of an added folder taken out of the list
+export type Sources = { folders: string[]; repos: string[] };
 export type SearchMode = "commits" | "code" | "both";
 
 export type TreeSearchMode = "names" | "lines" | "both";
@@ -20,8 +20,10 @@ type Prefs = {
   seenChanges: Record<string, string>; // repo -> fingerprint of the uncommitted changes the user has already seen
   treeShowsAll: boolean;
   treeFlat: boolean;
+  dashboardDays: number; // the dashboard shows branches with commits in this many days
   openWith: string | null; // id of the editor the file tree's "Open" uses; null = the default app
   treeWidth: number;
+  commitBoxHeight: number; // the commit box over the file tree, resizable
   diffHeight: number;
   treeSearchMode: TreeSearchMode;
   treeSearchDiffOnly: boolean;

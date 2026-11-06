@@ -52,6 +52,7 @@ pub struct Status {
     pub(crate) promotion: Vec<(String, u32, How)>,
     first_parent_count: u32, // its own line since the base: "N commits"
     has_upstream: bool,      // pushed: delete offers the server copy too, a rebase needs a force push
+    unpushed: u32,           // of its own commits, those the server doesn't have: ahead of its upstream (at most all), or all if never pushed
 }
 
 /// A ref's facts only change when it, the base or a target moves: kept per (repo, ref), keyed by those commits.
@@ -61,13 +62,14 @@ pub fn status(repo: &Path, refs: &[String], base: &str, targets: &[String]) -> V
     // One for-each-ref for every branch: its commit, its upstream and how far it is from the base (git 2.41+;
     // older git falls back to one rev-list per count below).
     let list = |ahead_behind: bool| {
-        let format = format!("--format=%(refname)%09%(objectname)%09%(upstream){}", if ahead_behind { format!("%09%(ahead-behind:{base})") } else { String::new() });
+        let format = format!("--format=%(refname)%09%(objectname)%09%(upstream)%09%(upstream:track,nobracket){}", if ahead_behind { format!("%09%(ahead-behind:{base})") } else { String::new() });
         read_opt(&["for-each-ref", &format, "refs/heads", "refs/remotes"], repo)
     };
     let listed = list(true).or_else(|| list(false)).unwrap_or_default();
     let mut tips: HashMap<&str, &str> = HashMap::new();
     let mut tracked: HashSet<&str> = HashSet::new();
     let mut ahead_behind: HashMap<&str, (u32, u32)> = HashMap::new();
+    let mut ahead_of_upstream: HashMap<&str, u32> = HashMap::new();
     for line in listed.lines() {
         let mut fields = line.split('\t');
         let (Some(full), Some(oid)) = (fields.next(), fields.next()) else { continue };
@@ -76,6 +78,10 @@ pub fn status(repo: &Path, refs: &[String], base: &str, targets: &[String]) -> V
         if fields.next().is_some_and(|up| !up.is_empty()) && full.starts_with("refs/heads/") {
             tracked.insert(name);
         }
+        // "ahead 2, behind 1", "behind 3", "gone" or empty (in sync).
+        let track = fields.next().unwrap_or_default();
+        let ahead = track.split(", ").find_map(|part| part.strip_prefix("ahead ")).and_then(|n| n.parse().ok()).unwrap_or(0);
+        ahead_of_upstream.insert(name, ahead);
         if let Some((ahead, behind)) = fields.next().and_then(|ab| ab.split_once(' ')) {
             if let (Ok(a), Ok(b)) = (ahead.parse(), behind.parse()) {
                 ahead_behind.insert(name, (a, b));
@@ -138,6 +144,7 @@ pub fn status(repo: &Path, refs: &[String], base: &str, targets: &[String]) -> V
             promotion,
             first_parent_count: count(&["--first-parent", &tip, &format!("^{base_oid}")], repo),
             has_upstream: false,
+            unpushed: 0,
         }
     });
     {
@@ -149,8 +156,11 @@ pub fn status(repo: &Path, refs: &[String], base: &str, targets: &[String]) -> V
     let mut built: HashMap<String, Status> = built.into_iter().map(|s| (s.reference.clone(), s)).collect();
     refs.iter()
         .filter_map(|r| cached.get(r).cloned().or_else(|| built.remove(r)))
+        // Not cached: a push moves the upstream, not the branch.
         .map(|mut s| {
-            s.has_upstream = tracked.contains(s.reference.as_str());
+            let name = s.reference.as_str();
+            s.has_upstream = tracked.contains(name);
+            s.unpushed = if refs::local_name(name) != name { 0 } else if s.has_upstream { ahead_of_upstream.get(name).copied().unwrap_or(0).min(s.first_parent_count) } else { s.first_parent_count };
             s
         })
         .collect()
@@ -161,6 +171,26 @@ mod tests {
     use super::How;
     use crate::testutil::Repo;
     use std::collections::HashMap;
+
+    /// A card counts the commits the server doesn't have: ahead of its upstream, or all its own if never pushed.
+    #[test]
+    fn cards_tell_pushed_from_local_commits() {
+        let server = Repo::new("pushed-server");
+        server.commit("a.txt", "1", "init");
+        let repo = Repo::new("pushed-local");
+        repo.git(&["remote", "add", "origin", &server.path().display().to_string()]);
+        repo.git(&["fetch", "-q", "origin"]);
+        repo.git(&["checkout", "-q", "-b", "main", "origin/main"]);
+        repo.git(&["checkout", "-q", "-b", "feat", "--no-track"]);
+        repo.commit("f.txt", "1", "pushed one");
+        repo.git(&["push", "-q", "-u", "origin", "feat"]);
+        repo.commit("f.txt", "2", "local one");
+        let status = super::status(repo.path(), &["feat".into()], "main", &["main".into()]);
+        assert_eq!((status[0].first_parent_count, status[0].unpushed), (2, 1));
+        repo.git(&["checkout", "-q", "-b", "fresh", "main"]);
+        repo.commit("g.txt", "1", "never pushed");
+        assert_eq!(super::status(repo.path(), &["fresh".into()], "main", &["main".into()])[0].unpushed, 1);
+    }
 
     /// main and qa, and one feature per way of merging: plain merge, squash, cherry-pick (like a rebase merge),
     /// squash then more commits, and never merged.

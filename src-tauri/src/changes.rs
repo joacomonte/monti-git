@@ -15,11 +15,13 @@ pub struct Changes {
     counts: HashMap<String, (u32, u32)>, // path -> lines added, removed
     paths: Vec<String>,                  // what the tree shows: changed files, or every file with `all`
     staged: Vec<String>,                 // uncommitted-changes row only: files in the index
+    untracked: Vec<String>,              // uncommitted-changes row only: new files git doesn't follow yet (deleting them can't be undone)
+    nested: Vec<String>,                 // the untracked ones that are a whole git repo inside this one
 }
 
 pub fn load(repo: &Path, span: Span, all: bool) -> Result<Changes, String> {
     let mut counts = git::line_counts(span, repo);
-    let (changes, staged) = match span {
+    let (changes, staged, untracked) = match span {
         Span::Worktree => {
             let status = git::status(repo)?;
             // Untracked files are not in `git diff`: count their lines.
@@ -28,9 +30,9 @@ pub fn load(repo: &Path, span: Span, all: bool) -> Result<Changes, String> {
                     counts.insert(path.clone(), (git::line_count(&text), 0));
                 }
             }
-            (status.files, status.staged)
+            (status.files, status.staged, status.untracked)
         }
-        _ => (git::changed_files(span, repo)?, vec![]),
+        _ => (git::changed_files(span, repo)?, vec![], vec![]),
     };
     let mut paths: Vec<String> = changes.keys().cloned().collect();
     if all {
@@ -38,7 +40,8 @@ pub fn load(repo: &Path, span: Span, all: bool) -> Result<Changes, String> {
         paths.sort();
         paths.dedup();
     }
-    Ok(Changes { changes, counts, paths, staged })
+    let nested = untracked.iter().filter(|p| git::repo_file(repo, p).is_ok_and(|f| f.join(".git").exists())).cloned().collect();
+    Ok(Changes { changes, counts, paths, staged, untracked, nested })
 }
 
 #[derive(Serialize)]

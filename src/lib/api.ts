@@ -17,7 +17,7 @@ export type Commit = {
   stat?: Stat; // uncommitted and saved-WIP rows: what they hold
 };
 
-/** [target, color, flags]: target = commit index (negative = past the loaded page); flags: 1 behind, 2 current. */
+/** [target, color, flags]: target = commit index (negative = past the loaded page); flags: 1 = the checked-out branch's line. */
 export type Lane = [number, number, number] | null;
 
 export type Row = {
@@ -51,7 +51,6 @@ export type History = {
   environments: string[]; // qa, develop…
   allBranches: string[]; // every branch name, local or on origin: the environments picker
   local: string[]; // every local branch, for "Change base"
-  shelvedBranches: string[]; // branches with WIP the app put aside: the "With WIP" filter
   fastForwarded: boolean; // "Only this branch": reached the base by a fast-forward, no merge to draw
 };
 
@@ -89,7 +88,12 @@ export type Changes = {
   counts: Record<string, [number, number]>; // path -> added, removed
   paths: string[]; // what the tree lists
   staged: string[]; // uncommitted-changes row only: files in the index
+  untracked: string[]; // uncommitted-changes row only: new files git doesn't follow yet (deleting them can't be undone)
+  nested: string[]; // the untracked ones that are a whole git repo inside this one
 };
+
+/** What deleting an untracked path loses; `nested`: it's a repo of its own (what only it has). */
+export type Doomed = { path: string; nested: { unpushed: number; uncommitted: number; hasRemote: boolean } | null };
 
 export type Side = { number: number; text: string; changed: [number, number] | null };
 /** A line pair, or (with `hunk` and `header`) the "@@ … @@" separator that starts a block. */
@@ -105,11 +109,22 @@ export type Card = {
   promotion: [string, number, Promotion][]; // target, own commits not in it yet, how they got there once 0
   firstParentCount: number; // commits "Only this branch" shows: matches the graph when focused
   hasUpstream: boolean;
+  unpushed: number; // of its own commits, how many the server doesn't have yet (all of them when never pushed)
 };
 
 /** Where a branch is and whether it can go (actions::Deletion). `missing`: targets its work isn't in yet; `target`: it's
  *  the base or an environment; `fetched` false: offline, judged on the last fetch. */
 export type Deletion = { local: boolean; remote: boolean; current: boolean; dirty: boolean; missing: string[]; target: boolean; fetched: boolean };
+
+/** Dashboard: a branch with recent commits and its card facts (null without a base to compare with). */
+export type ActiveBranch = { name: string; tip: string; date: number; author: string; subject: string; status: Omit<Card, "local"> | null };
+/** Dashboard: one repo's recently active branches, newest first. */
+export type RepoActivity = { repo: string; base: string | null; current: string | null; changed: number; branches: ActiveBranch[] };
+/** A repo with the user's picks for it (null = detected). */
+export type RepoPicks = { path: string; preferred: string | null; environments: string[] | null };
+
+/** What a commit does with what's staged (actions::CommitKind). */
+export type CommitKind = "new" | "amend" | { squash: string };
 
 export type SkipReason = "diverged" | "localChanges" | "checkedOutElsewhere";
 export type SyncResult = { updated: string[]; skipped: { branch: string; reason: SkipReason }[]; log: string[]; changed: boolean };
@@ -141,6 +156,8 @@ export const api = {
   /** Filters, fast pass: every branch and, per target, the ones already in it by history. */
   mergedInto: (repo: string, targets: string[], onlyMine: boolean) =>
     invoke<{ all: string[]; merged: [string, string[]][] }>("merged_into", { repo, targets, onlyMine }),
+  /** Dashboard: in every repo, the branches with a commit in the last `days` (yours only with `onlyMine`). */
+  recentActivity: (repos: RepoPicks[], days: number, onlyMine: boolean) => invoke<RepoActivity[]>("recent_activity", { repos, days, onlyMine }),
   branchTip: (repo: string, branch: string) => invoke<string | null>("branch_tip", { repo, branch }),
   lastCommitMessage: (repo: string) => invoke<string>("last_commit_message", { repo }),
   changedFileCount: (repo: string) => invoke<number>("changed_file_count", { repo }),
@@ -171,9 +188,12 @@ export const api = {
   moveBranch: (repo: string, branch: string, expected: string | null, target: string) => invoke<void>("move_branch", { repo, branch, expected, target }),
   discardFile: (repo: string, path: string) => invoke<void>("discard_file", { repo, path }),
   discardAll: (repo: string) => invoke<void>("discard_all", { repo }),
+  untrackedCheck: (repo: string, paths: string[]) => invoke<Doomed[]>("untracked_check", { repo, paths }),
+  deleteUntracked: (repo: string, paths: string[]) => invoke<void>("delete_untracked", { repo, paths }),
   /** The block the diff pane showed as `index`, with its "@@" `header` (refused if the file changed since). */
   discardHunk: (repo: string, path: string, index: number, header: string) => invoke<void>("discard_hunk", { repo, path, index, header }),
   stage: (repo: string, paths: string[]) => invoke<void>("stage", { repo, paths }),
   unstage: (repo: string, paths: string[]) => invoke<void>("unstage", { repo, paths }),
-  commit: (repo: string, message: string, push: boolean) => invoke<string>("commit", { repo, message, push }),
+  /** A new commit, into the last one (`message` null keeps its message), or the branch squashed into one since a base. */
+  commit: (repo: string, message: string | null, kind: CommitKind, push: boolean) => invoke<string>("commit", { repo, message, kind, push }),
 };

@@ -1,6 +1,8 @@
-<!-- Draggable line between two panes; `size` is the pane after it (width when vertical, height otherwise). -->
+<!-- Draggable line between two panes; `size` is the pane after it (width when vertical, height otherwise), or the one
+     before it with `before`. -->
 <script lang="ts">
-  let { vertical, size = $bindable(), min, max, id }: { vertical: boolean; size: number; min: number; max: number; id: string } = $props();
+  type Props = { vertical: boolean; size: number; min: number; max: number; id: string; before?: boolean };
+  let { vertical, size = $bindable(), min, max, id, before = false }: Props = $props();
   let drag: { start: number; initial: number } | null = null;
 
   function down(e: PointerEvent) {
@@ -8,7 +10,8 @@
     drag = { start: vertical ? e.clientX : e.clientY, initial: size };
   }
   function move(e: PointerEvent) {
-    if (drag) size = Math.min(max, Math.max(min, drag.initial - ((vertical ? e.clientX : e.clientY) - drag.start)));
+    const moved = drag ? (vertical ? e.clientX : e.clientY) - drag.start : 0;
+    if (drag) size = Math.min(max, Math.max(min, drag.initial + (before ? moved : -moved)));
   }
 </script>
 

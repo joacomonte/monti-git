@@ -4,6 +4,8 @@
   import CheckoutPrompt from "$lib/components/CheckoutPrompt.svelte";
   import CommitList from "$lib/components/CommitList.svelte";
   import DiffPane from "$lib/components/DiffPane.svelte";
+  import Dashboard from "$lib/components/Dashboard.svelte";
+  import DeleteUntracked from "$lib/components/DeleteUntracked.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
   import Loader from "$lib/components/Loader.svelte";
   import QuickTooltip from "$lib/components/QuickTooltip.svelte";
@@ -65,10 +67,10 @@
           title={"Find a text like MOA-854 in commit titles and descriptions, in this repo or all of them."}>
           <Search size={13} />Search commits<kbd>⌘K</kbd>
         </button>
-        <!-- The graph is the app; Dashboard is a small toggle on the side for what comes next. -->
+        <!-- Dashboard: every repo's recently active branches; the same button goes back to the graph. -->
         <div class="ml-auto flex items-center gap-1">
           <button class="side-btn" class:on={!model.showGraph} aria-pressed={!model.showGraph} id="view-dashboard"
-            title={model.showGraph ? "Dashboard: coming soon" : "Back to the graph"} onclick={() => (model.showGraph = !model.showGraph)}>
+            title={model.showGraph ? "Dashboard: the branches with recent commits in every repo" : "Back to the graph"} onclick={() => (model.showGraph = !model.showGraph)}>
             <LayoutGrid size={14} />Dashboard
           </button>
           <LogsPanel {model} />
@@ -102,12 +104,7 @@
               in:fly={{ x: 80 * direction, duration: 380, easing: cubicOut }} out:fly={{ x: -80 * direction, duration: 380, easing: cubicOut }}
               onintrostart={() => (sliding = true)} onintroend={() => (sliding = false)}>
       {#if !model.showGraph}
-        <!-- Placeholder: the tab stays for what comes next. -->
-        <div class="enter-fade flex h-full flex-col items-center justify-center gap-2 text-muted-foreground" id="dashboard-placeholder">
-          <LayoutGrid size={32} strokeWidth={1.5} />
-          <span class="text-[15px] font-semibold text-foreground">Coming soon</span>
-          <span class="text-[12px]">Everything lives in the graph for now.</span>
-        </div>
+        <Dashboard {model} />
       {:else if model.history.commits.length === 0 && model.isLoading}
         <Loader title="Loading history" detail="Reading the latest commits (git log)" />
       {:else}
@@ -141,6 +138,9 @@
 </UpdateGate>
 <QuickTooltip />
 <CommitSearch {model} bind:open={searching} />
+
+<!-- Deleting untracked files (from the file tree or the diff): always this dialog, whichever asked. -->
+{#if model.doomed}<DeleteUntracked {model} paths={model.doomed} onclose={() => (model.doomed = null)} />{/if}
 
 <style>
   .views { display: grid; height: 100%; overflow: hidden; }

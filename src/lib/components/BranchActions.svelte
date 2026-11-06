@@ -41,12 +41,10 @@
   {:else}
     <span class="truncate px-1.5 pb-0.5 text-[12px] font-semibold text-muted-foreground">{local}</span>
     <!-- Grouped: look at it, work with it, copy it. -->
-    {#if !isBase}
-      <span class="group">View</span>
-      <ActionRow title="Focus view" detail="Just this branch: its commits and where it merged" icon={Crosshair} color="#a78bfa"
-        id="branch-actions-focus" onclick={run(onFocus)} />
-      <div class="sep"></div>
-    {/if}
+    <span class="group">View</span>
+    <ActionRow title="Focus view" detail={isBase ? "Just this branch: its own line of commits" : "Just this branch: its commits and where it merged"} icon={Crosshair} color="#a78bfa"
+      id="branch-actions-focus" onclick={run(onFocus)} />
+    <div class="sep"></div>
     <span class="group">Branch</span>
     {#if !isCurrent}
       <ActionRow title="Check out" detail="Switch to this branch and pull its latest" icon={ArrowLeftRight} color="#4f8cff" id="branch-actions-check-out"

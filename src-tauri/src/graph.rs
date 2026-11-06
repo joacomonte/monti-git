@@ -1,5 +1,5 @@
 //! Lane layout of the commit graph, ported 1:1 from GraphLayout.swift.
-use crate::git::Commit;
+use crate::git::{Commit, WORKTREE_ID};
 use crate::refs::local_name;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet};
 pub struct Lane {
     pub hash: String,
     pub color: usize,
-    pub behind: bool,  // main lane above its tip: other branches are ahead of main
     pub current: bool, // checked-out branch: drawn thicker
 }
 
@@ -23,7 +22,7 @@ pub struct GraphRow {
     pub is_current: bool, // commit on the checked-out branch: its link to the first parent is thicker
 }
 
-/// What the web view draws: lanes as `[target, color, flags]` (flags: 1 behind, 2 current), so the IPC payload carries
+/// What the web view draws: lanes as `[target, color, flags]` (flags: 1 = the checked-out branch), so the IPC payload carries
 /// small numbers instead of a 40-char hash per lane per row. `target` is the commit's index, or a negative id for a
 /// commit past the loaded page (same id for the same hash, so parents still match their lanes).
 #[derive(Serialize)]
@@ -44,7 +43,7 @@ pub fn to_wire<'a>(rows: &'a [GraphRow], commits: &'a [Commit]) -> Vec<WireRow> 
         *index.entry(hash).or_insert(next)
     };
     let lanes = |lanes: &'a [Option<Lane>], id: &mut dyn FnMut(&'a str) -> i64| -> Vec<Option<(i64, usize, u8)>> {
-        lanes.iter().map(|l| l.as_ref().map(|l| (id(&l.hash), l.color, l.behind as u8 | (l.current as u8) << 1))).collect()
+        lanes.iter().map(|l| l.as_ref().map(|l| (id(&l.hash), l.color, l.current as u8))).collect()
     };
     rows.iter()
         .zip(commits)
@@ -64,12 +63,6 @@ pub fn to_wire<'a>(rows: &'a [GraphRow], commits: &'a [Commit]) -> Vec<WireRow> 
 pub fn compute(commits: &[Commit], main_chain: &HashSet<String>) -> Vec<GraphRow> {
     let reserved = if main_chain.is_empty() { 0 } else { 1 };
     let mut lanes: Vec<Option<Lane>> = vec![None; reserved];
-    // Main lane runs from the very top down to main's tip, so it reads as "behind".
-    if let Some(tip) = commits.iter().position(|c| main_chain.contains(&c.id)) {
-        if tip > 0 {
-            lanes[0] = Some(Lane { hash: commits[tip].id.clone(), color: 0, behind: true, current: false });
-        }
-    }
     // Checked-out branch: first-parent walk from HEAD until it reaches main.
     let by_id: HashMap<&str, &Commit> = commits.iter().rev().map(|c| (c.id.as_str(), c)).collect();
     let mut head_chain: HashSet<String> = HashSet::new();
@@ -99,15 +92,18 @@ pub fn compute(commits: &[Commit], main_chain: &HashSet<String>) -> Vec<GraphRow
         if is_main {
             column = 0;
             if lanes[0].as_ref().map(|l| &l.hash) != Some(&commit.id) {
-                lanes[0] = Some(Lane { hash: commit.id.clone(), color: 0, behind: false, current: false }); // main tip
+                lanes[0] = Some(Lane { hash: commit.id.clone(), color: 0, current: false }); // main tip
             }
         } else if let Some(i) = lanes.iter().position(|l| l.as_ref().is_some_and(|l| l.hash == commit.id)) {
             column = i;
         } else {
-            // Branch tip: nothing above points to it.
+            // Branch tip: nothing above points to it. The uncommitted row on top of main isn't a branch: it curves into
+            // main's line in main's color.
             column = free_slot(&mut lanes);
-            lanes[column] = Some(Lane { hash: commit.id.clone(), color: next_color, behind: false, current: false });
-            next_color += 1;
+            let on_main = commit.id == WORKTREE_ID && commit.parents.first().is_some_and(|p| main_chain.contains(p));
+            let color = if on_main { 0 } else { next_color };
+            next_color += usize::from(!on_main);
+            lanes[column] = Some(Lane { hash: commit.id.clone(), color, current: false });
         }
         let color = lanes[column].as_ref().unwrap().color;
 
@@ -121,7 +117,7 @@ pub fn compute(commits: &[Commit], main_chain: &HashSet<String>) -> Vec<GraphRow
         // First parent continues this lane, unless another lane already waits for it. The main lane always continues.
         match commit.parents.first() {
             Some(first) if is_main || !tracks(&lanes, first) => {
-                lanes[column] = Some(Lane { hash: first.clone(), color, behind: false, current: head_chain.contains(&commit.id) });
+                lanes[column] = Some(Lane { hash: first.clone(), color, current: head_chain.contains(&commit.id) });
             }
             _ => lanes[column] = None,
         }
@@ -130,7 +126,7 @@ pub fn compute(commits: &[Commit], main_chain: &HashSet<String>) -> Vec<GraphRow
         for parent in commit.parents.iter().skip(1) {
             if !tracks(&lanes, parent) {
                 let i = free_slot(&mut lanes);
-                lanes[i] = Some(Lane { hash: parent.clone(), color: next_color, behind: false, current: false });
+                lanes[i] = Some(Lane { hash: parent.clone(), color: next_color, current: false });
                 next_color += 1;
             }
         }
@@ -219,6 +215,15 @@ mod tests {
             shelved: None,
             stat: None,
         }
+    }
+
+    #[test]
+    fn uncommitted_changes_on_main_take_its_color() {
+        let commits = vec![c(WORKTREE_ID, &["m2"], &[], ""), c("m2", &["m1"], &["HEAD -> main"], "two"), c("m1", &[], &[], "init")];
+        let chain: HashSet<String> = ["m2", "m1"].iter().map(|s| s.to_string()).collect();
+        let rows = compute(&commits, &chain);
+        assert_eq!((rows[0].column, rows[0].color), (1, 0), "beside main, curving into it, in main's color");
+        assert_eq!(rows[1].column, 0);
     }
 
     #[test]

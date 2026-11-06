@@ -1,18 +1,18 @@
 <!-- Virtualized commit list: only the rows on screen are in the DOM. Rows touch so the graph lines stay continuous. -->
 <script lang="ts">
-  import { Archive, Check, ChevronRight, Laptop, CircleCheck, Cloud, Copy, GitBranch, Sparkles, Trash2 } from "@lucide/svelte";
+  import { Archive, ArrowDown, ArrowUp, CircleCheck, Clock, Cloud, Copy, GitCommitHorizontal, GitPullRequestDraft, Sparkles, Trash2 } from "@lucide/svelte";
   import { api, WORKTREE_ID, type Card, type Commit } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import { CopyFlash } from "$lib/clipboard.svelte";
   import { plural, subject, when } from "$lib/format";
-  import { branchBadges, isHead, isRemote, isTag, LOCAL_COMMITTED, localName, refName } from "$lib/refs";
+  import { branchBadges, isHead, isRemote, isTag, localName, refName } from "$lib/refs";
+  import { mergeState } from "$lib/cards";
   import GraphCell, { LANE, PAD, laneColor } from "./GraphCell.svelte";
   import RefBadge from "./RefBadge.svelte";
   import ActionRow from "./ActionRow.svelte";
   import DeleteBranch from "./DeleteBranch.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import Modal from "./Modal.svelte";
-  import MessagePrompt from "./MessagePrompt.svelte";
   import BranchActions from "./BranchActions.svelte";
   import StartFeature from "./StartFeature.svelte";
   import UpdatePanel from "./UpdatePanel.svelte";
@@ -20,17 +20,14 @@
   let { model }: { model: RepoModel } = $props();
   const commits = $derived(model.history.commits);
 
-  const ROW = 68; // two lines: branch badges (or the uncommitted row) above the subject
+  const ROW = 68; // two lines: branch badges (or the uncommitted row) above the subject; in Commits collapsed, every branch card
   const LINE = 44; // plain commit: date · subject · author on one line
   const QUIET = 32; // merge without refs: a short single-line row, so real commits lead
-  const COLLAPSED = 64; // Commits collapsed: a branch card (52) with "N commits" beside it
-  const CARD = 48;
 
-  // Menus: right-click on a plain commit, a branch pill (or a branch row), and the quick copy button.
+  // Menus: right-click on a plain commit, a branch pill (or a branch row).
   let menu = $state<
     | { kind: "commit"; commit: Commit; x: number; y: number }
     | { kind: "branch"; name: string; commit: Commit; x: number; y: number }
-    | { kind: "copy"; commit: Commit; branch: string; x: number; y: number }
     | null
   >(null);
   const flash = new CopyFlash(500);
@@ -41,7 +38,6 @@
 
   // Centered over the graph: merge/rebase from the base, delete, new branch.
   let dialog = $state<{ kind: "update" | "delete"; card: Card } | { kind: "new"; from: string } | null>(null);
-  let writingMessage = $state(false); // the "Message for AI" dialog, from right-click on the uncommitted row
 
   const branchOf = (c: Commit) => branchBadges(c.refs).find((b) => !isTag(b.ref));
 
@@ -80,35 +76,20 @@
   const cardOf = (ref: string): Card | null => cards.get(refName(ref)) ?? null;
   const isPending = (ref: string) => hasCard(ref) && !!model.history.base && !cardOf(ref);
 
-  /** What a branch is compared against (the base), how far behind, and whether it's finished: every commit everywhere. */
-  function statusOf(card: Card) {
-    const done = card.promotion.length > 0 && card.promotion.every(([, missing]) => missing === 0);
-    return { against: localName(model.history.base ?? "main"), behind: card.behindBase, done };
-  }
-  /** Only branches with something to say get a status line. */
-  function hasStatus(card: Card) {
-    const { behind, done } = statusOf(card);
-    return card.firstParentCount > 0 || behind > 0 || done || card.promotion.some(([, missing]) => missing === 0);
-  }
+  /** Only branches with something to say get status icons. */
+  const hasStatus = (card: Card) => card.firstParentCount > 0 || card.behindBase > 0 || mergeState(card) != null;
 
   /** Branches only: a branch row is just its cards, count, date and author, on one line (no subject). */
   const bare = (c: Commit) => model.branchesOnly && !model.focus && c.id !== WORKTREE_ID && !c.shelved;
   /** Branches only: the branch whose status line goes under the row (first pill with something to say). */
   const collapsedOf = (c: Commit) => (bare(c) ? branchBadges(c.refs).map((b) => cardOf(b.ref)).find((card) => card != null && hasStatus(card)) ?? null : null);
-  /** Commits collapsed: the badge drawn as the row's card. The one with something to say, else the one loading, else the first branch. */
-  function cardIndex(c: Commit) {
-    if (!bare(c)) return -1;
-    const list = branchBadges(c.refs);
-    const withStatus = list.findIndex((b) => { const card = cardOf(b.ref); return card != null && hasStatus(card); });
-    const pending = collapsedOf(c) ? -1 : list.findIndex((b) => isPending(b.ref));
-    return withStatus >= 0 ? withStatus : pending >= 0 ? pending : list.findIndex((b) => !isTag(b.ref));
-  }
+
 
   // MARK: Layout
 
   const isQuietMerge = (c: Commit) => c.parents.length > 1 && c.refs.length === 0;
   const isTall = (c: Commit) => c.id === WORKTREE_ID || !!c.shelved || branchBadges(c.refs).length > 0;
-  const heightOf = (c: Commit) => (isQuietMerge(c) ? QUIET : isTall(c) && !bare(c) ? ROW : cardIndex(c) >= 0 ? COLLAPSED : bare(c) ? CARD : LINE);
+  const heightOf = (c: Commit) => (isQuietMerge(c) ? QUIET : isTall(c) || bare(c) ? ROW : LINE);
   const offsets = $derived.by(() => {
     const out = new Float64Array(commits.length + 1);
     commits.forEach((c, i) => (out[i + 1] = out[i] + heightOf(c)));
@@ -164,7 +145,9 @@
   });
   async function openFocus(ref: string) {
     beforeFocus = scroller.scrollTop;
-    await model.setFocus(ref, model.history.base);
+    const base = model.history.base;
+    // The base focused on its own: its line, with nothing to compare it against.
+    await model.setFocus(ref, base && localName(base) === localName(ref) ? null : base);
     scroller.scrollTop = 0;
   }
 
@@ -202,7 +185,7 @@
   function rowMenu(e: MouseEvent, commit: Commit) {
     if (commit.shelved) return;
     e.preventDefault();
-    if (commit.id === WORKTREE_ID) return void (writingMessage = true);
+    if (commit.id === WORKTREE_ID) return model.select(commit.id); // the commit box, on the right
     // A row with a branch: the branch menu (same as clicking its badge); a plain commit: the commit menu.
     const branch = branchOf(commit);
     menu = branch ? { kind: "branch", name: refName(branch.ref), commit, x: e.clientX, y: e.clientY } : { kind: "commit", commit, x: e.clientX, y: e.clientY };
@@ -215,7 +198,6 @@
     {#each commits.slice(start, end) as commit, k (commit.id)}
       {@const i = start + k}
       {@const selected = commit.id === model.selectedId}
-      {@const branch = branchOf(commit)}
       <div class="row absolute inset-x-0 flex" class:selected class:shelved={!!commit.shelved} style:top="{offsets[i]}px" style:height="{heightOf(commit)}px"
         role="option" aria-selected={selected} tabindex="-1" id="commit-row-{commit.id}"
         onclick={() => model.select(selected ? null : commit.id)} onkeydown={(e) => e.key === "Enter" && model.select(commit.id)}
@@ -256,24 +238,28 @@
                     {@const name = localName(refName(badge.ref))}
                     {@const head = isHead(badge.ref)}
                     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-                    <!-- The card's body opens its menu; its status buttons (Safe to delete, behind…) do their own thing. -->
+                    <!-- The card's body opens its menu; its status icons (Safe to delete, behind…) do their own thing. -->
                     <div class="bcard" id="branch-card-row-{name}" onclick={(e) => { if (!(e.target as Element).closest(".status button")) openBranchMenu(e, badge.ref, commit); }} onmouseenter={() => (spot = model.history.rows[i].color)}
                       onmouseleave={() => (spot = null)} oncontextmenu={(e) => { e.preventDefault(); openBranchMenu(e, badge.ref, commit); }} class:head
                       style:--lane={laneColor(model.history.rows[i].color)} aria-busy={isPending(badge.ref)}>
                       <button class="bname" id="branch-card-{name}" onclick={(e) => openBranchMenu(e, badge.ref, commit)}>
-                        {#if head}<CircleCheck size={13} strokeWidth={2.5} />{:else}<GitBranch size={13} strokeWidth={2.5} />{/if}<span class="truncate">{name}</span>
-                        {#if badge.isSynced || isRemote(badge.ref)}<span class="cloud" title="On the server at this commit: nothing to push or pull."><Cloud size={12} strokeWidth={2.5} /></span>
-                        {:else}<span class="local" title={LOCAL_COMMITTED.title}><Laptop size={11} strokeWidth={2.5} />{LOCAL_COMMITTED.label}</span>{/if}
+                        {#if head}<CircleCheck size={13} strokeWidth={2.5} />{/if}<span class="truncate">{name}</span>
+                        {#if badge.isSynced || isRemote(badge.ref)}<span class="cloud" title="On the server at this commit: nothing to push or pull."><Cloud size={12} strokeWidth={2.5} /></span>{/if}
                       </button>
-                      {#if own && hasStatus(own)}{@render status(own)}
-                      {:else if isPending(badge.ref)}<div class="status"><span class="skel"></span><span class="skel w-[54px]"></span></div>{/if}
+                      <div class="status">
+                        {#if own && hasStatus(own)}{@render status(own)}{:else if isPending(badge.ref)}<span class="skel"></span>{/if}
+                      </div>
                     </div>
-                    <!-- Right of the card: opens the branch focused (the focus view); turning that off comes back here. -->
-                    {#if own && hasStatus(own) && own.firstParentCount}
-                      <button class="expand" id="branch-expand-{own.local}" onclick={(e) => { e.stopPropagation(); openFocus(own.ref); }}>
-                        {plural(own.firstParentCount, "commit")}<ChevronRight size={11} />
+                    <!-- Right of the card: its own commits as a count (amber part: not pushed yet); hover says so, click opens the focus view. -->
+                    {#if own?.firstParentCount}
+                      {@const local = own.unpushed}
+                      <button class="commits" class:pending={local > 0} id="branch-commits-{own.local}" onclick={(e) => { e.stopPropagation(); openFocus(own.ref); }}
+                        title={`${plural(own.firstParentCount, "commit")} of its own${local ? `, ${local === own.firstParentCount ? "none" : local} not pushed yet` : ", all pushed"}\nClick: focus view, just this branch`}>
+                        <GitCommitHorizontal size={13} strokeWidth={2.5} />{own.firstParentCount}
+                        {#if local}<span class="unpushed"><ArrowUp size={11} strokeWidth={2.75} />{local}</span>{/if}
+                        <span class="more">{own.firstParentCount === 1 ? "commit" : "commits"}{local ? " · not pushed" : ""}</span>
                       </button>
-                    {:else if isPending(badge.ref)}<span class="skel ml-1 w-[64px]"></span>{/if}
+                    {/if}
                   {:else}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <span class="contents" onmouseenter={() => { if (!isTag(badge.ref)) spot = model.history.rows[i].color; }} onmouseleave={() => (spot = null)}>
@@ -290,14 +276,6 @@
             {#if !commit.shelved && !bare(commit)}<div class="truncate text-[12.5px]" style:color={tint(i)}>{subject(commit)}</div>{/if}
           </div>
         {/if}
-        <!-- Quick action on hover, far right: copy for AI for a branch row (commit / amend live in the commit box on the right). -->
-        {#if !commit.shelved && branch}
-          <div class="quick">
-            <button class="icon-only" id="quick-copy-{commit.id}" title="Copy: branch name, hash, or metadata for AI"
-              onclick={(e) => { e.stopPropagation(); menu = { kind: "copy", commit, branch: refName(branch.ref), x: e.clientX - 60, y: e.clientY - 23 }; }}
-              onmousedown={(e) => e.stopPropagation()}><Copy size={13} /></button>
-          </div>
-        {/if}
       </div>
     {/each}
   </div>
@@ -305,52 +283,36 @@
 
 <!-- Commits collapsed: a branch's second line (behind, not merged yet, merged into, finished) with its actions. -->
 {#snippet status(card: Card)}
-  {@const { against, behind, done } = statusOf(card)}
+  {@const against = localName(model.history.base ?? "main")}
+  {@const behind = card.behindBase}
+  {@const merge = mergeState(card)}
   {@const stop = (action: () => void) => (e: MouseEvent) => { e.stopPropagation(); action(); }}
-  <div class="status">
-    {#if done}
-      <!-- How it got there: the weakest way across targets in the label, each target's way on hover. -->
-      {@const ways = card.promotion.map(([, , how]) => how)}
-      {@const label = ways.includes("squashed") ? "Squashed" : ways.includes("cherry-picked") ? "Cherry-picked" : ways.includes("fast-forwarded") ? "Fast-forwarded" : "Merged"}
-      {@const explain = { merged: "merged", "fast-forwarded": "fast-forwarded: the base moved up to this branch, no merge commit", "cherry-picked": "same changes copied (cherry-pick or rebase)", squashed: "squashed: its contents are already there", "": "" }}
-      {@const how = card.promotion.map(([t, , how]) => `${localName(t)}: ${explain[how]}`).join("\n")}
-      <!-- Hovering the label swaps it for the delete button, in the same spot: the dialog checks with the server first. -->
-      <span class="swap">
-        <span class="st label">✓ {label}</span>
-        <button class="st del" id="branch-status-delete-{card.local}" title={`${how}\nSafe to delete: checks with the server, then shows the options`}
-          onclick={stop(() => (dialog = { kind: "delete", card }))}><Trash2 size={11} strokeWidth={2.5} />&nbsp;Safe to delete</button>
-      </span>
-    {:else}
-      {#if behind}
-        <button class="st warn" id="branch-status-behind-{card.local}" disabled={!model.history.local.includes(card.local)}
-          onclick={stop(() => (dialog = { kind: "update", card }))}><span class="short">↓ {behind}</span><span class="more">&nbsp;behind {against} · Merge or rebase…</span></button>
-      {/if}
-      <!-- Merged somewhere but not everywhere yet: one quiet grey note, the places on hover. -->
-      {@const pending = card.promotion.filter(([, missing]) => missing > 0)}
-      {#if pending.length && card.promotion.some(([, missing]) => missing === 0)}
-        <span class="note">
-          <span class="st" title="Not in {pending.map(([t, missing]) => `${localName(t)} (${plural(missing, 'commit')})`).join(', ')}">{#if pending.some(([t]) => localName(t) === against)}Not in {against}{pending.length > 1 ? ` · +${pending.length - 1}` : ""}{:else}Pending merge{pending.length > 1 ? ` · ${pending.length}` : ""}{/if}</span>
-        </span>
-      {/if}
-      <!-- In no environment nor the base yet: work left halfway, worth a warning. Being merged somewhere needs no note. -->
-      {#if card.firstParentCount > 0 && card.promotion.every(([, missing]) => missing > 0)}
-        <span class="st alert" title="None of its commits are in {against} or any environment">Not merged anywhere</span>
-      {/if}
+  {#if merge?.kind === "done"}
+    <!-- How it got there: the weakest way across targets in the label, each target's way in the tooltip. -->
+    {@const ways = card.promotion.map(([, , how]) => how)}
+    {@const label = ways.includes("squashed") ? "Squashed" : ways.includes("cherry-picked") ? "Cherry-picked" : ways.includes("fast-forwarded") ? "Fast-forwarded" : "Merged"}
+    {@const explain = { merged: "merged", "fast-forwarded": "fast-forwarded: the base moved up to this branch, no merge commit", "cherry-picked": "same changes copied (cherry-pick or rebase)", squashed: "squashed: its contents are already there", "": "" }}
+    {@const how = card.promotion.map(([t, , how]) => `${localName(t)}: ${explain[how]}`).join("\n")}
+    <button class="st ok" id="branch-status-delete-{card.local}" title={`${how}\nSafe to delete: checks with the server, then shows the options`}
+      onclick={stop(() => (dialog = { kind: "delete", card }))}><CircleCheck size={12} strokeWidth={2.5} /><span class="more">{label} · <Trash2 size={11} strokeWidth={2.5} /> Safe to delete</span></button>
+  {:else}
+    {#if behind}
+      <button class="st warn" id="branch-status-behind-{card.local}" disabled={!model.history.local.includes(card.local)} title="{behind} commits behind {against}"
+        onclick={stop(() => (dialog = { kind: "update", card }))}><ArrowDown size={12} strokeWidth={2.5} />{behind}<span class="more">behind {against} · Merge or rebase…</span></button>
     {/if}
-  </div>
+    <!-- Merged somewhere but not everywhere yet: how many places are missing, which on hover. -->
+    {#if merge?.kind === "pending"}
+      {@const counts = card.promotion.filter(([, missing]) => missing > 0).map(([t, missing]) => `${localName(t)} (${plural(missing, "commit")})`)}
+      <span class="st" title="Not in {counts.join(', ')}"><Clock size={12} strokeWidth={2.5} />{merge.missing.length}<span class="more">Not in {merge.missing.join(", ")}</span></span>
+    {/if}
+    <!-- In no environment nor the base yet: work left halfway, worth a warning. -->
+    {#if merge?.kind === "none"}
+      <span class="st amber" title="None of its commits are in {against} or any environment"><GitPullRequestDraft size={12} strokeWidth={2.5} /><span class="more">Not merged anywhere</span></span>
+    {/if}
+  {/if}
 {/snippet}
 
-{#if menu?.kind === "copy"}
-  {@const { commit, branch } = menu}
-  <ContextMenu x={menu.x} y={menu.y} id="copy-menu" class="w-[224px]" onclose={() => (menu = null)}>
-    <button class="menu-item" id="copy-menu-metadata" onclick={() => copy("copy-metadata", metadata(commit, branch))}>
-      {#if flash.copied === "copy-metadata"}<Check size={13} />{:else}<Sparkles size={13} class="text-[#a78bfa]" />{/if}Metadata for AI</button>
-    <button class="menu-item" id="copy-menu-name" onclick={() => copy("copy-name", localName(branch))}>
-      {#if flash.copied === "copy-name"}<Check size={13} />{:else}<GitBranch size={13} />{/if}Branch name<span class="menu-hint">{localName(branch)}</span></button>
-    <button class="menu-item" id="copy-menu-hash" onclick={() => copy("copy-hash", commit.id)}>
-      {#if flash.copied === "copy-hash"}<Check size={13} />{:else}<Copy size={13} />{/if}Hash<span class="menu-hint font-mono">{commit.id.slice(0, 7)}</span></button>
-  </ContextMenu>
-{:else if menu?.kind === "branch"}
+{#if menu?.kind === "branch"}
   {@const { name, commit } = menu}
   <ContextMenu x={menu.x} y={menu.y} id="branch-pill-menu" class="branch-menu" onclose={() => (menu = null)}>
     <BranchActions {name} local={localName(name)} hash={commit.id} isBase={localName(name) === localName(model.history.base ?? "")} isCurrent={model.isCurrent(name)} {model}
@@ -365,7 +327,6 @@
     <ActionRow title={flash.copied === "hash" ? "Copied ✓" : "Copy hash"} icon={Copy} grey id="commit-menu-copy-hash" onclick={() => copy("hash", c.id)} detail={c.id.slice(0, 7)} />
   </ContextMenu>
 {/if}
-{#if writingMessage}<MessagePrompt {model} onclose={() => (writingMessage = false)} />{/if}
 
 {#if dialog}
   {@const close = () => (dialog = null)}
@@ -380,7 +341,7 @@
 <style>
   /* Commits collapsed: the branch as a solid card (name + status line), tinted with its line color; checked out = deeper fill. */
   .bcard {
-    display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; flex-shrink: 1; height: 52px; padding: 0 12px; border-radius: 12px;
+    display: flex; align-items: center; gap: 8px; min-width: 0; flex-shrink: 1; height: 40px; padding: 0 12px; border-radius: 12px;
     /* Pastel: a light wash of the line color, text leaning to the foreground. */
     color: color-mix(in oklab, var(--lane) 28%, var(--foreground)); background: color-mix(in oklab, var(--lane) 7%, var(--background));
     box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--lane) 16%, transparent);
@@ -393,9 +354,7 @@
     box-shadow: none;
   }
   .bcard.head .bname .cloud { opacity: 0.75; }
-  .bcard.head :is(.st, .note .st) { color: rgb(255 255 255 / 0.72); }
-  .bcard.head .st.warn, .row.selected .bcard.head .st.warn { color: #ffd58a; }
-  .bcard.head .st:hover:not(:disabled) { color: white; }
+  .bcard.head .st:not(.amber, .ok, .warn) { color: rgb(255 255 255 / 0.75); }
   .bname { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 13px; font-weight: 700; color: inherit; text-align: left; }
   .bname .cloud { display: flex; flex-shrink: 0; margin-left: 3px; opacity: 0.6; }
   /* Hover: the card glows a little in its own color (no underline). */
@@ -404,33 +363,25 @@
     box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--lane) 38%, transparent);
   }
   .bcard.head:hover { filter: brightness(1.12); }
-  .expand { display: flex; flex-shrink: 0; align-items: center; gap: 1px; margin-left: 6px; white-space: nowrap; font-size: 11.5px; color: var(--tertiary); }
-  .expand:hover { color: var(--foreground); }
-  /* Status line inside the card: quiet text; amber only for what needs you (behind, uncommitted). Minimal by default
-     (↓ 18), the full sentence and its action on hover. */
-  .st .short { display: flex; align-items: center; gap: 3px; }
-  .st .more { max-width: 0; overflow: hidden; opacity: 0; transition: max-width 0.3s var(--ease), opacity 0.2s var(--ease); }
-  .st:hover .more { max-width: 280px; opacity: 1; }
-  .note { display: flex; flex-shrink: 0; align-items: center; gap: 2px; }
-  .note .st { color: var(--tertiary); }
-  .status { display: flex; align-items: center; gap: 18px; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 11.5px; }
-  .st { display: flex; flex-shrink: 0; align-items: center; gap: 1px; color: var(--muted-foreground); }
+  /* Right of the card, apart from it: the commit count; the amber part (↑ N) is what isn't pushed. Hover unfolds the word. */
+  .commits { display: flex; flex-shrink: 0; align-items: center; gap: 4px; height: 24px; margin-left: 10px; padding: 0 8px; border-radius: 99px;
+    font-size: 11.5px; font-weight: 600; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.12); }
+  .commits:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.2); }
+  .commits .unpushed { display: flex; align-items: center; gap: 1px; margin-left: 2px; padding-left: 6px; border-left: 1px solid oklch(0.5 0 0 / 0.3); color: #f5a524; }
+  .commits .more { max-width: 0; overflow: hidden; opacity: 0; white-space: nowrap; transition: max-width 0.3s var(--ease), opacity 0.2s var(--ease); }
+  .commits:hover .more { max-width: 160px; opacity: 1; }
+  /* Status icons beside the name: just the icon (and its count); hovering one unfolds what it means and its action. */
+  .status { display: flex; flex-shrink: 0; align-items: center; gap: 4px; white-space: nowrap; font-size: 11.5px; font-weight: 600; }
+  .st { display: flex; flex-shrink: 0; align-items: center; gap: 3px; height: 22px; padding: 0 6px; border-radius: 99px; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.14); }
+  .st .more { display: flex; align-items: center; gap: 3px; max-width: 0; overflow: hidden; opacity: 0; transition: max-width 0.3s var(--ease), opacity 0.2s var(--ease); }
+  .st:hover .more { max-width: 280px; opacity: 1; margin-left: 2px; }
   button.st:hover:not(:disabled) { color: var(--foreground); }
-  .st.warn { color: color-mix(in oklab, #f5a524 75%, var(--foreground)); }
-  .st.warn:hover:not(:disabled) { color: #ffc35c; }
-  .swap { display: grid; flex-shrink: 0; }
-  .swap > * { grid-area: 1 / 1; transition: opacity 0.12s; }
-  /* Only the button takes clicks; the label just shows. A faded label (opacity < 1) gets its own layer and is painted over
-     the button, so with pointer events it caught the click and passed it to the card's menu. */
-  .swap .label { pointer-events: none; }
-  .swap .del { opacity: 0; }
-  .swap:hover .label { opacity: 0; }
-  .swap:hover .del { opacity: 1; }
-  .local { display: flex; flex-shrink: 0; align-items: center; gap: 4px; margin-left: 6px; font-size: 11.5px; font-weight: 600; color: #f5a524; }
-  .st.alert, .bcard.head .st.alert { color: #f5a524; font-weight: 600; }
-  /* Behind stays grey on other branches; amber only on the checked-out one or the selected row. */
-  .bcard:not(.head) .st.warn { color: var(--muted-foreground); }
-  .row.selected .bcard .st.warn { color: color-mix(in oklab, #f5a524 75%, var(--foreground)); }
+  .st.amber { color: #f5a524; background: color-mix(in oklab, #f5a524 15%, transparent); }
+  .st.ok { color: #34c77b; background: color-mix(in oklab, #34c77b 15%, transparent); }
+  .st.ok:hover { color: #34c77b; }
+  /* Behind stays grey on other branches; amber on the checked-out one or the selected row. */
+  .bcard.head .st.warn, .row.selected .bcard .st.warn { color: #f5a524; }
+  .bcard.head .st { background: rgb(0 0 0 / 0.22); }
   :global(.branch-menu) { padding: 10px; border-radius: 14px; } /* BranchActions sets its own width */
   .skel { display: inline-block; width: 34px; height: 9px; border-radius: 999px; background: oklch(0.5 0 0 / 0.16); animation: skel 1.2s ease-in-out infinite; }
   @keyframes skel { 50% { opacity: 0.45; } }
@@ -440,11 +391,4 @@
   .row:hover { background: color-mix(in oklab, var(--quinary) 50%, transparent); }
   .row.selected { background: var(--quinary); } /* faint tint instead of the strong system blue */
   :global(.dialog-panel) { padding: 10px; border-radius: 12px; }
-  .quick { position: absolute; top: 50%; right: 10px; display: flex; gap: 6px; opacity: 0; pointer-events: none; translate: 4px -50%; transition: opacity 0.15s, translate 0.15s; }
-  .meta-right.author { transition: margin-right 0.15s; }
-  .row:hover:has(.quick) .meta-right.author { margin-right: 44px; } /* slides left to make room for the copy button */
-  .row:hover .quick { opacity: 1; pointer-events: auto; translate: 0 -50%; }
-  .quick button { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 999px;
-    color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.1); transition: color 0.15s, background 0.15s; }
-  .quick button:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.2); }
 </style>

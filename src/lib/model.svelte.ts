@@ -1,7 +1,7 @@
 // App state, ported from RepoModel in ContentView.swift: the open repo's graph, the selected commit's files and diff,
 // the repos in the sidebar, and the git actions. One class, because those three meet in every flow (an action reloads
 // the graph, a reload re-finds the selection, opening a repo resets both).
-import { api, WORKTREE_ID, type Card, type Commit, type Deletion, type DiffRow, type History, type HistoryQuery, type LineHits, type RepoEntry, type SyncResult, type WipMode } from "./api";
+import { api, WORKTREE_ID, type Card, type Commit, type Deletion, type DiffRow, type History, type HistoryQuery, type LineHits, type RepoEntry, type RepoPicks, type CommitKind, type SyncResult, type WipMode } from "./api";
 import { fileTree, filesInOrder, parentDirs } from "./fileTree";
 import { gitCommand, lineName, ranBy } from "./format";
 import { prefs, type Sources } from "./prefs";
@@ -9,19 +9,19 @@ import { localName } from "./refs";
 
 const PAGE = 300;
 
-export type BranchFilter = "pending" | "safe" | "wip";
+export type BranchFilter = "pending" | "safe";
 
 /** Puts things back: switch to the branch you were on, or move a branch back (`expected` null: recreate it). */
 type Undo = { kind: "checkout"; branch: string } | { kind: "move"; branch: string; expected: string | null; target: string };
 /** One action done from the app, for the Logs panel. `started`: when its git commands began (they're grouped under it). */
-export type Activity = { at: number; started?: number; repo: string; text: string; undo?: Undo; undone?: boolean };
+export type Activity = { at: number; started?: number; repo: string; branch?: string; text: string; undo?: Undo; undone?: boolean }; // branch: checked out when it ran (Logs groups by it)
 
 /** How a git action went: its one-line status, or why it failed. */
 export type Outcome = { ok: true; status: string } | { ok: false; error: string };
 
 const EMPTY: History = {
   commits: [], rows: [], names: [], hasMore: false, current: null, base: null, environments: [], allBranches: [], local: [],
-  shelvedBranches: [], fastForwarded: false,
+  fastForwarded: false,
 };
 
 /** What a repo looked like when we left it, so coming back shows it at once while `reload()` refreshes it. */
@@ -72,11 +72,12 @@ export class RepoModel {
 
   constructor() {
     const last = prefs.get("lastRepo", null);
-    if (last && this.isListed(last)) this.open(last);
+    if (last && this.isListed(last)) this.open(last, "dashboard"); // the app opens on the dashboard
     if (this.hasSources) this.refreshRepos();
   }
 
-  open(path: string) {
+  /** Opens `path`, on `view` if given; otherwise as it was left (the graph the first time). */
+  open(path: string, view?: "graph" | "dashboard") {
     if (this.repo && this.repo !== path && !this.error) {
       const { showGraph, selectedId, fileFilter, diffOpen, focus, historyPath } = this;
       this.cache.set(this.repo, { history: this.history, limit: this.limit, view: { showGraph, selectedId, fileFilter, diffOpen, focus, historyPath } });
@@ -97,7 +98,7 @@ export class RepoModel {
     const cached = this.cache.get(path);
     this.history = cached?.history ?? EMPTY;
     this.limit = cached?.limit ?? PAGE;
-    this.showGraph = cached?.view.showGraph ?? true;
+    this.showGraph = view ? view === "graph" : (cached?.view.showGraph ?? true);
     this.focus = cached?.view.focus ?? null;
     this.historyPath = cached?.view.historyPath ?? null;
     this.selectedId = null;
@@ -150,10 +151,10 @@ export class RepoModel {
       limit: this.limit,
       onlyMine: this.onlyMine,
       branchesOnly: this.branchesOnly,
-      preferred: prefs.get("mainBranches", {})[repo] ?? null,
+      preferred: this.picks(repo).preferred,
       focus: this.focus ?? [],
       path: this.historyPath,
-      environments: prefs.get("environments", {})[repo] ?? null,
+      environments: this.picks(repo).environments,
       only: this.branchesOnly && !this.focus ? this.filterRefs : null,
     };
     try {
@@ -202,11 +203,20 @@ export class RepoModel {
     return request;
   }
 
+  focusFrom = $state<"graph" | "dashboard">("graph"); // where the focus view was opened from: its Back goes there
+
   /** Graph shows only `branch` and its base (where it was cut from, else main); null = everything again. */
-  async setFocus(branch: string | null, base: string | null = this.history.base) {
+  async setFocus(branch: string | null, base: string | null = this.history.base, from: "graph" | "dashboard" = "graph") {
+    if (branch) this.focusFrom = from;
     this.focus = branch ? [...new Set([branch, base].filter((r): r is string => r != null))] : null;
     this.limit = PAGE;
     await this.reload();
+  }
+
+  /** The focus view's Back: the whole graph, or the dashboard when it was opened from there. */
+  async leaveFocus() {
+    if (this.focusFrom === "dashboard") this.showGraph = false;
+    await this.setFocus(null);
   }
 
   /** Graph shows only the commits that touched `path` (null = everything again), keeping the file open. */
@@ -259,24 +269,22 @@ export class RepoModel {
     const compared = new Set(targets.map(localName));
     const wants = (done: number) =>
       (this.filters.includes("safe") && done === targets.length) || (this.filters.includes("pending") && done > 0 && done < targets.length);
-    const hasWorktree = this.history.commits.some((c) => c.id === WORKTREE_ID);
-    const wip = this.filters.includes("wip") ? [...this.history.shelvedBranches, ...(this.history.current && hasWorktree ? [this.history.current] : [])] : [];
     const { all, merged } = await api.mergedInto(repo, targets, this.onlyMine);
     if (!fresh()) return;
     const sets = merged.map(([, refs]) => new Set(refs));
     const branches = all.filter((ref) => !compared.has(localName(ref)));
     const doneOf = (ref: string) => sets.filter((s) => s.has(ref)).length;
-    this.filterRefs = [...new Set([...branches.filter((ref) => wants(doneOf(ref))), ...wip])];
+    this.filterRefs = branches.filter((ref) => wants(doneOf(ref)));
     await this.reload();
     const unsure = branches.filter((ref) => doneOf(ref) < targets.length);
-    if (!base || !unsure.length || !this.filters.some((f) => f !== "wip") || !fresh()) return;
+    if (!base || !unsure.length || !fresh()) return;
     this.isFiltering = true;
     try {
       const found = await api.branchStatus(repo, unsure, base, targets);
       if (!fresh()) return;
       const sure = branches.filter((ref) => doneOf(ref) === targets.length && wants(targets.length));
       const confirmed = found.filter((s) => wants(s.promotion.filter(([, missing]) => missing === 0).length)).map((s) => s.ref);
-      const next = [...new Set([...sure, ...confirmed, ...wip])];
+      const next = [...new Set([...sure, ...confirmed])];
       if (next.join() !== this.filterRefs?.join()) {
         this.filterRefs = next;
         await this.reload();
@@ -300,6 +308,21 @@ export class RepoModel {
   changes = $state.raw<Record<string, string>>({}); // path -> status letter
   counts = $state.raw<Record<string, [number, number]>>({});
   staged = $state.raw(new Set<string>()); // uncommitted-changes row: files in the index (checked in the tree)
+  untracked = $state.raw(new Set<string>()); // uncommitted-changes row: new files git doesn't follow (their own section)
+  nested = $state.raw(new Set<string>()); // untracked folders that are a git repo of their own
+  /** Untracked files listed apart, under the changes git follows: on the uncommitted row, listing only the changes. */
+  get untrackedApart() {
+    return this.isWorktreeSelected && !this.showAllFiles && this.untracked.size > 0;
+  }
+  trackedChanges = $derived(Object.keys(this.changes).filter((p) => !this.untracked.has(p)));
+  /** What Stage all / Unstage all covers: the changes git follows when untracked files are apart, else every change. */
+  bulkStage = $derived.by(() => {
+    if (!this.untrackedApart) return this.stageState("");
+    const files = this.trackedChanges;
+    return { files, all: files.length > 0 && files.every((p) => this.staged.has(p)) };
+  });
+  /** Untracked paths waiting for the delete dialog: deleting them can't be undone, so it's the only way they go. */
+  doomed = $state<string[] | null>(null);
   paths = $state.raw<string[]>([]); // every file the tree lists
   tree = $derived(fileTree(this.paths));
   changedOrder = $derived(filesInOrder(this.tree).filter((p) => p in this.changes)); // changed files in tree order, for ⌥←/⌥→
@@ -357,6 +380,8 @@ export class RepoModel {
     this.changes = {};
     this.counts = {};
     this.staged = new Set();
+    this.untracked = new Set();
+    this.nested = new Set();
     this.paths = [];
   }
 
@@ -389,6 +414,8 @@ export class RepoModel {
       this.changes = result.changes;
       this.counts = result.counts;
       this.staged = new Set(result.staged);
+      this.untracked = new Set(result.untracked);
+      this.nested = new Set(result.nested);
       this.paths = result.paths;
     } catch (error) {
       if (fresh()) this.diffMessage = `Couldn't read the files: ${firstLine(error)}`;
@@ -469,6 +496,11 @@ export class RepoModel {
     return this.history.current != null && localName(name) === this.history.current;
   }
 
+  /** What the user picked for `repo`: its base and environments (null = detected by name). */
+  picks(repo: string): RepoPicks {
+    return { path: repo, preferred: prefs.get("mainBranches", {})[repo] ?? null, environments: prefs.get("environments", {})[repo] ?? null };
+  }
+
   /** The user's environments for this repo were picked by hand (else detected by name). */
   get customEnvironments() {
     return this.repo != null && this.repo in prefs.get("environments", {});
@@ -522,7 +554,8 @@ export class RepoModel {
 
   // MARK: Repo sources: what the sidebar lists, added by the user (nothing is scanned by default)
 
-  sources = $state<Sources>(prefs.get("repoSources", { folders: [], repos: [], hidden: [] }));
+  // Only these two fields: a "hidden" list saved by older versions is dropped.
+  sources = $state<Sources>((({ folders, repos }) => ({ folders, repos }))(prefs.get("repoSources", { folders: [], repos: [] })));
   onboarding = $state(false); // keeps the onboarding up after the first repos are added, for its favorites step
   favorites = $state<string[]>(prefs.get("sidebarPrefs", {}).favorites ?? []); // same blob as SidebarPrefs in RepoSidebar.swift
 
@@ -532,8 +565,7 @@ export class RepoModel {
   /** Relists the repos (and whether each has uncommitted changes). The open repo's changes count as seen. */
   async refreshRepos() {
     const fresh = this.ticket("repos");
-    const { folders, repos, hidden } = this.sources;
-    const list = (await api.listRepos(folders, repos)).filter((r) => !hidden.includes(r.path));
+    const list = await api.listRepos(this.sources.folders, this.sources.repos);
     if (!fresh()) return this.repos;
     this.repos = list;
     if (this.repo) this.markSeen(this.repo);
@@ -564,10 +596,10 @@ export class RepoModel {
     return this.sources.folders.length + this.sources.repos.length > 0;
   }
 
-  /** Still in the sidebar: added on its own, or inside an added folder and not hidden. */
+  /** Still in the sidebar: added on its own, or inside an added folder. */
   private isListed(path: string) {
     const folder = path.replace(/[\\/][^\\/]*$/, "");
-    return this.sources.repos.includes(path) || (this.sources.folders.includes(folder) && !this.sources.hidden.includes(path));
+    return this.sources.repos.includes(path) || this.sources.folders.includes(folder);
   }
 
   toggleFavorite(path: string) {
@@ -591,16 +623,12 @@ export class RepoModel {
     const rejected = paths.filter((_, i) => !checks[i]);
     if (rejected.length) this.syncStatus = `Not a git repository: ${rejected.map((p) => p.split(/[\\/]/).pop()).join(", ")}. Use "Add folder of repos" for a folder that contains several.`;
     if (!repos.length) return;
-    this.saveSources({ ...s, repos: [...new Set([...s.repos, ...repos])], hidden: s.hidden.filter((h) => !repos.includes(h)) });
+    this.saveSources({ ...s, repos: [...new Set([...s.repos, ...repos])] });
     if (!this.repo) this.open(repos[0]);
   }
 
   removeRepo(path: string) {
     this.saveSources({ ...this.sources, repos: this.sources.repos.filter((r) => r !== path) });
-  }
-
-  hideRepo(path: string) {
-    this.saveSources({ ...this.sources, hidden: [...this.sources.hidden, path] });
   }
 
   removeFolder(folder: string) {
@@ -653,7 +681,7 @@ export class RepoModel {
   activity = $state<Activity[]>(prefs.get("activity", []));
 
   private record(repo: string, text: string, started: number, undo?: Undo) {
-    const entry: Activity = { at: Date.now(), started, repo, text, undo };
+    const entry: Activity = { at: Date.now(), started, repo, branch: (repo === this.repo && this.history.current) || undefined, text, undo };
     this.activity = [entry, ...this.activity].slice(0, 50);
     prefs.set("activity", this.activity);
     api.gitLogs(0).then((logs) => {
@@ -834,11 +862,17 @@ export class RepoModel {
     this.discard(`Discarded changes in ${path}`, (repo) => api.discardFile(repo, path));
   }
 
+  /** Tracked changes only: untracked files stay (deleting them is `deleteUntracked`, after its dialog). */
   discardAll() {
     this.discard("Discarded all changes", (repo) => api.discardAll(repo));
   }
 
-  /** The block shown as `index` with `header` in the diff pane. */
+  deleteUntracked(paths: string[]) {
+    const text = paths.length === 1 ? `Deleted ${paths[0]} (untracked)` : `Deleted ${paths.length} untracked files`;
+    this.discard(text, (repo) => api.deleteUntracked(repo, paths));
+  }
+
+  /** The block shown as `index` with `header` in the diff pane (a file git follows; an untracked one goes by `doomed`). */
   discardHunk(index: number, header: string) {
     const path = this.fileFilter;
     if (path) this.discard(`Discarded a block in ${path}`, (repo) => api.discardHunk(repo, path, index, header));
@@ -867,17 +901,29 @@ export class RepoModel {
     return Object.keys(this.changes).filter((p) => this.staged.has(p)).length;
   }
 
-  /** Commits what's staged (and pushes with `push`). False if git refused, so the form keeps the message. */
-  async commit(title: string, description: string, push: boolean) {
+  /** What's staged as a new commit, folded into the last one (an empty title keeps its message), or the branch squashed
+   *  into one since its base; pushes too with `push`. Undo puts the branch back where it was, the changes staged.
+   *  False if git refused, so the form keeps the message. */
+  async commit(title: string, description: string, { kind = "new" as "new" | "amend" | "squash", push = false } = {}) {
+    const amend = kind === "amend", squash = kind === "squash";
     const repo = this.repo, branch = this.history.current;
-    const message = title.trim() + (description.trim() ? "\n\n" + description.trim() : "") + "\n";
+    const message = title.trim() ? title.trim() + (description.trim() ? "\n\n" + description.trim() : "") + "\n" : null;
     const before = repo && branch ? await api.branchTip(repo, branch) : null;
-    const result = await this.act(push ? "Committing and pushing…" : "Committing…", "Commit failed",
-      ["Committing what's staged", ...(push ? [`Pushing ${branch ?? "the branch"} to origin`] : [])], (repo) => api.commit(repo, message, push));
+    const base = this.history.base;
+    if (squash && !base) return false;
+    const how: CommitKind = kind === "squash" ? { squash: base! } : kind;
+    const verb = squash ? "Squashing" : amend ? "Amending" : "Committing";
+    const result = await this.act(push ? `${verb} and pushing…` : `${verb}…`, `${squash ? "Squash" : amend ? "Amend" : "Commit"} failed`,
+      [squash ? `Making ${branch}'s commits since ${base} and what's staged one commit`
+        : amend ? `Folding what's staged into the last commit${message ? ", with the new message" : ""}` : "Committing what's staged",
+        ...(push ? [`Pushing ${branch ?? "the branch"} to origin`] : [])],
+      (repo) => api.commit(repo, message, how, push));
     if (!result.ok) return false;
-    // Undo keeps the changes (staged); none once pushed: that would rewrite shared history.
+    // None once pushed: that would rewrite shared history.
     const undo = !push && branch ? await this.moveBack(repo!, branch, before) : undefined;
-    this.record(repo!, `${push ? "Committed and pushed" : "Committed"} “${title.trim()}”`, result.started, undo);
+    const what = squash ? `Squashed ${branch} into one: “${title.trim()}”`
+      : amend ? (message ? `Amended the last commit: “${title.trim()}”` : "Amended the last commit") : `Committed “${title.trim()}”`;
+    this.record(repo!, push ? `${what}, pushed` : what, result.started, undo);
     return true;
   }
 }

@@ -1,5 +1,19 @@
 [
   {
+    "version": "1.5.0",
+    "changes": [
+      { "kind": "new", "title": "Dashboard", "detail": "The app opens on every repo's branches with commits in the last 24 hours, 3 or 7 days, newest first, yours by default. Each card says where it's merged and how far behind it is, with Commit and Push buttons when something is waiting on your machine." },
+      { "kind": "new", "title": "Commit step by step", "detail": "The commit box asks one thing at a time: a new commit, amend the last one or squash the branch; then write the message yourself or copy a prompt for your AI agent. Amend and squash are refused once those commits are pushed." },
+      { "kind": "new", "title": "Untracked files apart", "detail": "New files git doesn't follow have their own section and can be deleted, always through a dialog that says what's lost, including repos nested inside the repo. Discard all no longer deletes them." },
+      { "kind": "improved", "title": "Branch cards in one row", "detail": "Status shows as icons that unfold on hover, and the commit count sits beside the card with the unpushed ones in amber. Click it for the focus view, also available on the base branch." },
+      { "kind": "improved", "title": "Toolbar in groups", "detail": "Environments, View and Filters, with a clearer environments picker; filters fold into a menu when the window is narrow." },
+      { "kind": "improved", "title": "File list toolbar", "detail": "Changed or all files always visible, a compact search that expands when clicked and grows with long text, and bigger Stage all and Discard all buttons." },
+      { "kind": "improved", "title": "Logs by repo and branch", "detail": "Everything that ran on the same repo and branch is grouped; the latest group stays open." },
+      { "kind": "improved", "title": "Sidebar follows you", "detail": "Repos with uncommitted changes move to the top of their group, and opening one scrolls the list to it." },
+      { "kind": "fixed", "title": "Pushed branches under filters", "detail": "With a filter on, pushed branches no longer show as Local committed." }
+    ]
+  },
+  {
     "version": "1.4.0",
     "changes": [
       { "kind": "new", "title": "Push from the commit details", "demo": "push", "detail": "Select a commit at the tip of a branch that isn't on the server and push it from there. The first push sets where it goes; if the server has commits you don't, it offers a force push that never overwrites work you haven't fetched." },

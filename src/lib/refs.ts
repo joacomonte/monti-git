@@ -29,8 +29,3 @@ export function branchBadges(refs: string[]): { ref: string; isSynced: boolean }
 export const unpushed = (refs: string[]) =>
   branchBadges(refs).filter((b) => !b.isSynced && !isRemote(b.ref) && !isTag(b.ref)).map((b) => refName(b.ref));
 
-/** The amber chip of a branch that the server doesn't have at this commit. */
-export const LOCAL_COMMITTED = {
-  label: "Local committed",
-  title: "Committed on this computer, not pushed yet (or the server has a different version).",
-} as const;

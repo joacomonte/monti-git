@@ -1,7 +1,8 @@
-<!-- Repos the user added (one by one or a folder of them): Favorites first, then one section per owner; groups and repos ordered by most recent activity. -->
+<!-- Repos the user added (one by one or a folder of them): Favorites first, then one section per owner; groups and repos ordered by most recent activity
+     (uncommitted changes count as now: discarding them sends the repo back down, committing keeps it up). -->
 <script lang="ts">
   import { whatsNew } from "./WhatsNew.svelte";
-  import { Check, ChevronRight, ArrowUpRight, CloudDownload, Sparkles, Copy, EyeOff, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
+  import { ChevronRight, ArrowUpRight, CloudDownload, Sparkles, Copy, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
   import ActionRow from "./ActionRow.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import { Button } from "$lib/components/ui/button";
@@ -38,14 +39,20 @@
 
   const sections = $derived.by(() => {
     const favorites = model.favorites;
-    const sorted = [...model.repos].sort((a, b) => b.lastActivity - a.lastActivity);
+    const when = (r: RepoEntry) => (r.changes ? Infinity : r.lastActivity);
+    const sorted = [...model.repos].sort((a, b) => when(b) - when(a));
     const groups = new Map<string, RepoEntry[]>();
     for (const repo of sorted.filter((r) => !favorites.includes(r.path))) {
       groups.set(repo.owner, [...(groups.get(repo.owner) ?? []), repo]);
     }
     const pinned = sorted.filter((r) => favorites.includes(r.path));
     return [...(pinned.length ? [["Favorites", pinned] as const] : []),
-      ...[...groups].sort((a, b) => b[1][0].lastActivity - a[1][0].lastActivity)];
+      ...[...groups].sort((a, b) => when(b[1][0]) - when(a[1][0]))];
+  });
+
+  // The open repo stays in sight: opening one from the dashboard (graph or focus view) scrolls the list to it.
+  $effect(() => {
+    if (model.repo) document.getElementById(`repo-${model.repo}`)?.scrollIntoView({ block: "nearest" });
   });
 
 
@@ -147,13 +154,7 @@
             <span class="changes" class:new={isNew} id="repo-changes-{baseName(repo.path)}"
               title={isNew ? "New uncommitted changes: open it to see them" : "Uncommitted changes"}></span>
           {/if}
-          <!-- spans, not buttons: they sit inside the row's <button>. -->
-          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <span role="button" tabindex="0" class="copy shrink-0" class:on={flash.copied === repo.path} id="copy-path-{baseName(repo.path)}"
-            title="Copy full path: {repo.path}"
-            onclick={(e) => { e.stopPropagation(); flash.copy(repo.path, repo.path); }}>
-            {#if flash.copied === repo.path}<Check size={13} />{:else}<Copy size={13} />{/if}
-          </span>
+          <!-- A span, not a button: it sits inside the row's <button>. -->
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <span role="button" tabindex="0" class="star shrink-0" class:on={isFavorite} id="favorite-toggle-{baseName(repo.path)}"
             title={isFavorite ? "Remove from Favorites" : "Add to Favorites: keeps this repo at the top of the list."}
@@ -166,18 +167,13 @@
   </nav>
   {#if menu}
     {@const repo = menu.repo}
-    {@const isFavorite = model.favorites.includes(repo.path)}
     {@const folderName = repo.folder ? baseName(repo.folder) : ""}
     <ContextMenu x={menu.x} y={menu.y} id="repo-menu" class="w-[230px]" onclose={() => (menu = null)}>
-      <button class="menu-item" title="Favorites stay at the top of the sidebar" id="repo-menu-favorite" onclick={run(() => model.toggleFavorite(repo.path))}>
-        <Star size={13} />{isFavorite ? "Remove from Favorites" : "Add to Favorites"}
-      </button>
       <button class="menu-item" title={repo.path} id="repo-menu-copy-path" onclick={run(() => flash.copy(repo.path, repo.path))}>
         <Copy size={13} />Copy full path
       </button>
       <div class="menu-separator"></div>
       {#if repo.folder}
-        <button class="menu-item" title="Take it out of the list; it comes back if you add it again" id="repo-menu-hide" onclick={run(() => model.hideRepo(repo.path))}><EyeOff size={13} />Hide from sidebar</button>
         <button class="menu-item" title="Stop listing every repo in this folder. Nothing is deleted from disk." id="repo-menu-remove-folder" onclick={run(() => model.removeFolder(repo.folder!))}>
           <FolderMinus size={13} /><span class="truncate">Remove folder "{folderName}"</span>
         </button>
@@ -250,13 +246,9 @@
   .changes.new { opacity: 1; background: var(--primary); animation: changes 1.8s ease-out infinite; }
   @keyframes changes { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 70%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
   @media (prefers-reduced-motion: reduce) { .changes.new { animation: none; } }
-  .star, .copy { padding: 3px; margin: -3px 0; border-radius: 5px; }
+  .star { padding: 3px; margin: -3px 0; border-radius: 5px; }
   .star { display: none; color: var(--muted-foreground); }
   .star:hover { color: rgb(234 179 8); background: oklch(0.5 0 0 / 0.15); }
   .star.on { display: block; color: rgb(234 179 8); }
   .repo:hover .star { display: block; }
-  .copy { display: none; color: var(--muted-foreground); }
-  .copy:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.15); }
-  .copy.on { display: block; color: oklch(0.72 0.17 150); }
-  .repo:hover .copy { display: block; }
 </style>

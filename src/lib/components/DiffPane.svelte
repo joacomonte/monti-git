@@ -1,6 +1,6 @@
 <!-- Bottom pane: one file at a time, before on the left, after on the right. -->
 <script lang="ts">
-  import { ChevronDown, ChevronLeft, ChevronRight, FileSearch } from "@lucide/svelte";
+  import { ChevronDown, ChevronLeft, ChevronRight, FileSearch, Trash2 } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button";
   import { api, WORKTREE_ID, type Blame, type Side } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
@@ -98,7 +98,11 @@
         {#if row.hunk != null}
           <div class="flex items-center gap-2 bg-quinary px-2 py-[3px] text-[11px] text-tertiary">
             <span class="min-w-0 flex-1 truncate">{row.header}</span>
-            {#if model.isWorktreeSelected && row.header}
+            {#if model.isWorktreeSelected && model.fileFilter && model.untracked.has(model.fileFilter)}
+              <!-- A new file git has no copy of: its one block is the whole file, so it goes through the delete dialog. -->
+              <button class="flex items-center gap-1 text-[10px] font-semibold hover:text-red-500" id="delete-untracked-block"
+                title="Delete this new file from disk (asks first)" onclick={() => (model.doomed = [model.fileFilter!])}><Trash2 size={11} />Delete file</button>
+            {:else if model.isWorktreeSelected && row.header}
               <DiscardButton title="Discard block" id="discard-block-{row.hunk}" onconfirm={() => model.discardHunk(row.hunk!, row.header!)}
                 hint="Discard this block: throws away only this chunk of changes. Ej: you added a debug log here by mistake." />
             {/if}

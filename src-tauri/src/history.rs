@@ -2,7 +2,7 @@
 //! then the uncommitted row and the saved WIP rows placed above their commits, and the lanes laid out.
 use crate::git::{self, Commit, LogQuery, Stat};
 use crate::graph;
-use crate::refs::{self, full_name};
+use crate::refs::{self, full_name, local_name};
 use crate::wip;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -34,7 +34,6 @@ pub struct History {
     environments: Vec<String>, // qa, develop…: kept by "Only mine" and compared against on the branch cards
     all_branches: Vec<String>, // every branch name, local or on origin: the environments picker
     local: Vec<String>,       // every local branch, for "Change base"
-    shelved_branches: Vec<String>, // branches with WIP the app put aside (stash): the "With WIP" filter
     fast_forwarded: bool, // focused branch reached the base by a fast-forward, so there's no merge to draw
 }
 
@@ -66,7 +65,6 @@ pub fn load(repo: &Path, q: &Query) -> Result<History, String> {
     }
     // Saved WIP of other branches: right above the commit it was saved on, when that commit is shown.
     let shelved = if q.path.is_none() { wip::shelved_commits(repo) } else { vec![] };
-    let shelved_branches = shelved.iter().filter_map(|s| s.shelved.clone()).collect();
     for row in shelved {
         if let Some(at) = commits.iter().position(|c| Some(&c.id) == row.parents.first()) {
             commits.insert(at, row);
@@ -87,7 +85,6 @@ pub fn load(repo: &Path, q: &Query) -> Result<History, String> {
         all_branches: branches.names,
         local: branches.local,
         fast_forwarded,
-        shelved_branches,
     })
 }
 
@@ -108,8 +105,11 @@ fn browse(repo: &Path, q: &Query, base: Option<&str>, environments: &[String], c
         let shown: Vec<String> = picked.into_iter().chain(base.map(String::from)).chain(environments.iter().cloned()).collect();
         // Walking from the base also reaches other branches merged into it: name only these refs (plus the
         // checked-out branch, HEAD and, unless filtering, tags), so their names and collapsed rows don't show up.
+        // Each local branch's copy on the server too: that's how a pill knows it's pushed (cloud, not Local committed).
         let tags = q.only.is_none().then(|| "refs/tags/".to_string());
-        query.decorate = Some(shown.iter().map(|r| full_name(r)).chain(current.map(full_name)).chain(["HEAD".into()]).chain(tags).collect());
+        let named: Vec<&str> = shown.iter().map(String::as_str).chain(current).collect();
+        let servers = named.iter().filter(|r| local_name(r) == **r).map(|r| format!("refs/remotes/*/{r}"));
+        query.decorate = Some(named.iter().map(|r| full_name(r)).chain(servers).chain(["HEAD".into()]).chain(tags).collect());
         query.include = shown;
     }
     git::log(repo, &query)
@@ -235,6 +235,24 @@ mod tests {
         assert_eq!(history.commits[0].parents, [history.commits[1].id.clone()]);
         let card = crate::branches::status(repo.path(), &["ff".into()], "main", &["main".into()]);
         assert_eq!(card[0].promotion, [("main".to_string(), 0, crate::branches::How::FastForwarded)]);
+    }
+
+    /// A filter names only its branches, but their server copies too: a pushed branch folds into one pill with a cloud.
+    #[test]
+    fn filtered_branches_keep_their_server_copy() {
+        let server = Repo::new("filter-server");
+        server.commit("a.txt", "1", "init");
+        let repo = Repo::new("filter-local");
+        repo.git(&["remote", "add", "origin", &server.path().display().to_string()]);
+        repo.git(&["fetch", "-q", "origin"]);
+        repo.git(&["reset", "-q", "--hard", "origin/main"]);
+        repo.git(&["checkout", "-q", "-b", "feat"]);
+        repo.commit("f.txt", "1", "feat");
+        repo.git(&["push", "-q", "origin", "feat"]);
+        let q = super::Query { only: Some(vec!["feat".into()]), ..query(&[]) };
+        let history = super::load(repo.path(), &q).unwrap();
+        let tip = history.commits.iter().find(|c| c.subject == "feat").unwrap();
+        assert!(tip.refs.iter().any(|r| r == "origin/feat"), "{:?}", tip.refs);
     }
 
     #[test]

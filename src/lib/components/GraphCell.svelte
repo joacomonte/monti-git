@@ -42,12 +42,11 @@
   }
 
   function seg(d: string, lane: NonNullable<Lane>, current: boolean, dashed = false): Seg {
-    const behind = (lane[2] & 1) !== 0;
-    current ||= (lane[2] & 2) !== 0;
+    current ||= (lane[2] & 1) !== 0;
     return {
       // Thin lines; only the checked-out branch's line is thick and glows, so it stands out.
-      d, dashed, line: lane[1], glow: !behind && current, color: behind ? "var(--tertiary)" : grey && !current ? soft(lane[1]) : laneColor(lane[1]),
-      width: behind ? 1.5 : current ? 3.5 : 2,
+      d, dashed, line: lane[1], glow: current, color: grey && !current ? soft(lane[1]) : laneColor(lane[1]),
+      width: current ? 3.5 : 2,
     };
   }
 
@@ -65,7 +64,7 @@
       // A branch forking off another lane: the curve takes the new branch's color, not the lane it leaves from.
       const own: NonNullable<Lane> = p === 0 && i !== row.column ? [lane[0], row.color, 0] : lane;
       const s = seg(path(x(row.column), mid, x(i), height), own, row.isCurrent && p === 0, isWorktree || isShelved);
-      const fade = own !== lane ? ((lane[2] & 1) !== 0 ? "var(--tertiary)" : grey && (lane[2] & 2) === 0 ? soft(lane[1]) : laneColor(lane[1])) : undefined;
+      const fade = own !== lane ? (grey && (lane[2] & 1) === 0 ? soft(lane[1]) : laneColor(lane[1])) : undefined;
       out.push(isShelved ? { ...s, color: SHELVED, glow: false, width: 2 } : { ...s, fade });
     });
     return out;

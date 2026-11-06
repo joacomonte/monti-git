@@ -4,6 +4,7 @@ mod actions;
 mod blame;
 mod branches;
 mod changes;
+mod dashboard;
 mod diff;
 mod editors;
 mod git;
@@ -130,6 +131,12 @@ fn branch_status(repo: String, refs: Vec<String>, base: String, targets: Vec<Str
     branches::status(Path::new(&repo), &refs, &base, &targets)
 }
 
+/// The dashboard: in every repo, the branches with a commit in the last `days`, with their card facts.
+#[tauri::command(async)]
+fn recent_activity(repos: Vec<dashboard::RepoPicks>, days: u32, only_mine: bool) -> Vec<dashboard::RepoActivity> {
+    dashboard::activity(&repos, days, only_mine)
+}
+
 /// Filters, fast pass: every branch (yours only with `only_mine`) and, per target, the ones already in it by history.
 #[tauri::command(async)]
 fn merged_into(repo: String, targets: Vec<String>, only_mine: bool) -> branches::Merged {
@@ -249,6 +256,16 @@ fn discard_all(repo: String) -> Result<()> {
 }
 
 #[tauri::command(async)]
+fn untracked_check(repo: String, paths: Vec<String>) -> Result<Vec<actions::Doomed>> {
+    actions::untracked_check(&paths, Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn delete_untracked(repo: String, paths: Vec<String>) -> Result<()> {
+    actions::delete_untracked(&paths, Path::new(&repo))
+}
+
+#[tauri::command(async)]
 fn discard_hunk(repo: String, path: String, index: usize, header: String) -> Result<()> {
     actions::discard_hunk(&path, index, &header, Path::new(&repo))
 }
@@ -264,8 +281,9 @@ fn unstage(repo: String, paths: Vec<String>) -> Result<()> {
 }
 
 #[tauri::command(async)]
-fn commit(repo: String, message: String, push: bool) -> Result<String> {
-    actions::commit(&message, push, Path::new(&repo))
+/// A new commit, into the last one (`message` None keeps its message), or the branch squashed into one.
+fn commit(repo: String, message: Option<String>, kind: actions::CommitKind, push: bool) -> Result<String> {
+    actions::commit(message.as_deref(), &kind, push, Path::new(&repo))
 }
 
 pub fn run() {
@@ -276,11 +294,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             list_repos, is_repo, open_file, list_editors,
-            load_history, load_changes, load_diff, commit_info, blame, branch_status, merged_into, branch_tip, last_commit_message,
+            load_history, load_changes, load_diff, commit_info, blame, branch_status, recent_activity, merged_into, branch_tip, last_commit_message,
             changed_file_count, git_logs,
             search_commits, search_code, search_lines, commit_places,
             sync, checkout, pull, delete_branch, deletion, update_branch, base_status, start_feature, move_branch, push,
-            discard_file, discard_all, discard_hunk, stage, unstage, commit,
+            discard_file, discard_all, untracked_check, delete_untracked, discard_hunk, stage, unstage, commit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

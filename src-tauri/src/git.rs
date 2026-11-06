@@ -309,7 +309,8 @@ pub fn status(repo: &Path) -> Result<Status, String> {
         }
         // "1 XY …8 fields… path", "2 XY …9 fields… path\0orig", "u XY …10 fields… path", "? path"
         let (letter, staged, path) = match record.as_bytes().first() {
-            Some(b'?') => ('A', false, &record[2..]),
+            // A repo inside this one is listed as its folder, "inner/": shown as one entry, "inner".
+            Some(b'?') => ('A', false, record[2..].trim_end_matches('/')),
             Some(kind @ (b'1' | b'2' | b'u')) => {
                 let fields = match kind { b'1' => 9, b'2' => 10, _ => 11 };
                 let mut parts = record.splitn(fields, ' ');
