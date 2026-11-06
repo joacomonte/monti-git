@@ -18,6 +18,7 @@ mod search;
 #[cfg(test)]
 mod testutil;
 mod wip;
+mod window_state;
 
 use git::Span;
 use serde::{Deserialize, Serialize};
@@ -132,6 +133,12 @@ fn branch_status(repo: String, refs: Vec<String>, base: String, targets: Vec<Str
 }
 
 /// The dashboard: in every repo, the branches with a commit in the last `days`, with their card facts.
+/// Dashboard › Safe to delete, a page at a time from `start`.
+#[tauri::command(async)]
+fn safe_to_delete(repos: Vec<dashboard::RepoPicks>, only_mine: bool, start: usize, limit: usize) -> dashboard::SafePage {
+    dashboard::safe_to_delete(&repos, only_mine, start, limit)
+}
+
 #[tauri::command(async)]
 fn recent_activity(repos: Vec<dashboard::RepoPicks>, days: u32, only_mine: bool) -> Vec<dashboard::RepoActivity> {
     dashboard::activity(&repos, days, only_mine)
@@ -292,9 +299,21 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        // The window starts hidden (tauri.conf.json): it shows at the size and place it was left.
+        .setup(|app| {
+            if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                window_state::restore(&window);
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)) {
+                window_state::save(window);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_repos, is_repo, open_file, list_editors,
-            load_history, load_changes, load_diff, commit_info, blame, branch_status, recent_activity, merged_into, branch_tip, last_commit_message,
+            load_history, load_changes, load_diff, commit_info, blame, branch_status, recent_activity, safe_to_delete, merged_into, branch_tip, last_commit_message,
             changed_file_count, git_logs,
             search_commits, search_code, search_lines, commit_places,
             sync, checkout, pull, delete_branch, deletion, update_branch, base_status, start_feature, move_branch, push,

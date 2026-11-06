@@ -32,7 +32,7 @@
     <div class="flex max-h-[260px] flex-col gap-0.5 overflow-auto">
       {#each model.history.local as branch (branch)}
         <button class="base flex h-[30px] items-center justify-between gap-2 rounded-[10px] px-2.5 text-[13px]" id="branch-actions-base-{branch}"
-          onclick={run(() => model.setBaseBranch(branch))}>
+          onclick={run(() => model.makeBase(branch))}>
           <span class="truncate">{branch}</span>
           {#if name === branch || name.endsWith("/" + branch)}<Check size={11} strokeWidth={3} class="shrink-0 text-primary" />{/if}
         </button>

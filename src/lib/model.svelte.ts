@@ -501,24 +501,31 @@ export class RepoModel {
     return { path: repo, preferred: prefs.get("mainBranches", {})[repo] ?? null, environments: prefs.get("environments", {})[repo] ?? null };
   }
 
-  /** The user's environments for this repo were picked by hand (else detected by name). */
-  get customEnvironments() {
-    return this.repo != null && this.repo in prefs.get("environments", {});
+  private picksVersion = $state(0); // bumped when the picks change: prefs aren't reactive
+
+  /** A repo opened for the first time: neither its base nor its environments picked yet (the setup screen asks). */
+  get needsSetup() {
+    void this.picksVersion;
+    const repo = this.repo;
+    return !!repo && this.history.allBranches.length > 0 && !(repo in prefs.get("mainBranches", {})) && !(repo in prefs.get("environments", {}));
   }
 
-  /** Same "mainBranches" store as the graph's base: the whole repo reloads. */
-  setBaseBranch(branch: string) {
-    if (!this.repo) return;
-    prefs.set("mainBranches", { ...prefs.get("mainBranches", {}), [this.repo]: branch });
+  /** The base and the environments in one go, by local name ("production", even when only origin has it: the base
+   *  resolves to the local branch, else its copy on the server). The base isn't an environment of its own. */
+  configure(base: string, environments: string[]) {
+    const repo = this.repo;
+    if (!repo) return;
+    const name = localName(base);
+    prefs.set("mainBranches", { ...prefs.get("mainBranches", {}), [repo]: name });
+    prefs.set("environments", { ...prefs.get("environments", {}), [repo]: [...new Set(environments.map(localName))].filter((n) => n !== name) });
+    this.picksVersion++;
     this.reload();
   }
 
-  /** The user's environments for this repo, by branch name; null goes back to detecting them by name (qa, develop…). */
-  setEnvironments(names: string[] | null) {
-    if (!this.repo) return;
-    const { [this.repo]: _, ...others } = prefs.get("environments", {});
-    prefs.set("environments", names ? { ...others, [this.repo]: names } : others);
-    this.reload();
+  /** `name` becomes the base; the old base stays as an environment. */
+  makeBase(name: string) {
+    const old = this.history.base;
+    this.configure(name, [...this.history.environments, ...(old ? [old] : [])]);
   }
 
   /** An older commit may sit past the loaded page: keep loading history until it shows up (or there is no more). */

@@ -6,6 +6,7 @@
   import DiffPane from "$lib/components/DiffPane.svelte";
   import Dashboard from "$lib/components/Dashboard.svelte";
   import DeleteUntracked from "$lib/components/DeleteUntracked.svelte";
+  import RepoSetup from "$lib/components/RepoSetup.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
   import Loader from "$lib/components/Loader.svelte";
   import QuickTooltip from "$lib/components/QuickTooltip.svelte";
@@ -114,6 +115,8 @@
           <div class="flex min-h-0 flex-1">
             <div class="relative min-w-0 flex-1">
               <CommitList {model} />
+              <!-- First time this repo opens: pick its environments and base. -->
+              {#if model.needsSetup}<RepoSetup {model} />{/if}
             </div>
             {#if model.selected}
               <PaneDivider vertical bind:size={treeWidth} min={220} max={treeMax} id="tree-divider" />

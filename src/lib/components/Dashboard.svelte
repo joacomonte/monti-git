@@ -8,7 +8,7 @@
 </script>
 
 <script lang="ts">
-  import { ArrowDown, CircleCheck, Clock, Cloud, ChevronRight, CloudUpload, Copy, Crosshair, PenLine, UserRound, Waypoints } from "@lucide/svelte";
+  import { ArrowDown, ArrowRight, Sparkles, CircleCheck, Clock, Cloud, ChevronRight, CloudUpload, Copy, Crosshair, PenLine, UserRound, Waypoints } from "@lucide/svelte";
   import { api, WORKTREE_ID, type ActiveBranch, type RepoActivity } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import { ago, baseName, plural } from "$lib/format";
@@ -16,6 +16,7 @@
   import { isRemote, localName } from "$lib/refs";
   import { mergeState } from "$lib/cards";
   import ContextMenu from "./ContextMenu.svelte";
+  import { fly } from "svelte/transition";
   import { laneColor } from "./GraphCell.svelte";
   import Loader from "./Loader.svelte";
   import Segmented from "./Segmented.svelte";
@@ -30,6 +31,7 @@
   let activity = $state.raw<RepoActivity[] | null>(cache.get(`${days}:${onlyMine}`) ?? null); // the cache, before the first frame
   let refreshing = $state(false); // a thin bar on top while it reads the repos again; what's shown stays usable
   let version = $state(0); // bumped after a push from here, to read the repos again
+  let sub = $state<"safe" | null>(null); // a sub view: "Dashboard › Safe to delete"
   let menu = $state<{ group: RepoActivity; branch: ActiveBranch; x: number; y: number } | null>(null);
 
   // Reads the repos on every visit and when the window, the filter or the sidebar's repos change; a newer request wins.
@@ -121,23 +123,35 @@
 <div class="relative h-full">
 {#if refreshing && activity}<div class="refreshing" title="Checking every repo for anything new"></div>{/if}
 <div class="dashboard enter-fade" id="dashboard">
+  <!-- Title (a breadcrumb in a sub view), the filters under it. -->
   <div class="head">
-    <span class="title">Recent branches</span>
-    <span class="hint">with commits in the last</span>
-    <Segmented id="dashboard-days" value={String(days)} onchange={(v) => setDays(Number(v))}
-      options={DAYS.map((d) => ({ value: String(d), label: d === 1 ? "24 h" : `${d} days` }))} />
-    <button class="tool ml-1.5" class:on={onlyMine} aria-pressed={onlyMine} id="dashboard-only-mine" onclick={() => setOnlyMine(!onlyMine)}
-      title="My branches: only those whose last commit is yours. Off: everyone's."><UserRound size={14} />My branches</button>
+    <div class="crumbs">
+      {#if sub}<button class="crumb" id="dashboard-crumb-home" onclick={() => (sub = null)}>Dashboard</button><ChevronRight size={18} class="text-tertiary" /><span class="title" in:fly={{ x: 12, duration: 220 }}>Safe to delete</span>
+      {:else}<span class="title">Dashboard</span>{/if}
+    </div>
+    <div class="filters">
+      {#if !sub}
+        <span class="hint">Branches with commits in the last</span>
+        <Segmented id="dashboard-days" value={String(days)} onchange={(v) => setDays(Number(v))}
+          options={DAYS.map((d) => ({ value: String(d), label: d === 1 ? "24 h" : `${d} days` }))} />
+      {/if}
+      <button class="tool" class:on={onlyMine} aria-pressed={onlyMine} id="dashboard-only-mine" onclick={() => setOnlyMine(!onlyMine)}
+        title="My branches: only those whose last commit is yours. Off: everyone's."><UserRound size={14} />My branches</button>
+    </div>
   </div>
 
-  {#if activity == null}
+  {#if sub === "safe"}
+    <!-- Loaded only when opened: its code and its (heavier) read of every branch. -->
+    {#await import("./SafeToDelete.svelte") then { default: SafeToDelete }}<SafeToDelete {model} {onlyMine} {colorOf} />{/await}
+  {:else if activity == null}
     <Loader title="Looking at every repo" detail="Branches with recent commits, and where each one is merged" />
   {:else if !activity.length}
     <div class="empty" id="dashboard-empty"><Waypoints size={28} strokeWidth={1.5} />No {onlyMine ? "branch of yours" : "branch"} has commits in the last {days === 1 ? "24 hours" : `${days} days`}.</div>
   {:else}
     {#each runs as { group, branches }, i (i)}
       <section class="repo" style:--repo={colorOf(group.repo)}>
-        <h3><span class="dot"></span>{baseName(group.repo)}</h3>
+        <h3><button class="repo-title" id="dashboard-repo-{baseName(group.repo)}" title="Open {baseName(group.repo)} in the graph"
+          onclick={() => model.open(group.repo, "graph")}><span class="dot"></span>{baseName(group.repo)}<ArrowRight size={18} class="go" /></button></h3>
         <div class="cards">
           {#each branches as b (b.name)}
             {@const s = b.status}
@@ -188,6 +202,18 @@
       </section>
     {/each}
   {/if}
+  {#if !sub && activity != null}
+    <!-- Below every card, in a section of its own: the way into the clean-up list. -->
+    <section class="tools-section">
+    <h4 class="section-title">Maintenance</h4>
+    <button class="cleanup" id="dashboard-open-safe-to-delete" onclick={() => (sub = "safe")}>
+      <span class="cleanup-icon"><Sparkles size={20} /></span>
+      <span class="flex min-w-0 flex-1 flex-col text-left"><span class="cleanup-title">Clean up merged branches</span>
+        <span class="cleanup-detail">Every branch that's already in the base and every environment: safe to delete, newest first</span></span>
+      <ChevronRight size={18} class="chevron-go" />
+    </button>
+    </section>
+  {/if}
 </div>
 
 </div>
@@ -223,12 +249,36 @@
     background: linear-gradient(to right, transparent, var(--primary), transparent); background-size: 40% 100%; background-repeat: no-repeat; animation: sweep 1.3s linear infinite; }
   @keyframes sweep { from { background-position: -40% 0; } to { background-position: 140% 0; } }
   @media (prefers-reduced-motion: reduce) { .refreshing { animation: none; background-size: 100% 100%; opacity: 0.5; } }
-  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-  .title { font-size: 17px; font-weight: 700; }
+  .head { display: flex; flex-direction: column; gap: 10px; }
+  .crumbs { display: flex; align-items: center; gap: 6px; }
+  .title { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; }
+  .crumb { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; color: var(--tertiary); transition: color 0.15s; }
+  .crumb:hover { color: var(--foreground); }
+  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  /* Its own section under the cards: a line above, a small title. */
+  .tools-section { display: flex; flex-direction: column; gap: 10px; padding-top: 22px; border-top: 1px solid var(--border); }
+  .section-title { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--tertiary); }
+  /* The way into Safe to delete: wide and grey, an arrow that moves on hover. */
+  .cleanup { display: flex; align-items: center; gap: 14px; width: 100%; padding: 16px 18px; border-radius: 14px; color: var(--foreground);
+    background: oklch(0.5 0 0 / 0.07); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.14); transition: background 0.2s, box-shadow 0.2s; }
+  .cleanup:hover { background: oklch(0.5 0 0 / 0.12); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.24); }
+  .cleanup-icon { display: grid; flex-shrink: 0; place-items: center; width: 42px; height: 42px; border-radius: 12px; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.12); }
+  .cleanup-title { font-size: 15px; font-weight: 700; }
+  .cleanup-detail { font-size: 12.5px; color: var(--muted-foreground); }
+  .cleanup :global(.chevron-go) { flex-shrink: 0; color: var(--tertiary); transition: translate 0.2s, color 0.2s; }
+  .cleanup:hover :global(.chevron-go) { translate: 4px 0; color: var(--foreground); }
   .hint { font-size: 12.5px; color: var(--tertiary); }
   .empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 60px 0; font-size: 13px; color: var(--muted-foreground); }
   /* The repo leads its group: bigger than the branch names, in its color. */
   .repo h3 { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 20px; font-weight: 800; letter-spacing: -0.01em; color: color-mix(in oklab, var(--repo) 55%, var(--foreground)); }
+  /* The repo's title opens its graph: on hover it lifts to full color and an arrow slides in. */
+  .repo-title { display: flex; align-items: center; gap: 10px; margin-left: -8px; padding: 2px 10px 2px 8px; border-radius: 10px; color: inherit;
+    transition: color 0.2s, background 0.2s; }
+  .repo-title:hover { color: var(--repo); background: color-mix(in oklab, var(--repo) 10%, transparent); }
+  .repo-title :global(.go) { opacity: 0; translate: -6px 0; transition: opacity 0.2s, translate 0.25s var(--ease); }
+  .repo-title:hover :global(.go) { opacity: 1; translate: 0 0; }
+  .repo-title:hover .dot { scale: 1.15; }
+  .dot { transition: scale 0.2s var(--ease); }
   .dot { width: 12px; height: 12px; border-radius: 99px; background: var(--repo); box-shadow: 0 0 0 4px color-mix(in oklab, var(--repo) 22%, transparent); }
   .cards { display: flex; flex-direction: column; gap: 10px; }
   /* One per row, tinted with its repo's color: details on the left, actions on the right. */

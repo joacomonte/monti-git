@@ -55,6 +55,17 @@ pub struct Status {
     unpushed: u32,           // of its own commits, those the server doesn't have: ahead of its upstream (at most all), or all if never pushed
 }
 
+impl Status {
+    pub fn reference(&self) -> &str {
+        &self.reference
+    }
+
+    /// In the base and every environment: safe to delete (cards.ts mergeState "done" is the same rule, for the web view).
+    pub fn merged_everywhere(&self) -> bool {
+        !self.promotion.is_empty() && self.promotion.iter().all(|(_, missing, _)| *missing == 0)
+    }
+}
+
 /// A ref's facts only change when it, the base or a target moves: kept per (repo, ref), keyed by those commits.
 static CACHE: LazyLock<Mutex<HashMap<(String, String), (String, Status)>>> = LazyLock::new(Mutex::default);
 

@@ -158,6 +158,9 @@ export const api = {
     invoke<{ all: string[]; merged: [string, string[]][] }>("merged_into", { repo, targets, onlyMine }),
   /** Dashboard: in every repo, the branches with a commit in the last `days` (yours only with `onlyMine`). */
   recentActivity: (repos: RepoPicks[], days: number, onlyMine: boolean) => invoke<RepoActivity[]>("recent_activity", { repos, days, onlyMine }),
+  /** Dashboard › Safe to delete: up to `limit` from `start`; `next` is where the following page starts (null: no more). */
+  safeToDelete: (repos: RepoPicks[], onlyMine: boolean, start: number, limit: number) =>
+    invoke<{ items: (ActiveBranch & { repo: string })[]; next: number | null }>("safe_to_delete", { repos, onlyMine, start, limit }),
   branchTip: (repo: string, branch: string) => invoke<string | null>("branch_tip", { repo, branch }),
   lastCommitMessage: (repo: string) => invoke<string>("last_commit_message", { repo }),
   changedFileCount: (repo: string) => invoke<number>("changed_file_count", { repo }),
