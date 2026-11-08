@@ -162,6 +162,12 @@ fn last_commit_message(repo: String) -> String {
     git::read_opt(&["log", "-1", "--format=%B"], Path::new(&repo)).unwrap_or_default().trim().to_string()
 }
 
+/// The commit form warns before amending a commit that's already on the server.
+#[tauri::command(async)]
+fn head_pushed(repo: String) -> bool {
+    actions::head_pushed(Path::new(&repo))
+}
+
 /// Staged, unstaged and untracked files.
 #[tauri::command(async)]
 fn changed_file_count(repo: String) -> Result<usize> {
@@ -289,8 +295,8 @@ fn unstage(repo: String, paths: Vec<String>) -> Result<()> {
 
 #[tauri::command(async)]
 /// A new commit, into the last one (`message` None keeps its message), or the branch squashed into one.
-fn commit(repo: String, message: Option<String>, kind: actions::CommitKind, push: bool) -> Result<String> {
-    actions::commit(message.as_deref(), &kind, push, Path::new(&repo))
+fn commit(repo: String, message: Option<String>, kind: actions::CommitKind, push: bool, rewrite: bool) -> Result<String> {
+    actions::commit(message.as_deref(), &kind, push, rewrite, Path::new(&repo))
 }
 
 pub fn run() {
@@ -313,7 +319,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_repos, is_repo, open_file, list_editors,
-            load_history, load_changes, load_diff, commit_info, blame, branch_status, recent_activity, safe_to_delete, merged_into, branch_tip, last_commit_message,
+            load_history, load_changes, load_diff, commit_info, blame, branch_status, recent_activity, safe_to_delete, merged_into, branch_tip, last_commit_message, head_pushed,
             changed_file_count, git_logs,
             search_commits, search_code, search_lines, commit_places,
             sync, checkout, pull, delete_branch, deletion, update_branch, base_status, start_feature, move_branch, push,

@@ -163,6 +163,7 @@ export const api = {
     invoke<{ items: (ActiveBranch & { repo: string })[]; next: number | null }>("safe_to_delete", { repos, onlyMine, start, limit }),
   branchTip: (repo: string, branch: string) => invoke<string | null>("branch_tip", { repo, branch }),
   lastCommitMessage: (repo: string) => invoke<string>("last_commit_message", { repo }),
+  headPushed: (repo: string) => invoke<boolean>("head_pushed", { repo }),
   changedFileCount: (repo: string) => invoke<number>("changed_file_count", { repo }),
   gitLogs: (since: number) => invoke<GitLog[]>("git_logs", { since }),
 
@@ -198,5 +199,5 @@ export const api = {
   stage: (repo: string, paths: string[]) => invoke<void>("stage", { repo, paths }),
   unstage: (repo: string, paths: string[]) => invoke<void>("unstage", { repo, paths }),
   /** A new commit, into the last one (`message` null keeps its message), or the branch squashed into one since a base. */
-  commit: (repo: string, message: string | null, kind: CommitKind, push: boolean) => invoke<string>("commit", { repo, message, kind, push }),
+  commit: (repo: string, message: string | null, kind: CommitKind, push: boolean, rewrite = false) => invoke<string>("commit", { repo, message, kind, push, rewrite }),
 };

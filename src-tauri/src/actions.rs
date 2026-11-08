@@ -596,16 +596,22 @@ pub enum CommitKind {
     Squash(String),    // the branch's own commits since this base, plus what's staged, become one commit
 }
 
+/// The last commit is on some server branch: amending it rewrites shared history.
+pub fn head_pushed(repo: &Path) -> bool {
+    !read_opt(&["branch", "-r", "--contains", "HEAD"], repo).unwrap_or_default().trim().is_empty()
+}
+
 /// Commits what's staged: a new commit, folded into the last one (`message` None keeps its message), or the branch
-/// squashed into one. Amending and squashing are refused once those commits are on the server: that would rewrite shared
-/// history. With `push`, pushes the current branch too, setting its upstream the first time.
-pub fn commit(message: Option<&str>, kind: &CommitKind, push: bool, repo: &Path) -> Result<String, String> {
+/// squashed into one. Squashing is refused once those commits are on the server; amending a pushed commit only with
+/// `rewrite`, and then the branch is force-pushed (with lease) so the server gets the amended one. With `push`, pushes
+/// the current branch too, setting its upstream the first time.
+pub fn commit(message: Option<&str>, kind: &CommitKind, push: bool, rewrite: bool, repo: &Path) -> Result<String, String> {
     exclusive(repo, || {
         let branch = current_branch(repo);
         if push && branch.is_none() {
             return Err("No branch checked out (detached HEAD): nothing to push to. Commit without pushing.".into());
         }
-        let on_server = |rev: &str| !read_opt(&["branch", "-r", "--contains", rev], repo).unwrap_or_default().trim().is_empty();
+        let mut force = false;
         let done = match (kind, message) {
             (CommitKind::New, Some(message)) => {
                 write_input(&["commit", "-q", "-F", "-"], repo, message)?;
@@ -613,8 +619,11 @@ pub fn commit(message: Option<&str>, kind: &CommitKind, push: bool, repo: &Path)
             }
             (CommitKind::New | CommitKind::Squash(_), None) => return Err("It needs a message".into()),
             (CommitKind::Amend, message) => {
-                if on_server("HEAD") {
-                    return Err("The last commit is already pushed: amending it would rewrite shared history. Make a new commit instead.".into());
+                if head_pushed(repo) {
+                    if !rewrite || branch.is_none() {
+                        return Err("The last commit is already pushed: amending it would rewrite shared history. Make a new commit instead.".into());
+                    }
+                    force = true;
                 }
                 match message {
                     None => write(&["commit", "-q", "--amend", "--no-edit"], repo)?,
@@ -642,10 +651,11 @@ pub fn commit(message: Option<&str>, kind: &CommitKind, push: bool, repo: &Path)
                 format!("Squashed {} commits into one", own.len())
             }
         };
-        let Some(branch) = branch.filter(|_| push) else { return Ok(done) };
+        let Some(branch) = branch.filter(|_| push || force) else { return Ok(done) };
         // The commit is done either way: a failed push is reported as a status, not as an error that keeps the form filled.
-        Ok(match push_branch(&branch, false, repo) {
-            Ok(Pushed::Done) => format!("{done} and pushed {branch}"),
+        Ok(match push_branch(&branch, force, repo) {
+            Ok(Pushed::Done) => format!("{done} and {} {branch}", if force { "force-pushed" } else { "pushed" }),
+            Ok(Pushed::Behind) if force => format!("{done}, but not pushed: the server has commits on {branch} you haven't fetched. Pull them first."),
             Ok(Pushed::Behind) => format!("Committed, but not pushed: the server has commits {branch} doesn't. Pull first."),
             Err(e) => format!("Committed, but the push failed: {}", e.lines().next().unwrap_or("unknown error")),
         })
@@ -668,14 +678,18 @@ mod tests {
         std::fs::write(repo.path().join("b.txt"), "2").unwrap();
         repo.git(&["add", "b.txt"]);
         let amend = super::CommitKind::Amend;
-        assert_eq!(super::commit(None, &amend, false, repo.path()).unwrap(), "Amended the last commit");
+        assert_eq!(super::commit(None, &amend, false, false, repo.path()).unwrap(), "Amended the last commit");
         assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "first try", "no message: it keeps its own");
         assert_eq!(repo.git(&["rev-list", "--count", "origin/main..HEAD"]).trim(), "1", "still one commit");
-        super::commit(Some("better title\n"), &amend, false, repo.path()).unwrap();
+        super::commit(Some("better title\n"), &amend, false, false, repo.path()).unwrap();
         assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "better title");
         repo.git(&["push", "-q", "origin", "feat"]);
-        assert!(super::commit(None, &amend, false, repo.path()).unwrap_err().contains("already pushed"));
-        assert!(super::commit(None, &super::CommitKind::New, false, repo.path()).is_err(), "a new commit needs a message");
+        assert!(super::commit(None, &amend, false, false, repo.path()).unwrap_err().contains("already pushed"));
+        let done = super::commit(Some("rewritten\n"), &amend, false, true, repo.path()).unwrap();
+        assert!(done.contains("force-pushed feat"), "{done}");
+        repo.git(&["fetch", "-q", "origin"]);
+        assert_eq!(repo.git(&["log", "-1", "--format=%s", "origin/feat"]).trim(), "rewritten", "the server has the amended one");
+        assert!(super::commit(None, &super::CommitKind::New, false, false, repo.path()).is_err(), "a new commit needs a message");
     }
 
     #[test]
@@ -688,11 +702,11 @@ mod tests {
         std::fs::write(repo.path().join("c.txt"), "1").unwrap();
         repo.git(&["add", "c.txt"]);
         let squash = super::CommitKind::Squash("main".into());
-        assert_eq!(super::commit(Some("feat: all of it\n"), &squash, false, repo.path()).unwrap(), "Squashed 2 commits into one");
+        assert_eq!(super::commit(Some("feat: all of it\n"), &squash, false, false, repo.path()).unwrap(), "Squashed 2 commits into one");
         assert_eq!(repo.git(&["rev-list", "--count", "main..feat"]).trim(), "1");
         assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "feat: all of it");
         assert_eq!(repo.git(&["show", "--format=", "--name-only", "HEAD"]).trim(), "b.txt\nc.txt", "the staged file went in too");
-        assert!(super::commit(None, &squash, false, repo.path()).is_err(), "it needs a message");
+        assert!(super::commit(None, &squash, false, false, repo.path()).is_err(), "it needs a message");
     }
 
     #[test]

@@ -1,11 +1,11 @@
 <!-- Virtualized commit list: only the rows on screen are in the DOM. Rows touch so the graph lines stay continuous. -->
 <script lang="ts">
-  import { Archive, ArrowDown, ArrowUp, CircleCheck, Clock, Cloud, Copy, GitCommitHorizontal, GitPullRequestDraft, Sparkles, Trash2 } from "@lucide/svelte";
+  import { Archive, ArrowDown, ArrowUp, CircleCheck, Clock, Cloud, Copy, Laptop, GitCommitHorizontal, GitPullRequestDraft, Sparkles, Trash2 } from "@lucide/svelte";
   import { api, WORKTREE_ID, type Card, type Commit } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import { CopyFlash } from "$lib/clipboard.svelte";
   import { plural, subject, when } from "$lib/format";
-  import { branchBadges, isHead, isRemote, isTag, localName, refName } from "$lib/refs";
+  import { branchBadges, isHead, isRemote, isTag, localName, refName, unpushed } from "$lib/refs";
   import { mergeState } from "$lib/cards";
   import GraphCell, { LANE, PAD, laneColor } from "./GraphCell.svelte";
   import RefBadge from "./RefBadge.svelte";
@@ -244,7 +244,8 @@
                       style:--lane={laneColor(model.history.rows[i].color)} aria-busy={isPending(badge.ref)}>
                       <button class="bname" id="branch-card-{name}" onclick={(e) => openBranchMenu(e, badge.ref, commit)}>
                         {#if head}<CircleCheck size={13} strokeWidth={2.5} />{/if}<span class="truncate">{name}</span>
-                        {#if badge.isSynced || isRemote(badge.ref)}<span class="cloud" title="On the server at this commit: nothing to push or pull."><Cloud size={12} strokeWidth={2.5} /></span>{/if}
+                        {#if badge.isSynced || isRemote(badge.ref)}<span class="cloud" title="On the server at this commit: nothing to push or pull."><Cloud size={12} strokeWidth={2.5} /></span>
+                        {:else}<span class="laptop" title={own && !own.hasUpstream ? "Only on this computer: never pushed. Right-click → Push" : "Not on the server at this commit. Right-click → Push"}><Laptop size={12} strokeWidth={2.5} /></span>{/if}
                       </button>
                       <div class="status">
                         {#if own && hasStatus(own)}{@render status(own)}{:else if isPending(badge.ref)}<span class="skel"></span>{/if}
@@ -315,7 +316,7 @@
 {#if menu?.kind === "branch"}
   {@const { name, commit } = menu}
   <ContextMenu x={menu.x} y={menu.y} id="branch-pill-menu" class="branch-menu" onclose={() => (menu = null)}>
-    <BranchActions {name} local={localName(name)} hash={commit.id} isBase={localName(name) === localName(model.history.base ?? "")} isCurrent={model.isCurrent(name)} {model}
+    <BranchActions {name} local={localName(name)} hash={commit.id} isBase={localName(name) === localName(model.history.base ?? "")} isCurrent={model.isCurrent(name)} canPush={unpushed(commit.refs).includes(name)} {model}
       dismiss={() => (menu = null)} onNewBranch={() => (dialog = { kind: "new", from: localName(name) })} onFocus={() => openFocus(name)} />
   </ContextMenu>
 {:else if menu?.kind === "commit"}
@@ -357,6 +358,7 @@
   .bcard.head .st:not(.amber, .ok, .warn) { color: rgb(255 255 255 / 0.75); }
   .bname { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 13px; font-weight: 700; color: inherit; text-align: left; }
   .bname .cloud { display: flex; flex-shrink: 0; margin-left: 3px; opacity: 0.6; }
+  .bname .laptop { display: flex; flex-shrink: 0; margin-left: 3px; color: #f5a524; } /* amber: work only on this computer */
   /* Hover: the card glows a little in its own color (no underline). */
   .bcard:not(.head):hover {
     color: color-mix(in oklab, var(--lane) 45%, var(--foreground)); background: color-mix(in oklab, var(--lane) 12%, var(--background));

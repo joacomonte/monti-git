@@ -91,7 +91,7 @@
       for (const node of nodes) {
         if (flat && node.children) add(node.children, 0, section);
         else out.push({ key: section + node.path, node, depth });
-        if (!flat && node.children && (searching || model.expandedDirs.has(node.path))) add(node.children, depth + 1, section);
+        if (!flat && node.children && (searching || model.expandedDirs.has(section + node.path))) add(node.children, depth + 1, section);
       }
     };
     add(visibleTree, 0, "");
@@ -136,7 +136,7 @@
     openFile(path, openHow(choice));
   }
 
-  const everything = $derived(model.bulkStage);
+  const everything = $derived(model.stageState(""));
 
   // New files in subtle green, modified in subtle yellow; deletes red, renames blue.
   const COLORS: Record<string, string> = { A: "rgb(52 199 89 / 0.85)", M: "rgb(230 180 0 / 0.9)", D: "rgb(255 59 48 / 0.6)", R: "rgb(0 122 255 / 0.85)" };
@@ -268,11 +268,12 @@
       {@const status = model.changes[node.path]}
       {@const isFolder = node.children != null}
       {@const isChanged = isFolder ? model.changedDirs.has(node.path) : status != null}
-      {@const isOpen = model.expandedDirs.has(node.path)}
+      {@const dirKey = row.key.startsWith("untracked:") ? row.key : node.path}
+      {@const isOpen = model.expandedDirs.has(dirKey)}
       {@const hits = searching ? lineHits[node.path] : undefined}
       <button class="file flex h-[26px] w-full items-center gap-2 rounded-md pr-2 text-left text-[12px]" class:active={model.fileFilter === node.path}
         style:padding-left="{depth * 16 + 4}px" style:--depth={depth} id="file-tree-row-{row.key}"
-        onclick={() => (isFolder ? model.toggleDir(node.path) : model.showFile(node.path, mode !== "names" && hits ? { line: hits.line, old: hits.old } : undefined))}
+        onclick={() => (isFolder ? model.toggleDir(dirKey) : model.showFile(node.path, mode !== "names" && hits ? { line: hits.line, old: hits.old } : undefined))}
         oncontextmenu={(e) => { e.preventDefault(); menu = { path: node.path, isFolder, deleted: status === "D", x: e.clientX, y: e.clientY }; }}>
         <span class="flex w-3 shrink-0 justify-center text-tertiary">
           {#if isFolder}<ChevronRight size={10} strokeWidth={3} class="transition-transform {isOpen ? 'rotate-90' : ''}" />{/if}

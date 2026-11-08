@@ -4,7 +4,7 @@
        3. The message (if any) and the one button that does it; with AI: how long, and the prompt is copied for your agent.
      Commits only what's checked (staged) in the tree. -->
 <script lang="ts">
-  import { AlignLeft, ArrowLeft, Check, ChevronDown, CloudUpload, FileText, GitCommitHorizontal, Layers, PenLine, Quote, Sparkles, TextQuote, Type } from "@lucide/svelte";
+  import { AlignLeft, ArrowLeft, Check, ChevronDown, CloudUpload, FileText, GitCommitHorizontal, Layers, PenLine, Quote, Sparkles, TextQuote, TriangleAlert, Type } from "@lucide/svelte";
   import type { Component } from "svelte";
   import { fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
@@ -25,6 +25,7 @@
   let title = $state("");
   let description = $state("");
   let previous = $state({ title: "", description: "" });
+  let pushed = $state(false); // the last commit is on the server: amending it means a force push
   let showMenu = $state(false);
   let length = $state<AiLength>("concise");
 
@@ -42,8 +43,10 @@
 
   $effect(() => {
     const repo = model.repo;
+    void model.history; // reloaded after commits, pushes and pulls: asked again
     if (!repo) return;
     let stale = false;
+    api.headPushed(repo).then((p) => { if (!stale) pushed = p; }, () => {});
     api.lastCommitMessage(repo).then((message) => {
       if (stale) return;
       const [first, ...rest] = message.split("\n");
@@ -91,7 +94,7 @@
     showMenu = false;
     if (!canCommit) return;
     const [t, d] = keepMessage ? ["", ""] : [title, description];
-    if (await model.commit(t, d, { kind: mode, push })) {
+    if (await model.commit(t, d, { kind: mode, push, rewrite: amend && pushed })) {
       if (t.trim()) previous = { title: t.trim(), description: d.trim() };
       title = description = "";
       go("what");
@@ -176,13 +179,17 @@
           {:else}
             <div class="kept"><Quote size={14} class="shrink-0" /><span class="min-w-0 flex-1 truncate">{previous.title}</span></div>
           {/if}
+          {#if amend && pushed}
+            <p class="pushed-warning" id="commit-amend-pushed-warning"><TriangleAlert size={14} class="mt-px shrink-0" />
+              Already pushed: amending replaces it on the server too (force push). Anyone who already pulled it will have to reset to the new one.</p>
+          {/if}
           <div class="flex items-center gap-2">
             <span class="min-w-0 flex-1 truncate text-[12px] text-muted-foreground" id="commit-staged-count">
               {squash ? `${staged ? `${plural(staged, "staged file")} and the` : "The"} branch's commits since ${base}` : amend && !staged ? "Only the message changes" : stagedLine}
             </span>
-            <div class="split flex h-8 shrink-0 overflow-hidden rounded-md" class:disabled={!canCommit}>
+            <div class="split flex h-8 shrink-0 overflow-hidden rounded-md" class:disabled={!canCommit} class:danger={amend && pushed}>
               <button class="px-3.5 text-[13px] font-semibold" id="commit-button" disabled={!canCommit} onclick={() => commit(false)}
-                title="{amend ? 'Amend the last commit' : squash ? 'Squash the branch into one commit' : 'Commit the staged files'} (⌘↩)">{VERB[mode]}</button>
+                title="{amend ? 'Amend the last commit' : squash ? 'Squash the branch into one commit' : 'Commit the staged files'} (⌘↩)">{amend && pushed ? "Amend & Force push" : VERB[mode]}</button>
               {#if mode === "new"}
                 <Popover.Root bind:open={showMenu}>
                   <Popover.Trigger class="border-l border-white/25 px-1.5" id="commit-options" disabled={!canCommit} title="More commit options">
@@ -241,6 +248,8 @@
   @media (prefers-reduced-motion: reduce) { .check, .spark, .big, .small { animation: none; } .spark { display: none; } }
   .split { color: white; background: var(--primary); }
   .split.disabled { opacity: 0.45; }
+  .split.danger { background: #ea580c; } /* amending a pushed commit: force push */
+  .pushed-warning { display: flex; gap: 6px; font-size: 12px; line-height: 1.4; color: #f97316; }
   .split > :global(button:not(:disabled):hover) { background: color-mix(in oklab, var(--primary) 85%, black); }
   .menu:hover { background: var(--quinary); }
 </style>

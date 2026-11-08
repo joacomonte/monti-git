@@ -1,5 +1,15 @@
 [
   {
+    "version": "1.6.0",
+    "changes": [
+      { "kind": "improved", "title": "Push right after committing", "detail": "A commit that stays on your computer asks whether to push it now: Push, or Not now." },
+      { "kind": "improved", "title": "New files staged by default", "detail": "Files git doesn't follow yet are staged as soon as they show up, so the next commit takes them without checking each one. Uncheck one and it stays out. Stage all now covers them too." },
+      { "kind": "improved", "title": "Amend a pushed commit", "detail": "Amending the last commit after pushing it is allowed with a warning: the button turns into Amend & Force push, and the force push never overwrites work you haven't fetched." },
+      { "kind": "improved", "title": "Push from the branch menu", "detail": "A branch the server doesn't have at its tip offers Push in its menu, and its card shows a laptop instead of the cloud." },
+      { "kind": "fixed", "title": "Folders open per section", "detail": "Opening a folder among the untracked files no longer opens the one with the same name among the changes." }
+    ]
+  },
+  {
     "version": "1.5.0",
     "changes": [
       { "kind": "new", "title": "Dashboard", "demo": "dashboard", "detail": "The app opens on every repo's branches with commits in the last 24 hours, 3 or 7 days, newest first, yours by default. Each card says where it's merged and how far behind it is, with Commit and Push buttons when something is waiting on your machine." },

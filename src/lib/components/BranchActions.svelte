@@ -1,6 +1,6 @@
 <!-- A branch's menu in the graph (click or right-click its badge): check out, pull, new branch, copy, change base. -->
 <script lang="ts">
-  import { ArrowDownCircle, ArrowLeftRight, Check, Crosshair, GitBranchPlus, ChevronLeft, Copy, House, Sparkles } from "@lucide/svelte";
+  import { ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, Check, Crosshair, GitBranchPlus, ChevronLeft, Copy, House, Sparkles } from "@lucide/svelte";
   import type { RepoModel } from "$lib/model.svelte";
   import ActionRow from "./ActionRow.svelte";
 
@@ -10,12 +10,13 @@
     hash?: string | null; // tip commit, for "Copy commit hash"
     isBase: boolean;
     isCurrent: boolean;
+    canPush: boolean; // a local branch the server doesn't have at this commit
     onNewBranch: () => void; // "New branch from here"
     onFocus: () => void; // "Focus view"
     model: RepoModel;
     dismiss: () => void;
   };
-  let { name, local, hash = null, isBase, isCurrent, onNewBranch, onFocus, model, dismiss }: Props = $props();
+  let { name, local, hash = null, isBase, isCurrent, canPush, onNewBranch, onFocus, model, dismiss }: Props = $props();
   let choosingBase = $state(false);
   let copying = $state(false); // "Copy" row unfolded: name, hash, or all of it for an AI agent
 
@@ -49,6 +50,10 @@
     {#if !isCurrent}
       <ActionRow title="Check out" detail="Switch to this branch and pull its latest" icon={ArrowLeftRight} color="#4f8cff" id="branch-actions-check-out"
         onclick={run(() => model.checkout(name))} />
+    {/if}
+    {#if canPush}
+      <ActionRow title="Push" detail="Send its commits to the server, without switching" icon={ArrowUpCircle} color="#f5a524" id="branch-actions-push"
+        disabled={model.isSyncing} onclick={run(() => model.push(local))} />
     {/if}
     <ActionRow title="Pull" detail="Fetch and fast-forward, without switching" icon={ArrowDownCircle} color="#2fc4b2" id="branch-actions-pull"
       disabled={model.isSyncing} onclick={run(() => model.pull(name))} />

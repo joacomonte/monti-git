@@ -315,18 +315,15 @@ export class RepoModel {
     return this.isWorktreeSelected && !this.showAllFiles && this.untracked.size > 0;
   }
   trackedChanges = $derived(Object.keys(this.changes).filter((p) => !this.untracked.has(p)));
-  /** What Stage all / Unstage all covers: the changes git follows when untracked files are apart, else every change. */
-  bulkStage = $derived.by(() => {
-    if (!this.untrackedApart) return this.stageState("");
-    const files = this.trackedChanges;
-    return { files, all: files.length > 0 && files.every((p) => this.staged.has(p)) };
-  });
+  /** New files already staged once on their own (repo + path): unchecking one leaves it untracked, it isn't added again. */
+  private autoStaged = new Set<string>();
   /** Untracked paths waiting for the delete dialog: deleting them can't be undone, so it's the only way they go. */
   doomed = $state<string[] | null>(null);
   paths = $state.raw<string[]>([]); // every file the tree lists
   tree = $derived(fileTree(this.paths));
   changedOrder = $derived(filesInOrder(this.tree).filter((p) => p in this.changes)); // changed files in tree order, for ⌥←/⌥→
   changedDirs = $derived(new Set(Object.keys(this.changes).flatMap(parentDirs))); // folders holding a change: highlighted
+  // Folder paths; the untracked section's are "untracked:"-prefixed, so each section opens its own "src".
   expandedDirs = $state.raw(new Set<string>());
   showAllFiles = $state(prefs.get("treeShowsAll", false));
   private treeFor: string | null = null; // the selection the folders were opened for: a refresh keeps the user's collapses
@@ -417,13 +414,21 @@ export class RepoModel {
       this.untracked = new Set(result.untracked);
       this.nested = new Set(result.nested);
       this.paths = result.paths;
+      // New files start staged, like the changes git follows: the next commit takes them without checking each one.
+      // Not a repo inside this one: adding it would commit a link to it, not its files.
+      const newFiles = result.untracked.filter((p) => !this.nested.has(p) && !this.autoStaged.has(repo + "\0" + p));
+      if (commit.id === WORKTREE_ID && newFiles.length) {
+        newFiles.forEach((p) => this.autoStaged.add(repo + "\0" + p));
+        return this.setStaged(newFiles, true); // reloads the tree
+      }
     } catch (error) {
       if (fresh()) this.diffMessage = `Couldn't read the files: ${firstLine(error)}`;
       return;
     }
     if (this.treeFor !== commit.id) {
       this.treeFor = commit.id;
-      this.expandedDirs = new Set(this.changedDirs); // a new selection opens the folders with changes
+      // A new selection opens the folders with changes, in both sections.
+      this.expandedDirs = new Set([...this.changedDirs].flatMap((dir) => [dir, "untracked:" + dir]));
     }
     if (this.diffOpen && !this.jump && (!this.fileFilter || !(this.fileFilter in this.changes))) {
       this.fileFilter = this.changedOrder[0] ?? null; // new selection: start at the first changed file
@@ -451,7 +456,8 @@ export class RepoModel {
     const index = this.fileFilter ? this.changedOrder.indexOf(this.fileFilter) : -1;
     const path = this.changedOrder[index + offset];
     if (index < 0 || !path) return;
-    this.expandedDirs = new Set([...this.expandedDirs, ...parentDirs(path)]);
+    const section = this.untrackedApart && this.untracked.has(path) ? "untracked:" : "";
+    this.expandedDirs = new Set([...this.expandedDirs, ...parentDirs(path).map((dir) => section + dir)]);
     this.showFile(path);
   }
 
@@ -911,7 +917,11 @@ export class RepoModel {
   /** What's staged as a new commit, folded into the last one (an empty title keeps its message), or the branch squashed
    *  into one since its base; pushes too with `push`. Undo puts the branch back where it was, the changes staged.
    *  False if git refused, so the form keeps the message. */
-  async commit(title: string, description: string, { kind = "new" as "new" | "amend" | "squash", push = false } = {}) {
+  /** A commit that didn't push: the prompt asking whether to push it now (PushPrompt). */
+  askPush = $state<{ repo: string; branch: string } | null>(null);
+
+  /** `rewrite`: amend a commit that's already pushed, then force-push it (the form warns first). */
+  async commit(title: string, description: string, { kind = "new" as "new" | "amend" | "squash", push = false, rewrite = false } = {}) {
     const amend = kind === "amend", squash = kind === "squash";
     const repo = this.repo, branch = this.history.current;
     const message = title.trim() ? title.trim() + (description.trim() ? "\n\n" + description.trim() : "") + "\n" : null;
@@ -923,14 +933,16 @@ export class RepoModel {
     const result = await this.act(push ? `${verb} and pushing…` : `${verb}…`, `${squash ? "Squash" : amend ? "Amend" : "Commit"} failed`,
       [squash ? `Making ${branch}'s commits since ${base} and what's staged one commit`
         : amend ? `Folding what's staged into the last commit${message ? ", with the new message" : ""}` : "Committing what's staged",
-        ...(push ? [`Pushing ${branch ?? "the branch"} to origin`] : [])],
-      (repo) => api.commit(repo, message, how, push));
+        ...(push ? [`Pushing ${branch ?? "the branch"} to origin`] : []),
+        ...(rewrite ? [`Force-pushing ${branch ?? "the branch"} (refused if the server has commits you haven't fetched)`] : [])],
+      (repo) => api.commit(repo, message, how, push, rewrite));
     if (!result.ok) return false;
     // None once pushed: that would rewrite shared history.
-    const undo = !push && branch ? await this.moveBack(repo!, branch, before) : undefined;
+    const undo = !push && !rewrite && branch ? await this.moveBack(repo!, branch, before) : undefined;
     const what = squash ? `Squashed ${branch} into one: “${title.trim()}”`
       : amend ? (message ? `Amended the last commit: “${title.trim()}”` : "Amended the last commit") : `Committed “${title.trim()}”`;
-    this.record(repo!, push ? `${what}, pushed` : what, result.started, undo);
+    this.record(repo!, push ? `${what}, pushed` : rewrite ? `${what}, force-pushed` : what, result.started, undo);
+    this.askPush = !push && !rewrite && branch ? { repo: repo!, branch } : null;
     return true;
   }
 }
