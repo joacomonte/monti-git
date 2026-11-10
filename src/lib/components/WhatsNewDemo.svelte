@@ -168,7 +168,7 @@
     <div class="bc c3"><b>main</b><i class="skel"></i></div>
   {:else if name === "focus-view"}
     <!-- Branch menu → Focus view: a banner takes over under the toolbar, the branch leaves the base and merges back. -->
-    <div class="fv-banner"><em>← Back to full graph</em><span class="hint">Focus view</span></div>
+    <div class="fv-banner"><em>← Back to full graph</em></div>
     <svg viewBox="0 0 220 70" class="fv-graph">
       <path d="M20 0 V70" stroke="#4f8cff" />
       <path class="fv-branch" d="M20 62 C20 52 60 52 60 42 V22 C60 12 20 12 20 6" stroke="#ff3b8b" />

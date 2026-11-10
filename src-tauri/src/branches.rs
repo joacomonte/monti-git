@@ -51,7 +51,7 @@ pub struct Status {
     /// Per target: own commits (not in base) not in it yet, and how they got there when 0.
     pub(crate) promotion: Vec<(String, u32, How)>,
     first_parent_count: u32, // its own line since the base: "N commits"
-    has_upstream: bool,      // pushed: delete offers the server copy too, a rebase needs a force push
+    has_upstream: bool,      // on the server: delete offers that copy too, a rebase needs a force push (an upstream deleted there doesn't count)
     unpushed: u32,           // of its own commits, those the server doesn't have: ahead of its upstream (at most all), or all if never pushed
 }
 
@@ -86,11 +86,13 @@ pub fn status(repo: &Path, refs: &[String], base: &str, targets: &[String]) -> V
         let (Some(full), Some(oid)) = (fields.next(), fields.next()) else { continue };
         let name = refs::short_name(full);
         tips.insert(name, oid);
-        if fields.next().is_some_and(|up| !up.is_empty()) && full.starts_with("refs/heads/") {
-            tracked.insert(name);
-        }
+        let upstream = fields.next().unwrap_or_default();
         // "ahead 2, behind 1", "behind 3", "gone" or empty (in sync).
         let track = fields.next().unwrap_or_default();
+        // An upstream deleted on the server ("gone") is as good as none: nothing of the branch is there anymore.
+        if !upstream.is_empty() && track != "gone" && full.starts_with("refs/heads/") {
+            tracked.insert(name);
+        }
         let ahead = track.split(", ").find_map(|part| part.strip_prefix("ahead ")).and_then(|n| n.parse().ok()).unwrap_or(0);
         ahead_of_upstream.insert(name, ahead);
         if let Some((ahead, behind)) = fields.next().and_then(|ab| ab.split_once(' ')) {
@@ -198,6 +200,10 @@ mod tests {
         repo.commit("f.txt", "2", "local one");
         let status = super::status(repo.path(), &["feat".into()], "main", &["main".into()]);
         assert_eq!((status[0].first_parent_count, status[0].unpushed), (2, 1));
+        server.git(&["branch", "-D", "feat"]); // deleted on the server: all of it is local again
+        repo.git(&["fetch", "-q", "--prune", "origin"]);
+        let gone = &super::status(repo.path(), &["feat".into()], "main", &["main".into()])[0];
+        assert_eq!((gone.has_upstream, gone.unpushed), (false, 2));
         repo.git(&["checkout", "-q", "-b", "fresh", "main"]);
         repo.commit("g.txt", "1", "never pushed");
         assert_eq!(super::status(repo.path(), &["fresh".into()], "main", &["main".into()])[0].unpushed, 1);

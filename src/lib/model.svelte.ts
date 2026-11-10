@@ -1,7 +1,7 @@
 // App state, ported from RepoModel in ContentView.swift: the open repo's graph, the selected commit's files and diff,
 // the repos in the sidebar, and the git actions. One class, because those three meet in every flow (an action reloads
 // the graph, a reload re-finds the selection, opening a repo resets both).
-import { api, WORKTREE_ID, type Card, type Commit, type Deletion, type DiffRow, type History, type HistoryQuery, type LineHits, type RepoEntry, type RepoPicks, type CommitKind, type SyncResult, type WipMode } from "./api";
+import { api, WORKTREE_ID, type Card, type Commit, type Deletion, type DiffRow, type Discarded, type History, type HistoryQuery, type LineHits, type Pick, type RepoEntry, type RepoPicks, type CommitKind, type RewriteStep, type SyncResult, type WipMode } from "./api";
 import { fileTree, filesInOrder, parentDirs } from "./fileTree";
 import { gitCommand, lineName, ranBy } from "./format";
 import { prefs, type Sources } from "./prefs";
@@ -11,8 +11,26 @@ const PAGE = 300;
 
 export type BranchFilter = "pending" | "safe";
 
-/** Puts things back: switch to the branch you were on, or move a branch back (`expected` null: recreate it). */
-type Undo = { kind: "checkout"; branch: string } | { kind: "move"; branch: string; expected: string | null; target: string };
+/** Puts things back: switch to the branch you were on, move a branch back (`expected` null: recreate it), bring
+ *  discarded changes back, or put a dropped stash back in the list. */
+type Undo =
+  | { kind: "checkout"; branch: string }
+  | { kind: "move"; branch: string; expected: string | null; target: string }
+  | { kind: "restore"; discarded: NonNullable<Discarded> }
+  | { kind: "stash"; id: string; message: string };
+
+/** What an Undo does, for its button's tooltip. */
+export function undoHint(undo: Undo) {
+  switch (undo.kind) {
+    case "checkout": return `Switch back to ${undo.branch}`;
+    case "move": return undo.expected ? `Put ${undo.branch} back where it was` : `Recreate ${undo.branch} (local)`;
+    case "restore": return "Bring the discarded changes back (only if those files haven't changed since)";
+    case "stash": return "Put the stash back";
+  }
+}
+
+/** What the app suggests right after an action: push the commit, or bring in the server's commits and push. */
+export type Suggestion = { kind: "push" | "pullPush"; repo: string; branch: string };
 /** One action done from the app, for the Logs panel. `started`: when its git commands began (they're grouped under it). */
 export type Activity = { at: number; started?: number; repo: string; branch?: string; text: string; undo?: Undo; undone?: boolean }; // branch: checked out when it ran (Logs groups by it)
 
@@ -21,7 +39,7 @@ export type Outcome = { ok: true; status: string } | { ok: false; error: string 
 
 const EMPTY: History = {
   commits: [], rows: [], names: [], hasMore: false, current: null, base: null, environments: [], allBranches: [], local: [],
-  fastForwarded: false,
+  onServer: [], fastForwarded: false, conflict: null,
 };
 
 /** What a repo looked like when we left it, so coming back shows it at once while `reload()` refreshes it. */
@@ -315,7 +333,7 @@ export class RepoModel {
     return this.isWorktreeSelected && !this.showAllFiles && this.untracked.size > 0;
   }
   trackedChanges = $derived(Object.keys(this.changes).filter((p) => !this.untracked.has(p)));
-  /** New files already staged once on their own (repo + path): unchecking one leaves it untracked, it isn't added again. */
+  /** Changes already staged once on their own (repo + path), while they stay changed: unchecking one sticks. */
   private autoStaged = new Set<string>();
   /** Untracked paths waiting for the delete dialog: deleting them can't be undone, so it's the only way they go. */
   doomed = $state<string[] | null>(null);
@@ -414,12 +432,17 @@ export class RepoModel {
       this.untracked = new Set(result.untracked);
       this.nested = new Set(result.nested);
       this.paths = result.paths;
-      // New files start staged, like the changes git follows: the next commit takes them without checking each one.
-      // Not a repo inside this one: adding it would commit a link to it, not its files.
-      const newFiles = result.untracked.filter((p) => !this.nested.has(p) && !this.autoStaged.has(repo + "\0" + p));
-      if (commit.id === WORKTREE_ID && newFiles.length) {
-        newFiles.forEach((p) => this.autoStaged.add(repo + "\0" + p));
-        return this.setStaged(newFiles, true); // reloads the tree
+      // Every change starts staged, new files too: the next commit takes them without checking each one. Once per
+      // change, so unchecking one sticks until it's committed or discarded. Not a repo inside this one (adding it
+      // would commit a link to it, not its files), nor a conflicted file (staging it would mark it resolved).
+      if (commit.id === WORKTREE_ID) {
+        const key = (p: string) => repo + "\0" + p;
+        for (const k of this.autoStaged) if (k.startsWith(repo + "\0") && !(k.slice(repo.length + 1) in result.changes)) this.autoStaged.delete(k);
+        const unstaged = Object.keys(result.changes).filter((p) => !this.staged.has(p) && !this.nested.has(p) && result.changes[p] !== "U" && !this.autoStaged.has(key(p)));
+        if (unstaged.length) {
+          unstaged.forEach((p) => this.autoStaged.add(key(p)));
+          return this.setStaged(unstaged, true); // reloads the tree
+        }
       }
     } catch (error) {
       if (fresh()) this.diffMessage = `Couldn't read the files: ${firstLine(error)}`;
@@ -685,7 +708,7 @@ export class RepoModel {
       this.toast = { ...toast, state: outcome.ok ? "done" : "failed", result: this.syncStatus };
       setTimeout(() => { if (this.toast?.id === toast.id) this.toast = null; }, outcome.ok ? 4200 : 9000);
     }
-    if (this.repo === repo) this.reload();
+    if (this.repo === repo) await this.reload(); // callers read the new state (a conflict, the new tip) right after
     return { ...outcome, started };
   }
 
@@ -715,17 +738,17 @@ export class RepoModel {
     prefs.set("activity", this.activity);
   }
 
-  /** Checkout goes back through `checkout` (it asks about uncommitted changes); the rest move a branch back,
-   *  which Rust refuses if it moved since or was pushed. */
+  /** Checkout goes back through `checkout` (it asks about uncommitted changes); a moved branch goes back only if it
+   *  hasn't moved since and isn't pushed; discarded changes only if those files haven't changed since (Rust checks). */
   async undo(entry: Activity) {
     const undo = entry.undo;
     if (!undo || entry.undone || entry.repo !== this.repo) return;
     if (undo.kind === "checkout") return this.checkout(undo.branch, entry);
-    const result = await this.act("Undoing…", "Undo failed", [`Moving ${undo.branch} back to ${undo.target.slice(0, 7)}`, "Only if it hasn't moved since and isn't on the remote"],
-      async (repo) => {
-        await api.moveBranch(repo, undo.branch, undo.expected, undo.target);
-        return `Undone: ${entry.text}`;
-      });
+    const [detail, work] =
+      undo.kind === "move" ? [`Moving ${undo.branch} back to ${undo.target.slice(0, 7)}, only if it hasn't moved since and isn't on the remote`, (repo: string) => api.moveBranch(repo, undo.branch, undo.expected, undo.target)]
+      : undo.kind === "restore" ? ["Bringing the discarded changes back, only if those files haven't changed since", (repo: string) => api.restoreDiscarded(repo, undo.discarded)]
+      : ["Putting the stash back in the list", (repo: string) => api.stashRestore(repo, undo.id, undo.message)];
+    const result = await this.act("Undoing…", "Undo failed", [detail], async (repo) => (await work(repo), `Undone: ${entry.text}`));
     if (result.ok) this.markUndone(entry);
   }
 
@@ -850,8 +873,10 @@ export class RepoModel {
     const text = `${rebase ? "Rebased" : "Merged"} ${parent} into ${card.local}`;
     const result = await this.act(`${rebase ? "Rebasing" : "Merging"} ${parent} into ${card.local}…`, "Update failed",
       [`${rebase ? "Rebasing" : "Merging"} ${parent} into ${card.local}`, "Aborts cleanly on a conflict"],
-      async (repo) => (await api.updateBranch(repo, card.local, parent, rebase), text));
-    if (result.ok) this.record(repo, text, result.started, await this.moveBack(repo, card.local, before));
+      async (repo) => (await api.updateBranch(repo, card.local, parent, rebase)) === "done" ? text
+        : `Stopped on conflicts: resolve them on the uncommitted row, then Continue (or Abort to go back)`);
+    if (result.ok && this.history.conflict) this.select(WORKTREE_ID); // the resolver is on the uncommitted row
+    else if (result.ok) this.record(repo, text, result.started, await this.moveBack(repo, card.local, before));
     return result;
   }
 
@@ -868,7 +893,17 @@ export class RepoModel {
         throw `The server has commits ${branch} doesn't${force ? " and you haven't fetched them" : ""}: nothing was pushed`;
       });
     if (result.ok) this.record(repo!, result.status, result.started);
+    if (behind && !force) this.suggestion = { kind: "pullPush", repo: repo!, branch };
     return { ...result, behind };
+  }
+
+  /** After a refused push: bring the server's commits in (rebase, never a merge commit), then push. */
+  async pullAndPush(branch: string) {
+    const repo = this.repo;
+    const result = await this.act(`Updating ${branch} and pushing…`, "Couldn't push", ["Fetching from origin", `Rebasing ${branch} onto the server's commits`, "Stops for you on a conflict", `Pushing ${branch}`],
+      (repo) => api.pullAndPush(repo, branch));
+    if (result.ok) this.record(repo!, result.status, result.started);
+    if (this.history.conflict) this.select(WORKTREE_ID);
   }
 
   discardFile(path: string) {
@@ -880,9 +915,12 @@ export class RepoModel {
     this.discard("Discarded all changes", (repo) => api.discardAll(repo));
   }
 
-  deleteUntracked(paths: string[]) {
+  /** Gone for good (git has no copy): only after its dialog, and without an Undo. */
+  async deleteUntracked(paths: string[]) {
+    const repo = this.repo;
     const text = paths.length === 1 ? `Deleted ${paths[0]} (untracked)` : `Deleted ${paths.length} untracked files`;
-    this.discard(text, (repo) => api.deleteUntracked(repo, paths));
+    const result = await this.act("Deleting…", "Delete failed", [text], async (repo) => (await api.deleteUntracked(repo, paths), text));
+    if (result.ok) this.record(repo!, text, result.started);
   }
 
   /** The block shown as `index` with `header` in the diff pane (a file git follows; an untracked one goes by `doomed`). */
@@ -891,10 +929,71 @@ export class RepoModel {
     if (path) this.discard(`Discarded a block in ${path}`, (repo) => api.discardHunk(repo, path, index, header));
   }
 
-  private async discard(text: string, work: (repo: string) => Promise<void>) {
+  /** Undo brings the changes back from the snapshot Rust took first. */
+  private async discard(text: string, work: (repo: string) => Promise<Discarded>) {
     const repo = this.repo;
-    const result = await this.act("Discarding…", "Discard failed", [text], async (repo) => (await work(repo), text));
-    if (result.ok) this.record(repo!, text, result.started);
+    let discarded: Discarded = null;
+    const result = await this.act("Discarding…", "Discard failed", [text], async (repo) => ((discarded = await work(repo)), text));
+    if (result.ok) this.record(repo!, text, result.started, discarded ? { kind: "restore", discarded } : undefined);
+  }
+
+  // MARK: Stashes (rows in the graph)
+
+  /** Puts a stash's changes back (onto a clean tree); `pop` drops it once applied. */
+  async applyStash(stash: Commit, pop: boolean) {
+    const repo = this.repo;
+    const result = await this.act(pop ? "Popping the stash…" : "Applying the stash…", "Couldn't apply it",
+      ["Only onto a clean working tree", "Changes nothing if it conflicts", ...(pop ? ["Drops the stash once applied"] : [])],
+      (repo) => api.stashApply(repo, stash.id, pop));
+    if (result.ok) this.record(repo!, `${result.status}: ${stash.subject}`, result.started, pop ? { kind: "stash", id: stash.id, message: stash.subject } : undefined);
+  }
+
+  async dropStash(stash: Commit) {
+    const repo = this.repo;
+    let message = "";
+    const result = await this.act("Dropping the stash…", "Couldn't drop it", ["Removing it from the stash list (Undo puts it back)"],
+      async (repo) => ((message = await api.stashDrop(repo, stash.id)), `Dropped the stash: ${message}`));
+    if (result.ok) this.record(repo!, result.status, result.started, { kind: "stash", id: stash.id, message });
+  }
+
+  // MARK: Conflicts (history.conflict): resolved on the uncommitted row, file by file
+
+  /** One pick per conflict block of `path`. */
+  async resolveConflict(path: string, picks: Pick[]) {
+    await this.act(`Resolving ${path}…`, "Couldn't resolve it", ["Writing your picks", "Marking it resolved"],
+      async (repo) => (await api.resolveConflict(repo, path, picks), `Resolved ${path}`));
+  }
+
+  async takeSide(path: string, mine: boolean) {
+    await this.act(`Resolving ${path}…`, "Couldn't resolve it", [mine ? "Keeping your version of the whole file" : "Taking their version of the whole file"],
+      async (repo) => (await api.takeSide(repo, path, mine), `Resolved ${path}`));
+  }
+
+  async continueOperation() {
+    const repo = this.repo;
+    const result = await this.act("Continuing…", "Couldn't continue", ["Committing the resolved files", "A rebase moves on to its next commit"], (repo) => api.continueOperation(repo));
+    if (result.ok) this.record(repo!, result.status, result.started);
+  }
+
+  async abortOperation() {
+    const repo = this.repo;
+    const result = await this.act("Aborting…", "Couldn't abort", ["Back to where the branch was before it started"], (repo) => api.abortOperation(repo));
+    if (result.ok) this.record(repo!, result.status, result.started);
+  }
+
+  // MARK: Edit commits (rewrite.rs)
+
+  /** Rebuilds `branch`'s own commits since the base as `steps` say; `rewrite`: some are pushed, force-push after.
+   *  Undo puts the branch back (unless it was pushed). */
+  async rewriteBranch(branch: string, steps: RewriteStep[], rewrite: boolean): Promise<Outcome> {
+    const repo = this.repo, base = this.history.base;
+    if (!repo || !base) return { ok: false, error: "No base branch" };
+    const before = await api.branchTip(repo, branch);
+    const result = await this.act(`Editing ${branch}…`, "Couldn't edit the commits",
+      ["Rebuilding the commits in a temporary copy", "Changes nothing if they conflict in that order", `Moving ${branch} to the result`, ...(rewrite ? [`Force-pushing ${branch}`] : [])],
+      (repo) => api.rewriteBranch(repo, branch, base, steps, rewrite));
+    if (result.ok) this.record(repo, result.status, result.started, rewrite ? undefined : await this.moveBack(repo, branch, before));
+    return result;
   }
 
   /** Stages or unstages files from the tree's checkboxes; only the tree refreshes (no toast: it's a checkbox). */
@@ -917,10 +1016,10 @@ export class RepoModel {
   /** What's staged as a new commit, folded into the last one (an empty title keeps its message), or the branch squashed
    *  into one since its base; pushes too with `push`. Undo puts the branch back where it was, the changes staged.
    *  False if git refused, so the form keeps the message. */
-  /** A commit that didn't push: the prompt asking whether to push it now (PushPrompt). */
-  askPush = $state<{ repo: string; branch: string } | null>(null);
+  /** What to do next, offered by NextStepPrompt: push a commit that wasn't pushed, or pull and push a refused one. */
+  suggestion = $state<Suggestion | null>(null);
 
-  /** `rewrite`: amend a commit that's already pushed, then force-push it (the form warns first). */
+  /** `rewrite`: amend or squash commits that are already pushed, then force-push (the form warns first). */
   async commit(title: string, description: string, { kind = "new" as "new" | "amend" | "squash", push = false, rewrite = false } = {}) {
     const amend = kind === "amend", squash = kind === "squash";
     const repo = this.repo, branch = this.history.current;
@@ -930,19 +1029,24 @@ export class RepoModel {
     if (squash && !base) return false;
     const how: CommitKind = kind === "squash" ? { squash: base! } : kind;
     const verb = squash ? "Squashing" : amend ? "Amending" : "Committing";
+    let behind = false;
     const result = await this.act(push ? `${verb} and pushing…` : `${verb}…`, `${squash ? "Squash" : amend ? "Amend" : "Commit"} failed`,
       [squash ? `Making ${branch}'s commits since ${base} and what's staged one commit`
         : amend ? `Folding what's staged into the last commit${message ? ", with the new message" : ""}` : "Committing what's staged",
         ...(push ? [`Pushing ${branch ?? "the branch"} to origin`] : []),
         ...(rewrite ? [`Force-pushing ${branch ?? "the branch"} (refused if the server has commits you haven't fetched)`] : [])],
-      (repo) => api.commit(repo, message, how, push, rewrite));
+      async (repo) => {
+        const done = await api.commit(repo, message, how, push, rewrite);
+        behind = done.behind;
+        return done.status;
+      });
     if (!result.ok) return false;
     // None once pushed: that would rewrite shared history.
     const undo = !push && !rewrite && branch ? await this.moveBack(repo!, branch, before) : undefined;
     const what = squash ? `Squashed ${branch} into one: “${title.trim()}”`
       : amend ? (message ? `Amended the last commit: “${title.trim()}”` : "Amended the last commit") : `Committed “${title.trim()}”`;
     this.record(repo!, push ? `${what}, pushed` : rewrite ? `${what}, force-pushed` : what, result.started, undo);
-    this.askPush = !push && !rewrite && branch ? { repo: repo!, branch } : null;
+    this.suggestion = !branch ? null : behind ? { kind: "pullPush", repo: repo!, branch } : !push && !rewrite ? { kind: "push", repo: repo!, branch } : null;
     return true;
   }
 }

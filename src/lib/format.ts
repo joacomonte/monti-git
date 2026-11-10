@@ -43,7 +43,7 @@ export function subject(commit: Commit) {
 /** The tooltip of a graph line: the branch it belongs to, or what the row is. */
 export function lineName(commit: Commit, name: string | null) {
   if (commit.id === WORKTREE_ID) return "uncommitted changes";
-  if (commit.shelved) return `WIP saved from ${commit.shelved}`;
+  if (commit.stash) return commit.stash.shelved ? `WIP saved from ${commit.stash.shelved}` : "stash";
   return name;
 }
 

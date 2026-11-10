@@ -1,5 +1,6 @@
 <!-- App-wide tooltip for every `title` attribute: the native one waits ~1s (fixed by the OS), this one shows after 250ms.
-     On hover the title moves to data-title (so the native tooltip never shows) and comes back on leave. -->
+     On hover the title moves to data-title (so the native tooltip never shows) and comes back on leave. A title of
+     several lines reads as a heading (its first line) and details; a "Click: …" line is set apart as the action. -->
 <script lang="ts">
   const DELAY = 250;
   let tip = $state<{ text: string; x: number; y: number; below: boolean } | null>(null);
@@ -40,17 +41,33 @@
 <svelte:document onmouseover={over} onmouseout={out} onmousedown={hide} onkeydown={hide} onwheel={hide} />
 
 {#if tip}
-  <div class="tip" class:below={tip.below} style:left="{tip.x}px" style:top="{tip.y}px" role="tooltip" id="quick-tooltip">{tip.text}</div>
+  {@const [head, ...rest] = tip.text.split("\n")}
+  <div class="tip" class:below={tip.below} class:rich={rest.length > 0} style:left="{tip.x}px" style:top="{tip.y}px" role="tooltip" id="quick-tooltip">
+    {#if rest.length}
+      <span class="head">{head}</span>
+      {#each rest as line, i (i)}<span class:action={line.startsWith("Click")} class="line">{line}</span>{/each}
+    {:else}{head}{/if}
+  </div>
 {/if}
 
 <style>
   .tip {
-    position: fixed; z-index: 1000; max-width: 300px; transform: translate(-50%, -100%); pointer-events: none;
+    position: fixed; z-index: 10000; /* over every menu, dialog and prompt */ max-width: 300px; transform: translate(-50%, -100%); pointer-events: none;
     padding: 6px 10px; border-radius: 8px; font-size: 12px; line-height: 1.4; white-space: pre-line;
     color: var(--popover-foreground); background: var(--popover);
     box-shadow: 0 0 0 1px oklch(0.5 0 0 / 0.18), 0 8px 24px rgb(0 0 0 / 0.3);
     animation: tip-in 0.15s ease-out both;
   }
   .tip.below { transform: translate(-50%, 0); }
-  @keyframes tip-in { from { opacity: 0; } }
+  /* An arrow pointing at the element. */
+  .tip::after { content: ""; position: absolute; left: 50%; top: 100%; width: 8px; height: 8px; background: inherit; transform: translate(-50%, -50%) rotate(45deg);
+    box-shadow: 1px 1px 0 oklch(0.5 0 0 / 0.18); }
+  .tip.below::after { top: 0; box-shadow: -1px -1px 0 oklch(0.5 0 0 / 0.18); }
+  .rich { display: flex; flex-direction: column; gap: 2px; padding: 9px 12px; border-radius: 10px; white-space: normal; }
+  .head { font-size: 12.5px; font-weight: 700; }
+  .line { font-size: 11.5px; color: var(--muted-foreground); }
+  .line.action { margin-top: 4px; padding-top: 5px; border-top: 1px solid oklch(0.5 0 0 / 0.18); color: var(--primary); font-weight: 600; }
+  @keyframes tip-in { from { opacity: 0; translate: 0 4px; } }
+  .below { animation-name: tip-in-below; }
+  @keyframes tip-in-below { from { opacity: 0; translate: 0 -4px; } }
 </style>

@@ -178,7 +178,7 @@ pub fn branch_names(commits: &[Commit], main: Option<&str>, main_chain: &HashSet
         }
     }
     for commit in commits {
-        if commit.is_worktree() || commit.shelved.is_some() {
+        if commit.is_worktree() || commit.stash.is_some() {
             continue; // the UI names these rows itself
         }
         let branches: Vec<&str> =
@@ -212,7 +212,7 @@ mod tests {
             date: 0,
             refs: refs.iter().map(|s| s.to_string()).collect(),
             subject: subject.into(),
-            shelved: None,
+            stash: None,
             stat: None,
         }
     }

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 
 /// Runs `action` while holding `repo`'s lock.
-fn exclusive<T>(repo: &Path, action: impl FnOnce() -> T) -> T {
+pub(crate) fn exclusive<T>(repo: &Path, action: impl FnOnce() -> T) -> T {
     static LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
     let lock = LOCKS.lock().unwrap().entry(repo.to_path_buf()).or_default().clone();
     let _held = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -164,7 +164,7 @@ pub enum WipMode {
 
 /// Applies a stash onto a clean tree; on conflict undoes the half-applied result (the tree was clean before, so
 /// reset + clean only removes what the apply wrote) and leaves the stash where it is.
-fn apply_cleanly(reference: &str, repo: &Path) -> bool {
+pub(crate) fn apply_cleanly(reference: &str, repo: &Path) -> bool {
     if write(&["stash", "apply", reference], repo).is_ok() {
         return true;
     }
@@ -343,35 +343,50 @@ pub fn delete_branch(branch: &str, base: &str, targets: &[String], remote: bool,
     })
 }
 
-/// Brings `parent`'s new commits into `branch` by merge (or rebase). Never leaves a half-done state: on a conflict
-/// it aborts and returns the conflicting files. A branch that isn't checked out is updated in a temporary worktree,
-/// so the user's checkout is never touched. The checked-out branch must have no uncommitted tracked changes:
-/// `merge --abort` can't always restore those, so we refuse up front.
-pub fn update(branch: &str, parent: &str, rebase: bool, repo: &Path) -> Result<(), String> {
-    exclusive(repo, || {
-        let integrate = |dir: &Path| -> Result<(), String> {
-            let outcome = if rebase { write(&["rebase", parent], dir) } else { write(&["merge", "--no-edit", parent], dir) };
-            outcome.map(|_| ()).map_err(|error| {
-                let conflicts = read_opt(&["diff", "--name-only", "--diff-filter=U"], dir).unwrap_or_default().trim().to_string();
-                let _ = write(&[if rebase { "rebase" } else { "merge" }, "--abort"], dir);
-                if conflicts.is_empty() { error.trim().to_string() } else { format!("Conflicts in:\n{conflicts}") }
-            })
-        };
-        if current_branch(repo).as_deref() == Some(branch) {
-            let status = git::status(repo)?;
-            if status.files.len() > status.untracked.len() {
-                return Err("You have uncommitted changes on this branch. Commit or stash them first, so nothing can get lost if the update hits a conflict.".into());
-            }
-            return integrate(repo);
+/// Brings `parent`'s new commits into `branch` by merge (or rebase).
+pub fn update(branch: &str, parent: &str, rebase: bool, repo: &Path) -> Result<Integrated, String> {
+    exclusive(repo, || integrate(branch, parent, rebase, repo))
+}
+
+/// How bringing commits in went: done, or stopped on conflicts in the checkout (resolved in the app, or aborted).
+#[derive(Serialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum Integrated {
+    Done,
+    Conflicts,
+}
+
+/// Merges (or rebases onto) `parent` in `branch`. The checked-out branch stops on a conflict, for the resolver
+/// (`conflicts.rs`: resolve and continue, or abort back to where it was); it must have no uncommitted tracked
+/// changes, which an abort can't always restore. Any other branch is updated in a temporary worktree, so the user's
+/// checkout is never touched, and a conflict there aborts and names the files: check it out to resolve them.
+fn integrate(branch: &str, parent: &str, rebase: bool, repo: &Path) -> Result<Integrated, String> {
+    let run_in = |dir: &Path| if rebase { write(&["rebase", parent], dir) } else { write(&["merge", "--no-edit", parent], dir) };
+    let conflicts = |dir: &Path| read_opt(&["diff", "--name-only", "--diff-filter=U"], dir).unwrap_or_default().trim().to_string();
+    if current_branch(repo).as_deref() == Some(branch) {
+        let status = git::status(repo)?;
+        if status.files.len() > status.untracked.len() {
+            return Err("You have uncommitted changes on this branch. Commit or stash them first, so nothing can get lost if the update hits a conflict.".into());
         }
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("monti-git-update-{}-{nanos}", std::process::id()));
-        let dir_str = dir.to_string_lossy().into_owned();
-        write(&["worktree", "add", "--quiet", &dir_str, branch], repo)?;
-        let result = integrate(&dir);
-        let _ = write(&["worktree", "remove", "--force", &dir_str], repo);
-        result
-    })
+        return match run_in(repo) {
+            Ok(_) => Ok(Integrated::Done),
+            Err(_) if !conflicts(repo).is_empty() => Ok(Integrated::Conflicts),
+            Err(error) => {
+                let _ = write(&[if rebase { "rebase" } else { "merge" }, "--abort"], repo);
+                Err(error.trim().to_string())
+            }
+        };
+    }
+    let dir = git::temp_dir("update");
+    let dir_str = dir.to_string_lossy().into_owned();
+    write(&["worktree", "add", "--quiet", &dir_str, branch], repo)?;
+    let result = run_in(&dir).map(|_| Integrated::Done).map_err(|error| {
+        let files = conflicts(&dir);
+        let _ = write(&[if rebase { "rebase" } else { "merge" }, "--abort"], &dir);
+        if files.is_empty() { error.trim().to_string() } else { format!("Conflicts in:\n{files}\nCheck {branch} out to resolve them in the app.") }
+    });
+    let _ = write(&["worktree", "remove", "--force", &dir_str], repo);
+    result
 }
 
 /// How a local branch compares with its copy on origin. `remote` false: there's none, use the local one as is.
@@ -465,10 +480,26 @@ pub fn push(branch: &str, force: bool, repo: &Path) -> Result<Pushed, String> {
     exclusive(repo, || push_branch(branch, force, repo))
 }
 
+/// After a push was refused (`Pushed::Behind`): fetches, rebases `branch` onto the server's copy, then pushes.
+/// A conflict on the checked-out branch stops for the resolver (nothing is pushed); elsewhere it aborts.
+pub fn pull_and_push(branch: &str, repo: &Path) -> Result<String, String> {
+    exclusive(repo, || {
+        fetch(repo)?;
+        let remote = read_opt(&["config", &format!("branch.{branch}.remote")], repo).map_or(DEFAULT_REMOTE.to_string(), |s| s.trim().to_string());
+        if integrate(branch, &format!("{remote}/{branch}"), true, repo)? == Integrated::Conflicts {
+            return Ok(format!("Stopped on conflicts while bringing in the server's commits: resolve them, then push {branch}"));
+        }
+        Ok(match push_branch(branch, false, repo)? {
+            Pushed::Done => format!("Brought in the server's commits and pushed {branch}"),
+            Pushed::Behind => format!("Brought in the server's commits, but {branch} moved again on the server: try again"),
+        })
+    })
+}
+
 /// Pushes `branch` to the branch of the same name on its remote (origin the first time), and makes that its upstream.
 /// Never to a differently named upstream: a feature created from origin/main tracks main, and must not land there.
 /// `force` uses --force-with-lease: git still refuses if the server has commits we haven't fetched, so nobody's work is lost.
-fn push_branch(branch: &str, force: bool, repo: &Path) -> Result<Pushed, String> {
+pub(crate) fn push_branch(branch: &str, force: bool, repo: &Path) -> Result<Pushed, String> {
     let config = |key: &str| read_opt(&["config", &format!("branch.{branch}.{key}")], repo).map(|s| s.trim().to_string());
     let target = format!("refs/heads/{branch}");
     let remote = config("remote").filter(|_| config("merge").as_deref() == Some(target.as_str()));
@@ -483,10 +514,45 @@ fn push_branch(branch: &str, force: bool, repo: &Path) -> Result<Pushed, String>
 
 // MARK: Working tree
 
+/// What a discard threw away, so Undo can bring it back: `before`, a snapshot of the uncommitted changes (`git stash
+/// create`: a commit no ref keeps, so git may prune it after a couple of weeks), and `after`, the commit the touched
+/// paths matched right after (also a snapshot, or HEAD when nothing was left). Untracked files aren't in either:
+/// discarding never touches them. None when git had nothing to snapshot (only a repo inside this one was staged).
+#[derive(Serialize, Deserialize)]
+pub struct Discarded {
+    before: String,
+    after: String,
+    paths: Vec<String>,
+}
+
+/// Runs `discard` with snapshots around it.
+fn with_snapshot(paths: Vec<String>, repo: &Path, discard: impl FnOnce() -> Result<(), String>) -> Result<Option<Discarded>, String> {
+    let snapshot = || read_opt(&["stash", "create"], repo).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let before = snapshot();
+    discard()?;
+    let after = snapshot().or_else(|| refs::tip("HEAD", repo)).unwrap_or_default();
+    Ok(before.map(|before| Discarded { before, after, paths }))
+}
+
+/// Undo of a discard: the paths back as they were, staged parts included. Refused if any of them changed since.
+pub fn restore_discarded(discarded: &Discarded, repo: &Path) -> Result<(), String> {
+    exclusive(repo, || {
+        let paths = discarded.paths.iter().map(String::as_str);
+        let unchanged: Vec<&str> = ["diff", "--quiet", &discarded.after, "--"].into_iter().chain(paths.clone()).collect();
+        if run(&unchanged, repo).is_err() {
+            return Err("Those files changed since: nothing was restored, so your newer edits are safe".into());
+        }
+        let worktree = format!("--source={}", discarded.before);
+        let index = format!("--source={}^2", discarded.before);
+        write(&["restore", &worktree, "--worktree", "--"].into_iter().chain(paths.clone()).collect::<Vec<_>>(), repo)?;
+        write(&["restore", &index, "--staged", "--"].into_iter().chain(paths).collect::<Vec<_>>(), repo).map(|_| ())
+    })
+}
+
 /// Throws away uncommitted changes of one file: back to HEAD, or deleted if HEAD doesn't have it.
 /// shortcut: a staged rename only reverts its new path, upgrade if renames need discarding.
-pub fn discard(path: &str, repo: &Path) -> Result<(), String> {
-    exclusive(repo, || discard_file(path, repo))
+pub fn discard(path: &str, repo: &Path) -> Result<Option<Discarded>, String> {
+    exclusive(repo, || with_snapshot(vec![path.to_string()], repo, || discard_file(path, repo)))
 }
 
 fn discard_file(path: &str, repo: &Path) -> Result<(), String> {
@@ -505,8 +571,12 @@ fn discard_file(path: &str, repo: &Path) -> Result<(), String> {
 }
 
 /// Working tree and index back to HEAD. Untracked files stay: deleting them is `delete_untracked`, after its dialog.
-pub fn discard_all(repo: &Path) -> Result<(), String> {
-    exclusive(repo, || write(&["reset", "--hard", "HEAD"], repo).map(|_| ()))
+pub fn discard_all(repo: &Path) -> Result<Option<Discarded>, String> {
+    exclusive(repo, || {
+        let status = git::status(repo)?;
+        let tracked = status.files.into_keys().filter(|p| !status.untracked.contains(p)).collect();
+        with_snapshot(tracked, repo, || write(&["reset", "--hard", "HEAD"], repo).map(|_| ()))
+    })
 }
 
 /// What deleting an untracked path loses, for its dialog. A repo inside this one says what only it has.
@@ -556,18 +626,20 @@ pub fn delete_untracked(paths: &[String], repo: &Path) -> Result<(), String> {
 /// Reverts one block of `path`'s uncommitted diff, the one the diff pane showed as block `index` with `header`
 /// ("@@ -3,2 +3,4 @@"). If the file changed since and that block isn't there anymore, nothing is touched.
 /// A file git doesn't know yet is refused: it only goes through `delete_untracked`.
-pub fn discard_hunk(path: &str, index: usize, header: &str, repo: &Path) -> Result<(), String> {
+pub fn discard_hunk(path: &str, index: usize, header: &str, repo: &Path) -> Result<Option<Discarded>, String> {
     exclusive(repo, || {
-        let text = git::patch(git::Span::Worktree, &[path], 3, repo)?;
-        let Some(file) = patch::parse(&text).into_iter().next() else {
-            return if index == 0 { discard_file(path, repo) } else { Err(changed_since(path)) };
-        };
-        let hunk = file.hunks.get(index).filter(|h| h.header == header).ok_or_else(|| changed_since(path))?;
-        let patch: String = file.header.iter().map(|l| format!("{l}\n")).chain([hunk.text()]).collect();
-        // Index and working tree agree on this file: revert it in both; otherwise only in the working tree.
-        let in_sync = run(&["diff", "--quiet", "--", path], repo).is_ok();
-        let args: &[&str] = if in_sync { &["apply", "-R", "--index"] } else { &["apply", "-R"] };
-        write_input(args, repo, &patch).map(|_| ())
+        with_snapshot(vec![path.to_string()], repo, || {
+            let text = git::patch(git::Span::Worktree, &[path], 3, repo)?;
+            let Some(file) = patch::parse(&text).into_iter().next() else {
+                return if index == 0 { discard_file(path, repo) } else { Err(changed_since(path)) };
+            };
+            let hunk = file.hunks.get(index).filter(|h| h.header == header).ok_or_else(|| changed_since(path))?;
+            let patch: String = file.header.iter().map(|l| format!("{l}\n")).chain([hunk.text()]).collect();
+            // Index and working tree agree on this file: revert it in both; otherwise only in the working tree.
+            let in_sync = run(&["diff", "--quiet", "--", path], repo).is_ok();
+            let args: &[&str] = if in_sync { &["apply", "-R", "--index"] } else { &["apply", "-R"] };
+            write_input(args, repo, &patch).map(|_| ())
+        })
     })
 }
 
@@ -596,22 +668,44 @@ pub enum CommitKind {
     Squash(String),    // the branch's own commits since this base, plus what's staged, become one commit
 }
 
-/// The last commit is on some server branch: amending it rewrites shared history.
-pub fn head_pushed(repo: &Path) -> bool {
-    !read_opt(&["branch", "-r", "--contains", "HEAD"], repo).unwrap_or_default().trim().is_empty()
+/// Whether `kind` would rewrite commits that are already on a server branch: the last one (amend), or the oldest of
+/// the branch's own since the base (squash; a pushed commit means everything below it is pushed too).
+pub fn rewrites_pushed(kind: &CommitKind, repo: &Path) -> bool {
+    let oldest = match kind {
+        CommitKind::New => return false,
+        CommitKind::Amend => Some("HEAD".to_string()),
+        CommitKind::Squash(base) => read_opt(&["rev-list", "--reverse", "HEAD", &format!("^{base}")], repo).and_then(|s| s.lines().next().map(String::from)),
+    };
+    oldest.is_some_and(|commit| on_a_remote(&commit, repo))
+}
+
+pub(crate) fn on_a_remote(commit: &str, repo: &Path) -> bool {
+    !read_opt(&["branch", "-r", "--contains", commit], repo).unwrap_or_default().trim().is_empty()
+}
+
+/// A commit's one-line status, and `behind`: its push was refused because the server has commits the branch doesn't
+/// (the app then offers to bring them in and push again).
+#[derive(Serialize, Debug)]
+pub struct Committed {
+    status: String,
+    behind: bool,
 }
 
 /// Commits what's staged: a new commit, folded into the last one (`message` None keeps its message), or the branch
-/// squashed into one. Squashing is refused once those commits are on the server; amending a pushed commit only with
-/// `rewrite`, and then the branch is force-pushed (with lease) so the server gets the amended one. With `push`, pushes
-/// the current branch too, setting its upstream the first time.
-pub fn commit(message: Option<&str>, kind: &CommitKind, push: bool, rewrite: bool, repo: &Path) -> Result<String, String> {
+/// squashed into one. Amending or squashing commits that are already on the server only with `rewrite`, and then the
+/// branch is force-pushed (with lease) so the server gets the rewritten ones. With `push`, pushes the current branch
+/// too, setting its upstream the first time.
+pub fn commit(message: Option<&str>, kind: &CommitKind, push: bool, rewrite: bool, repo: &Path) -> Result<Committed, String> {
     exclusive(repo, || {
         let branch = current_branch(repo);
         if push && branch.is_none() {
             return Err("No branch checked out (detached HEAD): nothing to push to. Commit without pushing.".into());
         }
-        let mut force = false;
+        let force = rewrites_pushed(kind, repo);
+        if force && (!rewrite || branch.is_none()) {
+            let what = if matches!(kind, CommitKind::Amend) { "The last commit is" } else { "Some of these commits are" };
+            return Err(format!("{what} already pushed: changing them would rewrite shared history. Make a new commit instead."));
+        }
         let done = match (kind, message) {
             (CommitKind::New, Some(message)) => {
                 write_input(&["commit", "-q", "-F", "-"], repo, message)?;
@@ -619,12 +713,6 @@ pub fn commit(message: Option<&str>, kind: &CommitKind, push: bool, rewrite: boo
             }
             (CommitKind::New | CommitKind::Squash(_), None) => return Err("It needs a message".into()),
             (CommitKind::Amend, message) => {
-                if head_pushed(repo) {
-                    if !rewrite || branch.is_none() {
-                        return Err("The last commit is already pushed: amending it would rewrite shared history. Make a new commit instead.".into());
-                    }
-                    force = true;
-                }
                 match message {
                     None => write(&["commit", "-q", "--amend", "--no-edit"], repo)?,
                     Some(message) => write_input(&["commit", "-q", "--amend", "-F", "-"], repo, message)?,
@@ -637,11 +725,6 @@ pub fn commit(message: Option<&str>, kind: &CommitKind, push: bool, rewrite: boo
                 if own.is_empty() {
                     return Err(format!("Nothing to squash: the branch has no commits of its own since {base}"));
                 }
-                // One git call: of its own commits, those on no remote. Fewer than all = some are pushed.
-                let local = run(&["rev-list", "--count", "HEAD", &format!("^{fork}"), "--not", "--remotes"], repo)?;
-                if local.trim().parse::<usize>().ok() != Some(own.len()) {
-                    return Err("Some of these commits are already pushed: squashing them would rewrite shared history.".into());
-                }
                 let tip = run(&["rev-parse", "HEAD"], repo)?.trim().to_string();
                 write(&["reset", "-q", "--soft", &fork], repo)?;
                 if let Err(e) = write_input(&["commit", "-q", "-F", "-"], repo, message) {
@@ -651,14 +734,17 @@ pub fn commit(message: Option<&str>, kind: &CommitKind, push: bool, rewrite: boo
                 format!("Squashed {} commits into one", own.len())
             }
         };
-        let Some(branch) = branch.filter(|_| push || force) else { return Ok(done) };
+        let Some(branch) = branch.filter(|_| push || force) else { return Ok(Committed { status: done, behind: false }) };
         // The commit is done either way: a failed push is reported as a status, not as an error that keeps the form filled.
-        Ok(match push_branch(&branch, force, repo) {
+        let pushed = push_branch(&branch, force, repo);
+        let behind = pushed == Ok(Pushed::Behind) && !force;
+        let status = match pushed {
             Ok(Pushed::Done) => format!("{done} and {} {branch}", if force { "force-pushed" } else { "pushed" }),
-            Ok(Pushed::Behind) if force => format!("{done}, but not pushed: the server has commits on {branch} you haven't fetched. Pull them first."),
-            Ok(Pushed::Behind) => format!("Committed, but not pushed: the server has commits {branch} doesn't. Pull first."),
-            Err(e) => format!("Committed, but the push failed: {}", e.lines().next().unwrap_or("unknown error")),
-        })
+            Ok(Pushed::Behind) if force => format!("{done}, but not pushed: the server has commits on {branch} you haven't fetched. Sync first."),
+            Ok(Pushed::Behind) => format!("{done}, but not pushed: the server has commits {branch} doesn't"),
+            Err(e) => format!("{done}, but the push failed: {}", e.lines().next().unwrap_or("unknown error")),
+        };
+        Ok(Committed { status, behind })
     })
 }
 
@@ -678,14 +764,14 @@ mod tests {
         std::fs::write(repo.path().join("b.txt"), "2").unwrap();
         repo.git(&["add", "b.txt"]);
         let amend = super::CommitKind::Amend;
-        assert_eq!(super::commit(None, &amend, false, false, repo.path()).unwrap(), "Amended the last commit");
+        assert_eq!(super::commit(None, &amend, false, false, repo.path()).unwrap().status, "Amended the last commit");
         assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "first try", "no message: it keeps its own");
         assert_eq!(repo.git(&["rev-list", "--count", "origin/main..HEAD"]).trim(), "1", "still one commit");
         super::commit(Some("better title\n"), &amend, false, false, repo.path()).unwrap();
         assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "better title");
         repo.git(&["push", "-q", "origin", "feat"]);
         assert!(super::commit(None, &amend, false, false, repo.path()).unwrap_err().contains("already pushed"));
-        let done = super::commit(Some("rewritten\n"), &amend, false, true, repo.path()).unwrap();
+        let done = super::commit(Some("rewritten\n"), &amend, false, true, repo.path()).unwrap().status;
         assert!(done.contains("force-pushed feat"), "{done}");
         repo.git(&["fetch", "-q", "origin"]);
         assert_eq!(repo.git(&["log", "-1", "--format=%s", "origin/feat"]).trim(), "rewritten", "the server has the amended one");
@@ -702,7 +788,7 @@ mod tests {
         std::fs::write(repo.path().join("c.txt"), "1").unwrap();
         repo.git(&["add", "c.txt"]);
         let squash = super::CommitKind::Squash("main".into());
-        assert_eq!(super::commit(Some("feat: all of it\n"), &squash, false, false, repo.path()).unwrap(), "Squashed 2 commits into one");
+        assert_eq!(super::commit(Some("feat: all of it\n"), &squash, false, false, repo.path()).unwrap().status, "Squashed 2 commits into one");
         assert_eq!(repo.git(&["rev-list", "--count", "main..feat"]).trim(), "1");
         assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "feat: all of it");
         assert_eq!(repo.git(&["show", "--format=", "--name-only", "HEAD"]).trim(), "b.txt\nc.txt", "the staged file went in too");
@@ -774,6 +860,17 @@ mod tests {
         repo.git(&["fetch", "-q", "origin"]);
         assert_eq!(super::push("feat/x", true, repo.path()).unwrap(), Pushed::Done);
         assert_eq!(server.git(&["rev-parse", "feat/x"]), repo.git(&["rev-parse", "feat/x"]));
+
+        // Refused again: Pull & push rebases onto the server's commit and pushes, no merge commit.
+        server.git(&["checkout", "-q", "feat/x"]);
+        server.commit("d.txt", "1", "theirs again");
+        server.git(&["checkout", "-q", "main"]);
+        repo.commit("e.txt", "1", "mine, third");
+        assert_eq!(super::push("feat/x", false, repo.path()).unwrap(), Pushed::Behind);
+        let status = super::pull_and_push("feat/x", repo.path()).unwrap();
+        assert!(status.contains("pushed feat/x"), "{status}");
+        assert_eq!(server.git(&["log", "-2", "--format=%s", "feat/x"]).trim(), "mine, third\ntheirs again");
+        assert!(repo.git(&["rev-list", "--merges", "origin/main..feat/x"]).trim().is_empty());
     }
 
     #[test]
@@ -803,9 +900,19 @@ mod tests {
         assert!(super::discard_hunk("a.txt", 1, "@@ -1,5 +1,5 @@", repo.path()).is_err(), "wrong header: untouched");
         let text = crate::git::patch(crate::git::Span::Worktree, &["a.txt"], 3, repo.path()).unwrap();
         let header = crate::patch::parse(&text)[0].hunks[1].header.to_string();
-        super::discard_hunk("a.txt", 1, &header, repo.path()).unwrap();
+        let discarded = super::discard_hunk("a.txt", 1, &header, repo.path()).unwrap().unwrap();
         let now = std::fs::read_to_string(repo.path().join("a.txt")).unwrap();
         assert!(now.contains("two\n") && now.contains("\n19\n"));
+        // Undo puts the block back; once the file changes again, it refuses.
+        super::restore_discarded(&discarded, repo.path()).unwrap();
+        assert!(std::fs::read_to_string(repo.path().join("a.txt")).unwrap().contains("nineteen\n"));
+        repo.git(&["add", "a.txt"]);
+        let all = super::discard_all(repo.path()).unwrap().unwrap();
+        std::fs::write(repo.path().join("a.txt"), "edited since\n").unwrap();
+        assert!(super::restore_discarded(&all, repo.path()).is_err(), "newer edits are kept");
+        repo.git(&["checkout", "--", "a.txt"]);
+        super::restore_discarded(&all, repo.path()).unwrap();
+        assert_eq!(repo.git(&["diff", "--cached", "--name-only"]).trim(), "a.txt", "staged again, as it was");
     }
 
     #[test]

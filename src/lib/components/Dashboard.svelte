@@ -82,10 +82,11 @@
     return { kind: m.kind, text };
   }
 
-  /** What's waiting on your machine, in order: Commit the uncommitted work, Push the commits not on the server. */
+  /** The next thing to do on your machine, one at a time: Commit the uncommitted work; only once that's done, Push
+   *  the commits not on the server. */
   function pending(g: RepoActivity, b: ActiveBranch): ("commit" | "push")[] {
-    const push = !isRemote(b.name) && (b.status?.unpushed ?? 0) > 0;
-    return [...(hasWork(g, b) ? (["commit"] as const) : []), ...(push ? (["push"] as const) : [])];
+    if (hasWork(g, b)) return ["commit"];
+    return !isRemote(b.name) && (b.status?.unpushed ?? 0) > 0 ? ["push"] : [];
   }
   /** Each action's count with its unit, under its name ("73 files", "5 commits"), and what it means (tooltip, menu hint). */
   function detail(kind: "commit" | "push", g: RepoActivity, b: ActiveBranch) {

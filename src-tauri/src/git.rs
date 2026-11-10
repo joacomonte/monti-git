@@ -99,6 +99,12 @@ pub fn repo_file(repo: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(repo.join(relative))
 }
 
+/// A fresh path for a temporary worktree (`git worktree add` creates it), unique per call.
+pub fn temp_dir(purpose: &str) -> PathBuf {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    std::env::temp_dir().join(format!("monti-git-{purpose}-{}-{nanos}", std::process::id()))
+}
+
 // MARK: Logs panel
 
 /// One git command the app ran, for the Logs panel: what, where, how it went and everything it printed.
@@ -188,9 +194,9 @@ pub struct Commit {
     pub refs: Vec<String>, // raw %D decorations, e.g. "HEAD -> main", "origin/main", "tag: v1.0"
     pub subject: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub shelved: Option<String>, // stash row: the branch whose WIP Monti Git put aside
+    pub stash: Option<crate::stash::StashRow>, // a stash's row (its subject: the stash message)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stat: Option<Stat>, // uncommitted and stash rows: what they hold (their subject is written by the UI)
+    pub stat: Option<Stat>, // uncommitted and stash rows: what they hold
 }
 
 /// Size of a set of changes: files, lines added and removed.
@@ -274,7 +280,7 @@ fn parse_commit(record: &str) -> Option<Commit> {
         date: date.parse().unwrap_or_default(),
         refs: decorations(refs),
         subject: subject.into(),
-        shelved: None,
+        stash: None,
         stat: None,
     })
 }
@@ -345,7 +351,7 @@ pub fn worktree_commit(head: Option<String>, stat: Stat) -> Option<Commit> {
         date: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
         refs: vec![],
         subject: String::new(),
-        shelved: None,
+        stash: None,
         stat: Some(stat),
     })
 }

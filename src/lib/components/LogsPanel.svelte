@@ -5,7 +5,7 @@
   import { Check, ChevronRight, Copy, ScrollText, Search, Undo2 } from "@lucide/svelte";
   import { api, type GitLog } from "$lib/api";
   import * as Popover from "$lib/components/ui/popover";
-  import type { Activity, RepoModel } from "$lib/model.svelte";
+  import { undoHint, type Activity, type RepoModel } from "$lib/model.svelte";
   import { CopyFlash } from "$lib/clipboard.svelte";
   import { ago, baseName, gitCommand, ranBy } from "$lib/format";
   import Segmented from "./Segmented.svelte";
@@ -154,7 +154,7 @@
                     </span>
                     {#if a.undo && !a.undone && a.repo === model.repo}
                       <button class="undo" id="logs-undo-{a.at}" disabled={model.isSyncing}
-                        title={a.undo.kind === "checkout" ? `Switch back to ${a.undo.branch}` : a.undo.expected ? `Put ${a.undo.branch} back where it was` : `Recreate ${a.undo.branch} (local)`}
+                        title={undoHint(a.undo)}
                         onclick={() => model.undo(a)}><Undo2 size={12} />Undo</button>
                     {/if}
                   </div>

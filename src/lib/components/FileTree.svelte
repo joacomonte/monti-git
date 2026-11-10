@@ -10,6 +10,7 @@
   import { prefs, type TreeSearchMode } from "$lib/prefs";
   import { isHead, refName } from "$lib/refs";
   import CommitBox from "./CommitBox.svelte";
+  import ConflictBox from "./ConflictBox.svelte";
   import PaneDivider from "./PaneDivider.svelte";
   import CommitDetails from "./CommitDetails.svelte";
   import ContextMenu from "./ContextMenu.svelte";
@@ -170,7 +171,10 @@
   {#if model.isWorktreeSelected}
     <!-- The commit box takes the room you give it: drag the line under it. -->
     <!-- Its height is what it wants, not what it takes: in a short pane it shrinks instead of spilling under the diff. -->
-    <div class="min-h-0" style:flex="0 1 {commitHeight}px"><CommitBox {model} /></div>
+    <!-- A merge or rebase stopped on conflicts: resolving them comes first, so it takes the commit form's place. -->
+    <div class="min-h-0" style:flex="0 1 {commitHeight}px">
+      {#if model.history.conflict}<ConflictBox {model} conflict={model.history.conflict} />{:else}<CommitBox {model} />{/if}
+    </div>
     <PaneDivider vertical={false} before bind:size={commitHeight} min={210} max={640} id="commit-box-divider" />
   {:else if model.selected}{#key model.selected.id}<CommitDetails {model} id={model.selected.id} />{/key}{/if}
   <!-- One row: the search (a compact icon until clicked, then it takes the row and grows to more lines with long text; its

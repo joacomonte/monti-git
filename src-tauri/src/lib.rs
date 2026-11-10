@@ -4,17 +4,21 @@ mod actions;
 mod blame;
 mod branches;
 mod changes;
+mod conflicts;
 mod dashboard;
 mod diff;
 mod editors;
 mod git;
+mod github;
 mod graph;
 mod history;
 mod library;
 mod par;
 mod patch;
 mod refs;
+mod rewrite;
 mod search;
+mod stash;
 #[cfg(test)]
 mod testutil;
 mod wip;
@@ -162,10 +166,36 @@ fn last_commit_message(repo: String) -> String {
     git::read_opt(&["log", "-1", "--format=%B"], Path::new(&repo)).unwrap_or_default().trim().to_string()
 }
 
-/// The commit form warns before amending a commit that's already on the server.
+/// The commit form warns before amending or squashing commits that are already on the server.
 #[tauri::command(async)]
-fn head_pushed(repo: String) -> bool {
-    actions::head_pushed(Path::new(&repo))
+fn rewrites_pushed(repo: String, kind: actions::CommitKind) -> bool {
+    actions::rewrites_pushed(&kind, Path::new(&repo))
+}
+
+/// Each branch's pull request on GitHub (through gh; none without it).
+#[tauri::command(async)]
+fn pull_requests(repo: String) -> HashMap<String, github::PullRequest> {
+    github::pull_requests(Path::new(&repo))
+}
+
+/// A web page (a pull request) in the default browser.
+#[tauri::command(async)]
+fn open_url(url: String) -> Result<()> {
+    if !url.starts_with("https://") {
+        return Err(format!("Not a web page: {url}"));
+    }
+    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// "Edit commits": the branch's own commits since `base`, oldest first.
+#[tauri::command(async)]
+fn own_commits(repo: String, branch: String, base: String) -> Result<Vec<rewrite::Own>> {
+    rewrite::own_commits(&branch, &base, Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn rewrite_branch(repo: String, branch: String, base: String, steps: Vec<rewrite::Step>, rewrite: bool) -> Result<String> {
+    rewrite::apply(&branch, &base, &steps, rewrite, Path::new(&repo))
 }
 
 /// Staged, unstaged and untracked files.
@@ -233,7 +263,7 @@ fn deletion(repo: String, branch: String, base: String, targets: Vec<String>) ->
 }
 
 #[tauri::command(async)]
-fn update_branch(repo: String, branch: String, parent: String, rebase: bool) -> Result<()> {
+fn update_branch(repo: String, branch: String, parent: String, rebase: bool) -> Result<actions::Integrated> {
     actions::update(&branch, &parent, rebase, Path::new(&repo))
 }
 
@@ -258,13 +288,19 @@ fn push(repo: String, branch: String, force: bool) -> Result<actions::Pushed> {
     actions::push(&branch, force, Path::new(&repo))
 }
 
+/// After a refused push: brings the server's commits in (rebase), then pushes.
 #[tauri::command(async)]
-fn discard_file(repo: String, path: String) -> Result<()> {
+fn pull_and_push(repo: String, branch: String) -> Result<String> {
+    actions::pull_and_push(&branch, Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn discard_file(repo: String, path: String) -> Result<Option<actions::Discarded>> {
     actions::discard(&path, Path::new(&repo))
 }
 
 #[tauri::command(async)]
-fn discard_all(repo: String) -> Result<()> {
+fn discard_all(repo: String) -> Result<Option<actions::Discarded>> {
     actions::discard_all(Path::new(&repo))
 }
 
@@ -279,7 +315,7 @@ fn delete_untracked(repo: String, paths: Vec<String>) -> Result<()> {
 }
 
 #[tauri::command(async)]
-fn discard_hunk(repo: String, path: String, index: usize, header: String) -> Result<()> {
+fn discard_hunk(repo: String, path: String, index: usize, header: String) -> Result<Option<actions::Discarded>> {
     actions::discard_hunk(&path, index, &header, Path::new(&repo))
 }
 
@@ -295,8 +331,60 @@ fn unstage(repo: String, paths: Vec<String>) -> Result<()> {
 
 #[tauri::command(async)]
 /// A new commit, into the last one (`message` None keeps its message), or the branch squashed into one.
-fn commit(repo: String, message: Option<String>, kind: actions::CommitKind, push: bool, rewrite: bool) -> Result<String> {
+fn commit(repo: String, message: Option<String>, kind: actions::CommitKind, push: bool, rewrite: bool) -> Result<actions::Committed> {
     actions::commit(message.as_deref(), &kind, push, rewrite, Path::new(&repo))
+}
+
+/// Undo of a discard: refused if those files changed since.
+#[tauri::command(async)]
+fn restore_discarded(repo: String, discarded: actions::Discarded) -> Result<()> {
+    actions::restore_discarded(&discarded, Path::new(&repo))
+}
+
+// MARK: Stashes (stash.rs)
+
+#[tauri::command(async)]
+fn stash_apply(repo: String, id: String, pop: bool) -> Result<String> {
+    stash::apply(&id, pop, Path::new(&repo))
+}
+
+/// Returns the dropped stash's message, for its Undo.
+#[tauri::command(async)]
+fn stash_drop(repo: String, id: String) -> Result<String> {
+    stash::drop(&id, Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn stash_restore(repo: String, id: String, message: String) -> Result<()> {
+    stash::restore(&id, &message, Path::new(&repo))
+}
+
+// MARK: Conflicts (conflicts.rs)
+
+#[tauri::command(async)]
+fn conflict_parts(repo: String, path: String) -> Result<Vec<conflicts::Part>> {
+    conflicts::read(&path, Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn resolve_conflict(repo: String, path: String, picks: Vec<conflicts::Pick>) -> Result<()> {
+    conflicts::resolve(&path, &picks, Path::new(&repo))
+}
+
+/// The whole file as one side has it (`mine`: the user's).
+#[tauri::command(async)]
+fn take_side(repo: String, path: String, mine: bool) -> Result<()> {
+    conflicts::take(&path, mine, Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn continue_operation(repo: String) -> Result<String> {
+    conflicts::continue_operation(Path::new(&repo))
+}
+
+#[tauri::command(async)]
+fn abort_operation(repo: String) -> Result<String> {
+    conflicts::abort(Path::new(&repo))
 }
 
 pub fn run() {
@@ -319,11 +407,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_repos, is_repo, open_file, list_editors,
-            load_history, load_changes, load_diff, commit_info, blame, branch_status, recent_activity, safe_to_delete, merged_into, branch_tip, last_commit_message, head_pushed,
-            changed_file_count, git_logs,
+            load_history, load_changes, load_diff, commit_info, blame, branch_status, recent_activity, safe_to_delete, merged_into, branch_tip, last_commit_message, rewrites_pushed,
+            changed_file_count, git_logs, pull_requests, open_url,
             search_commits, search_code, search_lines, commit_places,
-            sync, checkout, pull, delete_branch, deletion, update_branch, base_status, start_feature, move_branch, push,
-            discard_file, discard_all, untracked_check, delete_untracked, discard_hunk, stage, unstage, commit,
+            sync, checkout, pull, delete_branch, deletion, update_branch, base_status, start_feature, move_branch, push, pull_and_push,
+            discard_file, discard_all, untracked_check, delete_untracked, discard_hunk, stage, unstage, commit, restore_discarded,
+            stash_apply, stash_drop, stash_restore, own_commits, rewrite_branch,
+            conflict_parts, resolve_conflict, take_side, continue_operation, abort_operation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

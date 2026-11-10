@@ -1,7 +1,9 @@
 <!-- Thin strip over the graph with its toggles (blue when on, the full explanation on hover), and under it, while
      "Only this branch" is on, the way back to the whole graph. -->
 <script lang="ts">
-  import { ArrowLeft, FoldVertical, History, X } from "@lucide/svelte";
+  import { ArrowLeft, FoldVertical, History, TriangleAlert, X } from "@lucide/svelte";
+  import { WORKTREE_ID } from "$lib/api";
+  import { plural } from "$lib/format";
   import type { RepoModel } from "$lib/model.svelte";
   import { baseName } from "$lib/format";
   import EnvironmentsPicker from "./EnvironmentsPicker.svelte";
@@ -31,6 +33,16 @@
     </button>
   {/if}
 </div>
+{#if model.history.conflict}
+  <!-- Stopped on conflicts: whatever the view, the way to resolve them stays in sight. -->
+  {@const conflict = model.history.conflict}
+  <div class="conflict-banner" id="conflict-banner">
+    <TriangleAlert size={16} class="shrink-0" />
+    <span class="min-w-0 flex-1 truncate">{conflict.operation === "rebase" ? "Rebase" : conflict.operation === "merge" ? "Merge" : conflict.operation === "cherryPick" ? "Cherry-pick" : "Revert"} stopped:
+      {conflict.files.length ? `${plural(conflict.files.length, "file")} with conflicts` : "all resolved, ready to continue"}</span>
+    <button class="resolve" id="conflict-banner-resolve" onclick={() => model.select(WORKTREE_ID)}>{conflict.files.length ? "Resolve" : "Continue…"}</button>
+  </div>
+{/if}
 {#if model.focus}
   <div class="focus-banner" id="focus-banner">
     <button class="back" id="focus-close" title={model.focusFrom === "dashboard" ? "Back to the dashboard" : "Back to the whole graph, where you were"}
@@ -43,10 +55,9 @@
         <X size={15} />Exit focus view
       </button>
     {/if}
-    <span class="mode">Focus view</span>
     {#if model.history.fastForwarded}
       <span class="mode" title="The base was moved up to this branch (fast-forward): there's no merge commit, the base simply went on from its last commit.">
-        · Fast-forwarded into {model.history.base}: no merge, it went on from here</span>
+        Fast-forwarded into {model.history.base}: no merge, it went on from here</span>
     {/if}
   </div>
 {/if}
@@ -63,6 +74,9 @@
     .group { padding-right: 8px; margin-right: 6px; }
   }
   .toolbar { container: toolbar / inline-size; } /* FilterPicker shows its toggles inline when this has room */
+  .conflict-banner { display: flex; flex-shrink: 0; align-items: center; gap: 10px; height: 42px; padding: 0 12px; border-bottom: 1px solid var(--border);
+    font-size: 13px; font-weight: 600; color: #ea580c; background: color-mix(in oklab, #ea580c 10%, transparent); }
+  .conflict-banner .resolve { height: 28px; padding: 0 12px; border-radius: 8px; font-size: 12.5px; color: white; background: #ea580c; }
   .focus-banner { display: flex; flex-shrink: 0; align-items: center; gap: 14px; height: 48px; padding: 0 10px; border-bottom: 1px solid var(--border);
     background: color-mix(in oklab, var(--primary) 8%, transparent); }
   .focus-banner .back { display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px; border-radius: 9px; font-size: 14px; font-weight: 600; color: var(--primary); background: color-mix(in oklab, var(--primary) 12%, transparent); }

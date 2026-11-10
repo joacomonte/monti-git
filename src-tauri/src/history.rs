@@ -1,9 +1,9 @@
 //! The graph's commit list: every branch (or only some), one branch focused on its base, or one file's history;
-//! then the uncommitted row and the saved WIP rows placed above their commits, and the lanes laid out.
+//! then the uncommitted row and the stash rows placed above their commits, and the lanes laid out.
 use crate::git::{self, Commit, LogQuery, Stat};
-use crate::graph;
+use crate::{conflicts, graph};
 use crate::refs::{self, full_name, local_name};
-use crate::wip;
+use crate::stash;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
@@ -34,7 +34,9 @@ pub struct History {
     environments: Vec<String>, // qa, develop…: kept by "Only mine" and compared against on the branch cards
     all_branches: Vec<String>, // every branch name, local or on origin: the environments picker
     local: Vec<String>,       // every local branch, for "Change base"
+    on_server: Vec<String>,   // branch names with a copy on a remote: Pull only makes sense for those
     fast_forwarded: bool, // focused branch reached the base by a fast-forward, so there's no merge to draw
+    conflict: Option<conflicts::Conflict>, // a merge or rebase stopped on conflicts in the checkout
 }
 
 pub fn load(repo: &Path, q: &Query) -> Result<History, String> {
@@ -53,7 +55,10 @@ pub fn load(repo: &Path, q: &Query) -> Result<History, String> {
     };
     let has_more = commits.len() >= q.limit;
 
+    let mut conflict = None;
     if let Some(status) = status {
+        let unmerged = status.files.iter().filter(|(_, letter)| **letter == 'U').map(|(path, _)| path.clone()).collect();
+        conflict = conflicts::state(repo, unmerged);
         let stat = Stat { files: status.files.len() as u32, ..Default::default() }; // lines aren't shown: no extra diff
         // Right above the checked-out commit, not at the very top of the graph; focused, only if that commit is shown.
         if let Some(row) = git::worktree_commit(status.head, stat) {
@@ -63,9 +68,9 @@ pub fn load(repo: &Path, q: &Query) -> Result<History, String> {
             }
         }
     }
-    // Saved WIP of other branches: right above the commit it was saved on, when that commit is shown.
-    let shelved = if q.path.is_none() { wip::shelved_commits(repo) } else { vec![] };
-    for row in shelved {
+    // Stashes: right above the commit each was saved on, when that commit is shown.
+    let stashes = if q.path.is_none() { stash::rows(repo) } else { vec![] };
+    for row in stashes {
         if let Some(at) = commits.iter().position(|c| Some(&c.id) == row.parents.first()) {
             commits.insert(at, row);
         }
@@ -84,7 +89,9 @@ pub fn load(repo: &Path, q: &Query) -> Result<History, String> {
         environments: branches.environments,
         all_branches: branches.names,
         local: branches.local,
+        on_server: branches.on_server,
         fast_forwarded,
+        conflict,
     })
 }
 

@@ -1,5 +1,6 @@
-<!-- "Update from main": pick merge (recommended) or rebase, run it, then show the
-     result. Conflicts abort cleanly and list the files; a rebase of a pushed branch offers the force push. -->
+<!-- "Update from main": pick merge (recommended) or rebase, run it, then show the result. On the checked-out branch a
+     conflict stops for the resolver (this closes; the uncommitted row takes over); on any other it aborts cleanly and
+     lists the files. A rebase of a pushed branch offers the force push. -->
 <script lang="ts">
   import { ArrowUpDown, CircleCheck, GitMerge, LoaderCircle, TriangleAlert } from "@lucide/svelte";
   import type { Card } from "$lib/api";
@@ -25,7 +26,8 @@
     error = null;
     step = "working";
     const result = await model.updateFromParent(card, rebase);
-    if (result.ok) step = "done";
+    if (result.ok && model.history.conflict) dismiss(); // stopped on conflicts: the resolver takes over
+    else if (result.ok) step = "done";
     else {
       error = result.error;
       step = "choose";
@@ -68,7 +70,8 @@
         example="your 4 commits get re-applied after {parentName}'s 3 new ones, as if you had branched off this morning. No merge commit." />
     </div>
     <span class="px-2 text-[10.5px] text-tertiary">
-      If you and a teammate changed the same lines, it stops and puts everything back as it was: nothing breaks.{#if !isCurrent} You don't need to switch branches for this.{/if}
+      {#if isCurrent}If you and a teammate changed the same lines, it stops so you pick which lines stay, or Abort to put everything back.
+      {:else}If you and a teammate changed the same lines, it stops and puts everything back as it was: nothing breaks. You don't need to switch branches for this.{/if}
     </span>
   {:else if step === "working"}
     <div class="flex items-center gap-2.5 text-[12px]">
@@ -96,7 +99,7 @@
       </span>
       <span class="font-mono text-[11px] whitespace-pre-wrap text-muted-foreground select-text">{error}</span>
       {#if step !== "done"}
-        <span class="text-[11px] text-tertiary">Conflicts mean both branches changed the same lines. Fix them by hand from a terminal (git merge {parentName}), or ask someone to pair on it.</span>
+        <span class="text-[11px] text-tertiary">Conflicts mean both branches changed the same lines. Check this branch out and update it again: the app stops on the conflicts so you can resolve them.</span>
       {/if}
     </div>
   {/if}

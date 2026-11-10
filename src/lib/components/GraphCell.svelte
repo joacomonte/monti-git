@@ -20,7 +20,7 @@
     height: number;
     width: number;
     isWorktree: boolean; // uncommitted changes: dashed line to HEAD, hollow dot
-    isShelved?: boolean; // WIP saved when leaving a branch: amber dashed fork, hollow square (real commits are circles)
+    isStash?: boolean; // a stash (WIP saved when leaving a branch, or any other): amber dashed fork, hollow square (real commits are circles)
     isMerge: boolean;
     isHead?: boolean; // the checked-out commit: bigger dot with a soft pulsing halo
     names: (string | null)[];
@@ -28,7 +28,7 @@
     spot?: number | null; // a hovered branch (its line color id): its line lights up, every other line fades
     grey?: boolean; // Commits collapsed: every line and dot muted except the checked-out branch's
   };
-  let { index, row, height, width, isWorktree, isShelved = false, isMerge, isHead = false, names, grey = false, spot = null, hidden = 0 }: Props = $props();
+  let { index, row, height, width, isWorktree, isStash = false, isMerge, isHead = false, names, grey = false, spot = null, hidden = 0 }: Props = $props();
 
   const x = (lane: number) => PAD + lane * LANE + LANE / 2;
   const mid = $derived(height / 2);
@@ -63,9 +63,9 @@
       if (!lane) return;
       // A branch forking off another lane: the curve takes the new branch's color, not the lane it leaves from.
       const own: NonNullable<Lane> = p === 0 && i !== row.column ? [lane[0], row.color, 0] : lane;
-      const s = seg(path(x(row.column), mid, x(i), height), own, row.isCurrent && p === 0, isWorktree || isShelved);
+      const s = seg(path(x(row.column), mid, x(i), height), own, row.isCurrent && p === 0, isWorktree || isStash);
       const fade = own !== lane ? (grey && (lane[2] & 1) === 0 ? soft(lane[1]) : laneColor(lane[1])) : undefined;
-      out.push(isShelved ? { ...s, color: SHELVED, glow: false, width: 2 } : { ...s, fade });
+      out.push(isStash ? { ...s, color: SHELVED, glow: false, width: 2 } : { ...s, fade });
     });
     return out;
   });
@@ -93,7 +93,7 @@
       style:filter={s.glow || lit ? `drop-shadow(0 0 ${s.width > 2 || lit ? 3 : 2}px ${s.color})` : undefined} />
   {/each}
   <g style:opacity={spot != null && row.color !== spot ? 0.2 : 1}>
-  {#if isShelved}
+  {#if isStash}
     <rect x={x(row.column) - 5} y={mid - 5} width="10" height="10" rx="2" fill="var(--background)" stroke={SHELVED} stroke-width="2" stroke-dasharray="3 2" />
   {:else if isMerge || isWorktree}
     <circle cx={x(row.column)} cy={mid} {r} fill="var(--background)" stroke={dot} stroke-width={isMerge ? 1.25 : 2} />

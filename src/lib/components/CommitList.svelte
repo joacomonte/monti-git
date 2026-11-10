@@ -1,7 +1,7 @@
 <!-- Virtualized commit list: only the rows on screen are in the DOM. Rows touch so the graph lines stay continuous. -->
 <script lang="ts">
-  import { Archive, ArrowDown, ArrowUp, CircleCheck, Clock, Cloud, Copy, Laptop, GitCommitHorizontal, GitPullRequestDraft, Sparkles, Trash2 } from "@lucide/svelte";
-  import { api, WORKTREE_ID, type Card, type Commit } from "$lib/api";
+  import { Archive, ArrowDown, ArrowUp, ArchiveRestore, CircleCheck, Clock, Cloud, Copy, Laptop, GitCommitHorizontal, GitPullRequestDraft, PackageOpen, Sparkles, Trash2 } from "@lucide/svelte";
+  import { api, WORKTREE_ID, type Card, type Commit, type PullRequest } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import { CopyFlash } from "$lib/clipboard.svelte";
   import { plural, subject, when } from "$lib/format";
@@ -16,6 +16,8 @@
   import BranchActions from "./BranchActions.svelte";
   import StartFeature from "./StartFeature.svelte";
   import UpdatePanel from "./UpdatePanel.svelte";
+  import PrBadge from "./PrBadge.svelte";
+  import EditCommits from "./EditCommits.svelte";
 
   let { model }: { model: RepoModel } = $props();
   const commits = $derived(model.history.commits);
@@ -28,6 +30,8 @@
   let menu = $state<
     | { kind: "commit"; commit: Commit; x: number; y: number }
     | { kind: "branch"; name: string; commit: Commit; x: number; y: number }
+    | { kind: "stash"; commit: Commit; x: number; y: number }
+    | { kind: "worktree"; commit: Commit; x: number; y: number }
     | null
   >(null);
   const flash = new CopyFlash(500);
@@ -37,7 +41,7 @@
   }
 
   // Centered over the graph: merge/rebase from the base, delete, new branch.
-  let dialog = $state<{ kind: "update" | "delete"; card: Card } | { kind: "new"; from: string } | null>(null);
+  let dialog = $state<{ kind: "update" | "delete"; card: Card } | { kind: "new"; from: string } | { kind: "edit"; from: string } | null>(null);
 
   const branchOf = (c: Commit) => branchBadges(c.refs).find((b) => !isTag(b.ref));
 
@@ -74,13 +78,28 @@
     return () => { stale = true; clearTimeout(timer); };
   });
   const cardOf = (ref: string): Card | null => cards.get(refName(ref)) ?? null;
+
+  // Pull requests on GitHub, by branch name (Rust keeps them for a minute): asked again with each history load.
+  let prs = $state.raw<Record<string, PullRequest>>({});
+  $effect(() => {
+    const repo = model.repo;
+    void model.history;
+    if (!repo) return;
+    let stale = false;
+    api.pullRequests(repo).then((found) => { if (!stale && model.repo === repo) prs = found; }, () => {});
+    return () => (stale = true);
+  });
+  $effect(() => {
+    void model.repo;
+    prs = {}; // another repo: none of the previous one's
+  });
   const isPending = (ref: string) => hasCard(ref) && !!model.history.base && !cardOf(ref);
 
   /** Only branches with something to say get status icons. */
   const hasStatus = (card: Card) => card.firstParentCount > 0 || card.behindBase > 0 || mergeState(card) != null;
 
   /** Branches only: a branch row is just its cards, count, date and author, on one line (no subject). */
-  const bare = (c: Commit) => model.branchesOnly && !model.focus && c.id !== WORKTREE_ID && !c.shelved;
+  const bare = (c: Commit) => model.branchesOnly && !model.focus && c.id !== WORKTREE_ID && !c.stash;
   /** Branches only: the branch whose status line goes under the row (first pill with something to say). */
   const collapsedOf = (c: Commit) => (bare(c) ? branchBadges(c.refs).map((b) => cardOf(b.ref)).find((card) => card != null && hasStatus(card)) ?? null : null);
 
@@ -88,7 +107,7 @@
   // MARK: Layout
 
   const isQuietMerge = (c: Commit) => c.parents.length > 1 && c.refs.length === 0;
-  const isTall = (c: Commit) => c.id === WORKTREE_ID || !!c.shelved || branchBadges(c.refs).length > 0;
+  const isTall = (c: Commit) => c.id === WORKTREE_ID || !!c.stash || branchBadges(c.refs).length > 0;
   const heightOf = (c: Commit) => (isQuietMerge(c) ? QUIET : isTall(c) || bare(c) ? ROW : LINE);
   const offsets = $derived.by(() => {
     const out = new Float64Array(commits.length + 1);
@@ -173,6 +192,13 @@
     return [`Repo: ${model.repo}`, name ? `Branch: ${name}` : null, `Commit: ${c.id}`].filter((line) => line != null).join("\n");
   }
 
+  /** The uncommitted row for an AI agent: where, on which branch, how much, and the commands that show it all. */
+  function uncommitted(c: Commit) {
+    const branch = model.history.current;
+    return [`Repo: ${model.repo}`, `Branch: ${branch ?? "(detached HEAD)"}`, `Uncommitted changes: ${plural(c.stat?.files ?? 0, "file")}, not committed yet`,
+      "See them with: git status, git diff HEAD (staged and unstaged together)"].join("\n");
+  }
+
   /** A pill or card: its branch menu right under it, or closed if it was already open for it. */
   function openBranchMenu(e: MouseEvent, ref: string, commit: Commit) {
     e.stopPropagation();
@@ -183,9 +209,9 @@
   }
 
   function rowMenu(e: MouseEvent, commit: Commit) {
-    if (commit.shelved) return;
     e.preventDefault();
-    if (commit.id === WORKTREE_ID) return model.select(commit.id); // the commit box, on the right
+    if (commit.stash) return void (menu = { kind: "stash", commit, x: e.clientX, y: e.clientY });
+    if (commit.id === WORKTREE_ID) return void (menu = { kind: "worktree", commit, x: e.clientX, y: e.clientY });
     // A row with a branch: the branch menu (same as clicking its badge); a plain commit: the commit menu.
     const branch = branchOf(commit);
     menu = branch ? { kind: "branch", name: refName(branch.ref), commit, x: e.clientX, y: e.clientY } : { kind: "commit", commit, x: e.clientX, y: e.clientY };
@@ -198,13 +224,13 @@
     {#each commits.slice(start, end) as commit, k (commit.id)}
       {@const i = start + k}
       {@const selected = commit.id === model.selectedId}
-      <div class="row absolute inset-x-0 flex" class:selected class:shelved={!!commit.shelved} style:top="{offsets[i]}px" style:height="{heightOf(commit)}px"
+      <div class="row absolute inset-x-0 flex" class:selected class:stash={!!commit.stash} style:top="{offsets[i]}px" style:height="{heightOf(commit)}px"
         role="option" aria-selected={selected} tabindex="-1" id="commit-row-{commit.id}"
         onclick={() => model.select(selected ? null : commit.id)} onkeydown={(e) => e.key === "Enter" && model.select(commit.id)}
         oncontextmenu={(e) => rowMenu(e, commit)}>
         <div class="shrink-0" style:width="{widthOf(i)}px">
           <GraphCell index={i} row={model.history.rows[i]} height={heightOf(commit)} width={widthOf(i)}
-            isWorktree={commit.id === WORKTREE_ID} isShelved={!!commit.shelved} isMerge={commit.parents.length > 1} isHead={commit.refs.some(isHead)}
+            isWorktree={commit.id === WORKTREE_ID} isStash={!!commit.stash} isMerge={commit.parents.length > 1} isHead={commit.refs.some(isHead)}
             names={model.lineNames} grey={model.branchesOnly && !model.focus} {spot} hidden={(collapsedOf(commit)?.firstParentCount ?? 1) - 1} />
         </div>
         {#if isQuietMerge(commit)}
@@ -219,14 +245,16 @@
           <div class="flex min-w-0 flex-1 flex-col justify-center gap-[5px] px-2" class:opacity-55={commit.parents.length > 1 && !bare(commit)}>
             {#if commit.id === WORKTREE_ID}
               <div class="text-[13.5px] font-semibold">Uncommitted changes</div>
-            {:else if commit.shelved}
+            {:else if commit.stash}
+              <!-- Right-click (or the row's menu) applies, pops or drops it. -->
+              {@const shelved = commit.stash.shelved}
               <div class="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[13px]">
                 <Archive size={13} class="shrink-0 text-amber-400" />
-                <span class="font-semibold text-amber-400">WIP saved</span>
-                <span class="truncate text-muted-foreground">from {commit.shelved}</span>
+                <span class="font-semibold text-amber-400">{shelved ? "WIP saved" : "Stash"}</span>
+                <span class="truncate text-muted-foreground">{shelved ? `from ${shelved}` : commit.subject}</span>
                 <span class="shrink-0 text-[12.5px] text-tertiary" title={new Date(commit.date * 1000).toLocaleString()}>· saved {when(commit.date)}</span>
               </div>
-              <div class="truncate text-[12px] text-tertiary">{subject(commit)} · comes back when you check out {commit.shelved}</div>
+              <div class="truncate text-[12px] text-tertiary">{subject(commit)} · {shelved ? `comes back when you check out ${shelved}` : "right-click to apply or drop it"}</div>
             {:else}
               <!-- Branches on the left; date and author on the right edge. -->
               <div class="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
@@ -251,14 +279,22 @@
                         {#if own && hasStatus(own)}{@render status(own)}{:else if isPending(badge.ref)}<span class="skel"></span>{/if}
                       </div>
                     </div>
+                    {#if prs[name]}<PrBadge pr={prs[name]} id="branch-pr-{name}" />{/if}
                     <!-- Right of the card: its own commits as a count (amber part: not pushed yet); hover says so, click opens the focus view. -->
                     {#if own?.firstParentCount}
                       {@const local = own.unpushed}
+                      <!-- None pushed: one number, all of them waiting to go up; otherwise its commits, and how many of them aren't up yet. -->
+                      {@const allLocal = local === own.firstParentCount}
                       <button class="commits" class:pending={local > 0} id="branch-commits-{own.local}" onclick={(e) => { e.stopPropagation(); openFocus(own.ref); }}
-                        title={`${plural(own.firstParentCount, "commit")} of its own${local ? `, ${local === own.firstParentCount ? "none" : local} not pushed yet` : ", all pushed"}\nClick: focus view, just this branch`}>
-                        <GitCommitHorizontal size={13} strokeWidth={2.5} />{own.firstParentCount}
-                        {#if local}<span class="unpushed"><ArrowUp size={11} strokeWidth={2.75} />{local}</span>{/if}
-                        <span class="more">{own.firstParentCount === 1 ? "commit" : "commits"}{local ? " · not pushed" : ""}</span>
+                        title={allLocal
+                          ? `${plural(local, "commit")} not pushed yet\nOnly on this computer: none of its commits is on the server\nClick: focus view, just this branch`
+                          : `${plural(own.firstParentCount, "commit")} of its own\n${local ? `${local} of them not pushed yet` : "All of them pushed"}\nClick: focus view, just this branch`}>
+                        {#if allLocal}
+                          <span class="unpushed only"><ArrowUp size={12} strokeWidth={2.75} />{local}</span>
+                        {:else}
+                          <GitCommitHorizontal size={13} strokeWidth={2.5} />{own.firstParentCount}
+                          {#if local}<span class="unpushed"><ArrowUp size={11} strokeWidth={2.75} />{local}</span>{/if}
+                        {/if}
                       </button>
                     {/if}
                   {:else}
@@ -274,7 +310,7 @@
                 <span class="meta-right author truncate text-[12.5px] text-tertiary" title={commit.author}>· {commit.author}</span>
               </div>
             {/if}
-            {#if !commit.shelved && !bare(commit)}<div class="truncate text-[12.5px]" style:color={tint(i)}>{subject(commit)}</div>{/if}
+            {#if !commit.stash && !bare(commit)}<div class="truncate text-[12.5px]" style:color={tint(i)}>{subject(commit)}</div>{/if}
           </div>
         {/if}
       </div>
@@ -294,21 +330,21 @@
     {@const label = ways.includes("squashed") ? "Squashed" : ways.includes("cherry-picked") ? "Cherry-picked" : ways.includes("fast-forwarded") ? "Fast-forwarded" : "Merged"}
     {@const explain = { merged: "merged", "fast-forwarded": "fast-forwarded: the base moved up to this branch, no merge commit", "cherry-picked": "same changes copied (cherry-pick or rebase)", squashed: "squashed: its contents are already there", "": "" }}
     {@const how = card.promotion.map(([t, , how]) => `${localName(t)}: ${explain[how]}`).join("\n")}
-    <button class="st ok" id="branch-status-delete-{card.local}" title={`${how}\nSafe to delete: checks with the server, then shows the options`}
-      onclick={stop(() => (dialog = { kind: "delete", card }))}><CircleCheck size={12} strokeWidth={2.5} /><span class="more">{label} · <Trash2 size={11} strokeWidth={2.5} /> Safe to delete</span></button>
+    <button class="st ok" id="branch-status-delete-{card.local}" title={`${label} · safe to delete\n${how}\nClick: checks with the server, then shows the options`}
+      onclick={stop(() => (dialog = { kind: "delete", card }))}><CircleCheck size={12} strokeWidth={2.5} /><Trash2 size={11} strokeWidth={2.5} /></button>
   {:else}
     {#if behind}
-      <button class="st warn" id="branch-status-behind-{card.local}" disabled={!model.history.local.includes(card.local)} title="{behind} commits behind {against}"
-        onclick={stop(() => (dialog = { kind: "update", card }))}><ArrowDown size={12} strokeWidth={2.5} />{behind}<span class="more">behind {against} · Merge or rebase…</span></button>
+      <button class="st warn" id="branch-status-behind-{card.local}" disabled={!model.history.local.includes(card.local)} title={`${plural(behind, "commit")} behind ${against}\nTeammates added them after this branch was cut\nClick: merge or rebase to bring them in`}
+        onclick={stop(() => (dialog = { kind: "update", card }))}><ArrowDown size={12} strokeWidth={2.5} />{behind}</button>
     {/if}
     <!-- Merged somewhere but not everywhere yet: how many places are missing, which on hover. -->
     {#if merge?.kind === "pending"}
       {@const counts = card.promotion.filter(([, missing]) => missing > 0).map(([t, missing]) => `${localName(t)} (${plural(missing, "commit")})`)}
-      <span class="st" title="Not in {counts.join(', ')}"><Clock size={12} strokeWidth={2.5} />{merge.missing.length}<span class="more">Not in {merge.missing.join(", ")}</span></span>
+      <span class="st" title={`Not in ${merge.missing.join(", ")} yet\nMissing: ${counts.join(", ")}`}><Clock size={12} strokeWidth={2.5} />{merge.missing.length}</span>
     {/if}
     <!-- In no environment nor the base yet: work left halfway, worth a warning. -->
     {#if merge?.kind === "none"}
-      <span class="st amber" title="None of its commits are in {against} or any environment"><GitPullRequestDraft size={12} strokeWidth={2.5} /><span class="more">Not merged anywhere</span></span>
+      <span class="st amber" title={`Not merged anywhere\nNone of its commits are in ${against} or any environment yet`}><GitPullRequestDraft size={12} strokeWidth={2.5} /></span>
     {/if}
   {/if}
 {/snippet}
@@ -317,7 +353,28 @@
   {@const { name, commit } = menu}
   <ContextMenu x={menu.x} y={menu.y} id="branch-pill-menu" class="branch-menu" onclose={() => (menu = null)}>
     <BranchActions {name} local={localName(name)} hash={commit.id} isBase={localName(name) === localName(model.history.base ?? "")} isCurrent={model.isCurrent(name)} canPush={unpushed(commit.refs).includes(name)} {model}
-      dismiss={() => (menu = null)} onNewBranch={() => (dialog = { kind: "new", from: localName(name) })} onFocus={() => openFocus(name)} />
+      dismiss={() => (menu = null)} onNewBranch={() => (dialog = { kind: "new", from: localName(name) })} onFocus={() => openFocus(name)}
+      onEdit={() => (dialog = { kind: "edit", from: localName(name) })} />
+  </ContextMenu>
+{:else if menu?.kind === "stash"}
+  {@const stash = menu.commit}
+  {@const done = (action: () => void) => () => { menu = null; action(); }}
+  <ContextMenu x={menu.x} y={menu.y} id="stash-context-menu" class="w-[320px]" onclose={() => (menu = null)}>
+    <ActionRow title="Apply" detail="Put its changes back in your files, and keep it saved" icon={ArchiveRestore} color="#2fc4b2" id="stash-menu-apply"
+      disabled={model.isSyncing} onclick={done(() => model.applyStash(stash, false))} />
+    <ActionRow title="Pop" detail="Put its changes back, then drop it" icon={PackageOpen} color="#4f8cff" id="stash-menu-pop"
+      disabled={model.isSyncing} onclick={done(() => model.applyStash(stash, true))} />
+    <ActionRow title="Drop" detail="Delete it (Undo from Logs puts it back)" icon={Trash2} color="#f43f5e" id="stash-menu-drop"
+      disabled={model.isSyncing} onclick={done(() => model.dropStash(stash))} />
+  </ContextMenu>
+{:else if menu?.kind === "worktree"}
+  {@const c = menu.commit}
+  <ContextMenu x={menu.x} y={menu.y} id="worktree-context-menu" class="w-[320px]" onclose={() => (menu = null)}>
+    <ActionRow title={flash.copied === "uncommitted" ? "Copied ✓" : "Copy context for AI"} icon={Sparkles} color="#a78bfa" id="worktree-menu-copy-ai" onclick={() => copy("uncommitted", uncommitted(c))}
+      detail="Repo, branch and how to see these changes: paste it in your agent"
+      example={'paste it in Claude Code and ask "review these changes before I commit".'} />
+    <ActionRow title="Commit…" detail="Open the commit form, on the right" icon={GitCommitHorizontal} color="#4f8cff" id="worktree-menu-commit"
+      onclick={() => { menu = null; model.select(c.id); }} />
   </ContextMenu>
 {:else if menu?.kind === "commit"}
   {@const c = menu.commit}
@@ -333,6 +390,7 @@
   {@const close = () => (dialog = null)}
   <Modal id="branch-dialog" onclose={close} class="dialog-panel">
     {#if dialog.kind === "new"}<StartFeature {model} from={dialog.from} dismiss={close} />
+    {:else if dialog.kind === "edit"}<EditCommits {model} branch={dialog.from} dismiss={close} />
     {:else if dialog.kind === "update"}<UpdatePanel card={dialog.card} {model} dismiss={close} />
     {:else}<DeleteBranch {model} branch={dialog.card.local} dismiss={close} />
     {/if}
@@ -370,13 +428,10 @@
     font-size: 11.5px; font-weight: 600; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.12); }
   .commits:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.2); }
   .commits .unpushed { display: flex; align-items: center; gap: 1px; margin-left: 2px; padding-left: 6px; border-left: 1px solid oklch(0.5 0 0 / 0.3); color: #f5a524; }
-  .commits .more { max-width: 0; overflow: hidden; opacity: 0; white-space: nowrap; transition: max-width 0.3s var(--ease), opacity 0.2s var(--ease); }
-  .commits:hover .more { max-width: 160px; opacity: 1; }
+  .commits .unpushed.only { margin-left: 0; padding-left: 0; border-left: none; gap: 2px; }
   /* Status icons beside the name: just the icon (and its count); hovering one unfolds what it means and its action. */
   .status { display: flex; flex-shrink: 0; align-items: center; gap: 4px; white-space: nowrap; font-size: 11.5px; font-weight: 600; }
   .st { display: flex; flex-shrink: 0; align-items: center; gap: 3px; height: 22px; padding: 0 6px; border-radius: 99px; color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.14); }
-  .st .more { display: flex; align-items: center; gap: 3px; max-width: 0; overflow: hidden; opacity: 0; transition: max-width 0.3s var(--ease), opacity 0.2s var(--ease); }
-  .st:hover .more { max-width: 280px; opacity: 1; margin-left: 2px; }
   button.st:hover:not(:disabled) { color: var(--foreground); }
   .st.amber { color: #f5a524; background: color-mix(in oklab, #f5a524 15%, transparent); }
   .st.ok { color: #34c77b; background: color-mix(in oklab, #34c77b 15%, transparent); }
@@ -389,7 +444,7 @@
   @keyframes skel { 50% { opacity: 0.45; } }
   @media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
   .row { transition: background-color 0.15s ease; }
-  .row.shelved { background: color-mix(in oklab, oklch(0.8 0.15 75) 7%, transparent); }
+  .row.stash { background: color-mix(in oklab, oklch(0.8 0.15 75) 7%, transparent); }
   .row:hover { background: color-mix(in oklab, var(--quinary) 50%, transparent); }
   .row.selected { background: var(--quinary); } /* faint tint instead of the strong system blue */
   :global(.dialog-panel) { padding: 10px; border-radius: 12px; }

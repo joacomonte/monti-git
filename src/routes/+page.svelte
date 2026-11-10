@@ -15,7 +15,7 @@
   import UpdateGate from "$lib/components/UpdateGate.svelte";
   import WhatsNew from "$lib/components/WhatsNew.svelte";
   import ActionToast from "$lib/components/ActionToast.svelte";
-  import PushPrompt from "$lib/components/PushPrompt.svelte";
+  import NextStepPrompt from "$lib/components/NextStepPrompt.svelte";
   import LogsPanel from "$lib/components/LogsPanel.svelte";
   import GraphToolbar from "$lib/components/GraphToolbar.svelte";
   import { RepoModel } from "$lib/model.svelte";
@@ -139,7 +139,7 @@
 </div>
   <WhatsNew />
   <ActionToast {model} />
-  <PushPrompt {model} />
+  <NextStepPrompt {model} />
 </UpdateGate>
 <QuickTooltip />
 <CommitSearch {model} bind:open={searching} />

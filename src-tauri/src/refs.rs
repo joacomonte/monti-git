@@ -120,8 +120,8 @@ pub fn my_branches(repo: &Path) -> Vec<String> {
 
 /// A branch with a commit since `since` (unix seconds), newest first, for the dashboard. Named by the local branch when
 /// there is one (that's what Commit and Push act on), else by its copy on the server; dated by whichever copy is newest,
-/// so a teammate's push shows even if yours is older. `only_mine`: only those whose newest commit is yours. `keep`: a
-/// branch that shows whatever its date (the checked-out one, with uncommitted work).
+/// so a teammate's push shows even if yours is older. `only_mine`: only those whose newest commit is yours. `keep`:
+/// branches that show whatever their date (work waiting on this computer).
 #[derive(serde::Serialize, Clone)]
 pub struct Recent {
     pub name: String, // "x", or "origin/x" when there's no local branch
@@ -131,7 +131,7 @@ pub struct Recent {
     pub subject: String,
 }
 
-pub fn recent(repo: &Path, since: i64, only_mine: bool, keep: Option<&str>) -> Vec<Recent> {
+pub fn recent(repo: &Path, since: i64, only_mine: bool, keep: &[String]) -> Vec<Recent> {
     let listed = list_branches(repo);
     let is_mine = mine(repo);
     let local: HashSet<&str> = listed.iter().filter_map(|b| b.full.strip_prefix("refs/heads/")).collect();
@@ -140,7 +140,7 @@ pub fn recent(repo: &Path, since: i64, only_mine: bool, keep: Option<&str>) -> V
         .iter()
         // Sorted newest first: the first copy of a name is its newest.
         .filter(|b| seen.insert(local_name(short_name(&b.full))))
-        .filter(|b| keep == Some(local_name(short_name(&b.full))) || (b.date >= since && (!only_mine || is_mine(b))))
+        .filter(|b| keep.iter().any(|k| k == local_name(short_name(&b.full))) || (b.date >= since && (!only_mine || is_mine(b))))
         .map(|b| {
             let short = short_name(&b.full);
             let name = if local.contains(local_name(short)) { local_name(short) } else { short };
@@ -149,11 +149,18 @@ pub fn recent(repo: &Path, since: i64, only_mine: bool, keep: Option<&str>) -> V
         .collect()
 }
 
+/// Local branches with commits their server copy doesn't have yet: pushed once, committed to since.
+pub fn ahead_of_upstream(repo: &Path) -> Vec<String> {
+    let out = read_opt(&["for-each-ref", "--format=%(refname:short)%09%(upstream:track)", "refs/heads"], repo).unwrap_or_default();
+    out.lines().filter_map(|l| l.split_once('\t')).filter(|(_, track)| track.contains("ahead")).map(|(name, _)| name.to_string()).collect()
+}
+
 /// What the graph needs to know about branches besides the log.
 pub struct Branches {
     pub local: Vec<String>,        // every local branch, newest first: "Change base"
     pub environments: Vec<String>, // as refs git knows: the local name, else "origin/<name>"
     pub names: Vec<String>,        // every branch name, local or on a remote: the environments picker
+    pub on_server: Vec<String>,    // names with a copy on a remote: what Pull can bring
 }
 
 /// `chosen`: the user's environments for this repo (by name); None = detected by name. Never the base.
@@ -167,6 +174,7 @@ pub fn branches(repo: &Path, base: Option<&str>, chosen: Option<&[String]>) -> B
         None => ENVIRONMENT_NAMES.contains(&name.to_lowercase().as_str()),
     };
     let (mut environments, mut names) = (vec![], vec![]);
+    let on_server: Vec<String> = listed.iter().filter(|b| b.full.starts_with("refs/remotes/")).map(|b| local_name(short_name(&b.full)).to_string()).collect();
     let mut seen: HashSet<String> = HashSet::new();
     for branch in &listed {
         let short = short_name(&branch.full);
@@ -179,7 +187,7 @@ pub fn branches(repo: &Path, base: Option<&str>, chosen: Option<&[String]>) -> B
             environments.push(if local_set.contains(name) { name.to_string() } else { short.to_string() });
         }
     }
-    Branches { local, environments, names }
+    Branches { local, environments, names, on_server }
 }
 
 /// Short names of every branch ("x", "origin/x"), or only those whose tip is in `merged` by history.

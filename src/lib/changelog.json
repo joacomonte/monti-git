@@ -1,5 +1,23 @@
 [
   {
+    "version": "1.7.0",
+    "changes": [
+      { "kind": "improved", "title": "Resolve conflicts in the app", "detail": "Updating the branch you're on no longer gives up on a conflict: it stops, the uncommitted row lists the files, and each block shows yours and theirs to pick from (or both). Continue finishes it, Abort puts everything back." },
+      { "kind": "improved", "title": "Edit a branch's commits", "detail": "Edit commits… in the branch menu reorders, squashes, rewords or drops its commits since the base. A conflict changes nothing; pushed commits get a warning and a force push." },
+      { "kind": "improved", "title": "Every stash in the graph", "detail": "Not only the work Monti Git saves when switching: every stash shows as a row, with Apply, Pop and Drop on right click." },
+      { "kind": "improved", "title": "More Undo", "detail": "Discarding a file, a block or everything, and dropping or popping a stash, can be undone from Logs, as long as those files haven't changed since." },
+      { "kind": "improved", "title": "Pull & push", "detail": "When a push is refused because the server has new commits, a card offers to bring them in (rebase, no merge commit) and push yours on top." },
+      { "kind": "improved", "title": "Pull requests on the cards", "detail": "With the GitHub CLI (gh) logged in, each branch card shows its pull request: number, state, checks and review. Click it to open it." },
+      { "kind": "improved", "title": "Everything staged by default", "detail": "Modified files start staged too, like new ones. Uncheck one and it stays out until you commit or discard it." },
+      { "kind": "improved", "title": "Commit & push with ⌘⇧↩", "detail": "And squashing commits that are already pushed is allowed with a warning, like amend." },
+      { "kind": "improved", "title": "Quicker menus", "detail": "Copy in the branch menu turns into Branch name, Commit hash and Everything on hover (Everything adds the base and the branch's range for your AI agent). Right click on the uncommitted row copies its context for AI." },
+      { "kind": "improved", "title": "Cleaner cards", "detail": "Badges no longer unfold: hover shows a tooltip with what they mean. A branch with nothing pushed shows one amber count. The dashboard offers Commit first and Push only after." },
+      { "kind": "improved", "title": "Dashboard keeps unpushed work", "detail": "A branch with commits not pushed yet shows however old they are." },
+      { "kind": "fixed", "title": "Branches deleted on the server", "detail": "A branch whose copy on the server was deleted counts as not pushed again, and Pull no longer shows for branches with nothing on the server." },
+      { "kind": "fixed", "title": "Repos open on the graph", "detail": "Picking a repo in the sidebar always opens its graph, not the dashboard it was left on." }
+    ]
+  },
+  {
     "version": "1.6.0",
     "changes": [
       { "kind": "improved", "title": "Push right after committing", "detail": "A commit that stays on your computer asks whether to push it now: Push, or Not now." },

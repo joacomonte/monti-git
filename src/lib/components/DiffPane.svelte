@@ -6,6 +6,7 @@
   import type { RepoModel } from "$lib/model.svelte";
   import { ago } from "$lib/format";
   import DiscardButton from "./DiscardButton.svelte";
+  import ConflictView from "./ConflictView.svelte";
 
   let { model }: { model: RepoModel } = $props();
   const diff = $derived(model.diff?.path === model.fileFilter ? model.diff : null);
@@ -13,6 +14,8 @@
   const index = $derived(model.fileFilter ? model.changedOrder.indexOf(model.fileFilter) : -1);
   const counts = $derived(model.fileFilter ? model.counts[model.fileFilter] : undefined);
   const single = $derived(rows.every((row) => !row.left)); // a file shown whole (or a new one): no "before" column
+  // A file still conflicted: its blocks to pick from instead of a diff.
+  const conflicted = $derived(model.isWorktreeSelected && !!model.fileFilter && !!model.history.conflict?.files.includes(model.fileFilter));
 
   // Blame of the file as of the selected commit, for the tooltip on each line of the "after" side. By id: a commit's
   // blame never changes, so only a new id re-blames; the uncommitted row re-blames on every reload.
@@ -86,7 +89,9 @@
       </div>
     {/if}
   </div>
-  {#if rows.length === 0}
+  {#if conflicted}
+    {#key model.fileFilter}<ConflictView {model} path={model.fileFilter!} />{/key}
+  {:else if rows.length === 0}
     <div class="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
       <FileSearch size={28} strokeWidth={1.5} />
       <span class="text-[13px] font-semibold">{model.diffMessage}</span>

@@ -41,14 +41,15 @@ pub fn activity(repos: &[RepoPicks], days: u32, only_mine: bool) -> Vec<RepoActi
         let targets: Vec<String> = base.iter().cloned().chain(environments.iter().cloned()).collect();
         // The base and the environments are what the others compare against: not cards of their own.
         let is_target = |name: &str| targets.iter().any(|t| refs::local_name(t) == refs::local_name(name));
-        // The checked-out branch with uncommitted work always shows, however old its last commit and even when it's the
-        // base or an environment: that work is recent.
+        // Work waiting on this computer always shows, however old its last commit: the checked-out branch with
+        // uncommitted work (even the base or an environment), and branches with commits not pushed yet.
         let status = git::status(repo).ok();
         let changed = status.as_ref().map_or(0, |s| s.files.len());
         let current = status.and_then(|s| s.branch);
-        let keep = current.as_deref().filter(|_| changed > 0);
+        let dirty: Option<String> = current.clone().filter(|_| changed > 0);
+        let keep: Vec<String> = dirty.iter().cloned().chain(refs::ahead_of_upstream(repo)).collect();
         let recent: Vec<refs::Recent> =
-            refs::recent(repo, since, only_mine, keep).into_iter().filter(|b| keep == Some(b.name.as_str()) || !is_target(&b.name)).collect();
+            refs::recent(repo, since, only_mine, &keep).into_iter().filter(|b| dirty.as_deref() == Some(b.name.as_str()) || !is_target(&b.name)).collect();
         // A target has nothing to compare with (it's what the others compare against): no status, so no merge line or Safe to delete.
         let names: Vec<String> = recent.iter().filter(|b| !is_target(&b.name)).map(|b| b.name.clone()).collect();
         let mut statuses = statuses_of(repo, &names, base.as_deref(), &targets);
@@ -95,7 +96,7 @@ pub fn safe_to_delete(repos: &[RepoPicks], only_mine: bool, start: usize, limit:
         let environments = refs::branches(repo, base.as_deref(), picks.environments.as_deref()).environments;
         let targets: Vec<String> = base.iter().cloned().chain(environments).collect();
         let is_target = |name: &str| targets.iter().any(|t| refs::local_name(t) == refs::local_name(name));
-        let recent = refs::recent(repo, i64::MIN, only_mine, None).into_iter().filter(|b| !is_target(&b.name)).collect();
+        let recent = refs::recent(repo, i64::MIN, only_mine, &[]).into_iter().filter(|b| !is_target(&b.name)).collect();
         (base, targets, recent)
     });
     let mut all: Vec<(usize, &refs::Recent)> = per_repo.iter().enumerate().flat_map(|(i, (_, _, list))| list.iter().map(move |b| (i, b))).collect();
@@ -158,7 +159,7 @@ mod tests {
         repo.git(&["checkout", "-q", "feat"]);
         repo.git(&["branch", "-q", "-D", "tmp"]);
         let week = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 - 7 * 86_400;
-        let found = crate::refs::recent(repo.path(), week, false, None);
+        let found = crate::refs::recent(repo.path(), week, false, &[]);
         let feat = found.iter().find(|b| b.name == "feat").expect("feat is in");
         assert_eq!(feat.subject, "teammate push");
         assert!(!found.iter().any(|b| b.name == "origin/feat"), "one card per branch");

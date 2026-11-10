@@ -25,7 +25,7 @@
   let title = $state("");
   let description = $state("");
   let previous = $state({ title: "", description: "" });
-  let pushed = $state(false); // the last commit is on the server: amending it means a force push
+  let pushed = $state(false); // amending (or squashing) would change commits on the server: then it force-pushes
   let showMenu = $state(false);
   let length = $state<AiLength>("concise");
 
@@ -42,11 +42,12 @@
   const stagedLine = $derived(staged ? `${staged} of ${plural(total, "file")} staged` : "Check files below to stage them");
 
   $effect(() => {
-    const repo = model.repo;
+    const repo = model.repo, kind = mode === "squash" && base ? { squash: base } : mode === "amend" ? "amend" : null;
     void model.history; // reloaded after commits, pushes and pulls: asked again
     if (!repo) return;
     let stale = false;
-    api.headPushed(repo).then((p) => { if (!stale) pushed = p; }, () => {});
+    pushed = false;
+    if (kind) api.rewritesPushed(repo, kind).then((p) => { if (!stale) pushed = p; }, () => {});
     api.lastCommitMessage(repo).then((message) => {
       if (stale) return;
       const [first, ...rest] = message.split("\n");
@@ -94,18 +95,19 @@
     showMenu = false;
     if (!canCommit) return;
     const [t, d] = keepMessage ? ["", ""] : [title, description];
-    if (await model.commit(t, d, { kind: mode, push, rewrite: amend && pushed })) {
+    if (await model.commit(t, d, { kind: mode, push, rewrite: pushed })) {
       if (t.trim()) previous = { title: t.trim(), description: d.trim() };
       title = description = "";
       go("what");
     }
   }
 
-  /** ⌘↩ commits; plain Return in the title jumps to the description. */
+  /** ⌘↩ commits, ⌘⇧↩ commits and pushes (a new commit; a rewrite force-pushes anyway); plain Return in the title
+   *  jumps to the description. */
   function keydown(e: KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      commit(false);
+      commit(e.shiftKey && mode === "new");
     } else if (e.key === "Enter" && e.target instanceof HTMLInputElement) {
       e.preventDefault();
       document.getElementById("commit-description")?.focus();
@@ -179,17 +181,17 @@
           {:else}
             <div class="kept"><Quote size={14} class="shrink-0" /><span class="min-w-0 flex-1 truncate">{previous.title}</span></div>
           {/if}
-          {#if amend && pushed}
-            <p class="pushed-warning" id="commit-amend-pushed-warning"><TriangleAlert size={14} class="mt-px shrink-0" />
-              Already pushed: amending replaces it on the server too (force push). Anyone who already pulled it will have to reset to the new one.</p>
+          {#if pushed}
+            <p class="pushed-warning" id="commit-rewrite-pushed-warning"><TriangleAlert size={14} class="mt-px shrink-0" />
+              Already pushed: {amend ? "amending" : "squashing"} replaces {amend ? "it" : "them"} on the server too (force push). Anyone who already pulled will have to reset to the new {amend ? "one" : "commit"}.</p>
           {/if}
           <div class="flex items-center gap-2">
             <span class="min-w-0 flex-1 truncate text-[12px] text-muted-foreground" id="commit-staged-count">
               {squash ? `${staged ? `${plural(staged, "staged file")} and the` : "The"} branch's commits since ${base}` : amend && !staged ? "Only the message changes" : stagedLine}
             </span>
-            <div class="split flex h-8 shrink-0 overflow-hidden rounded-md" class:disabled={!canCommit} class:danger={amend && pushed}>
+            <div class="split flex h-8 shrink-0 overflow-hidden rounded-md" class:disabled={!canCommit} class:danger={pushed}>
               <button class="px-3.5 text-[13px] font-semibold" id="commit-button" disabled={!canCommit} onclick={() => commit(false)}
-                title="{amend ? 'Amend the last commit' : squash ? 'Squash the branch into one commit' : 'Commit the staged files'} (⌘↩)">{amend && pushed ? "Amend & Force push" : VERB[mode]}</button>
+                title="{amend ? 'Amend the last commit' : squash ? 'Squash the branch into one commit' : 'Commit the staged files'} (⌘↩)">{pushed ? `${VERB[mode]} & Force push` : VERB[mode]}</button>
               {#if mode === "new"}
                 <Popover.Root bind:open={showMenu}>
                   <Popover.Trigger class="border-l border-white/25 px-1.5" id="commit-options" disabled={!canCommit} title="More commit options">
@@ -198,7 +200,7 @@
                   <Popover.Content align="end" class="w-auto p-1" id="commit-options-menu">
                     <button class="menu flex h-8 items-center gap-2 rounded-md px-2.5 text-[12.5px]" id="commit-and-push" onclick={() => commit(true)}
                       title="Commit the staged files, then push them to the server (sets the upstream if it has none)">
-                      <CloudUpload size={13} />Commit & Push
+                      <CloudUpload size={13} />Commit & Push<kbd class="ml-3 text-[10.5px] text-tertiary">⌘⇧↩</kbd>
                     </button>
                   </Popover.Content>
                 </Popover.Root>

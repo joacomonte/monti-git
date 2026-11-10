@@ -143,7 +143,7 @@
           class:active={model.repo === repo.path}
           title={repo.path}
           id="repo-{repo.path}"
-          onclick={() => model.open(repo.path)}
+          onclick={() => model.open(repo.path, "graph")}
           oncontextmenu={(e) => { e.preventDefault(); menu = { x: e.clientX, y: e.clientY, repo }; }}
         >
           <GitBranch size={13} class="shrink-0 text-muted-foreground" />

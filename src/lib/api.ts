@@ -12,9 +12,9 @@ export type Commit = {
   author: string;
   date: number; // unix seconds
   refs: string[]; // raw %D decorations, e.g. "HEAD -> main", "origin/main", "tag: v1.0"
-  subject: string; // empty on the uncommitted and saved-WIP rows: see `subject` in format.ts
-  shelved?: string; // saved-WIP row: the branch whose uncommitted work Monti Git put aside when leaving it
-  stat?: Stat; // uncommitted and saved-WIP rows: what they hold
+  subject: string; // empty on the uncommitted row (see `subject` in format.ts); a stash row: its message
+  stash?: { shelved: string | null }; // a stash row; `shelved`: the branch whose work Monti Git put aside when leaving it
+  stat?: Stat; // uncommitted and stash rows: what they hold
 };
 
 /** [target, color, flags]: target = commit index (negative = past the loaded page); flags: 1 = the checked-out branch's line. */
@@ -51,8 +51,33 @@ export type History = {
   environments: string[]; // qa, develop…
   allBranches: string[]; // every branch name, local or on origin: the environments picker
   local: string[]; // every local branch, for "Change base"
+  onServer: string[]; // branch names with a copy on a remote: what Pull can bring
   fastForwarded: boolean; // "Only this branch": reached the base by a fast-forward, no merge to draw
+  conflict: Conflict | null; // a merge or rebase stopped on conflicts in the checkout
 };
+
+/** A merge, rebase, cherry-pick or revert stopped on conflicts (conflicts.rs). `files`: still conflicted (empty: ready
+ *  to continue); `incoming`: what's coming in (the branch merged or rebased onto, the commit picked). */
+export type Conflict = { operation: "merge" | "rebase" | "cherryPick" | "revert"; files: string[]; incoming: string };
+/** A conflicted file in order: text both sides agree on, and the blocks where they don't (`mine`: the user's side). */
+export type ConflictPart = { kind: "same"; text: string } | { kind: "conflict"; mine: string; theirs: string };
+export type Pick = "mine" | "theirs" | "both";
+
+/** A branch's pull request on GitHub (through gh). */
+export type PullRequest = {
+  number: number; title: string; url: string;
+  state: "open" | "draft" | "merged" | "closed";
+  review: "approved" | "changes" | "required" | null;
+  checks: "pass" | "fail" | "pending" | null;
+};
+
+/** "Edit commits": one of the branch's own commits, oldest first; `pushed`: on a server branch. */
+export type OwnCommit = { id: string; message: string; author: string; date: number; pushed: boolean };
+/** One line of the new history: kept, squashed into the one above, or dropped; `message`: reworded. */
+export type RewriteStep = { id: string; action: "pick" | "squash" | "drop"; message: string | null };
+
+/** What a discard threw away, for its Undo (actions::Discarded); null when git had nothing to snapshot. */
+export type Discarded = { before: string; after: string; paths: string[] } | null;
 
 /** Search results, and whether some repo had more than these. */
 export type Found<T> = { hits: T[]; truncated: boolean };
@@ -163,7 +188,10 @@ export const api = {
     invoke<{ items: (ActiveBranch & { repo: string })[]; next: number | null }>("safe_to_delete", { repos, onlyMine, start, limit }),
   branchTip: (repo: string, branch: string) => invoke<string | null>("branch_tip", { repo, branch }),
   lastCommitMessage: (repo: string) => invoke<string>("last_commit_message", { repo }),
-  headPushed: (repo: string) => invoke<boolean>("head_pushed", { repo }),
+  /** Whether amending or squashing would change commits already on the server (then it force-pushes). */
+  rewritesPushed: (repo: string, kind: CommitKind) => invoke<boolean>("rewrites_pushed", { repo, kind }),
+  pullRequests: (repo: string) => invoke<Record<string, PullRequest>>("pull_requests", { repo }),
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
   changedFileCount: (repo: string) => invoke<number>("changed_file_count", { repo }),
   gitLogs: (since: number) => invoke<GitLog[]>("git_logs", { since }),
 
@@ -186,18 +214,41 @@ export const api = {
   /** Fetches, then how `base` compares with origin/`base` (`remote` false: no copy there). */
   baseStatus: (repo: string, base: string) => invoke<{ ahead: number; behind: number; remote: boolean }>("base_status", { repo, base }),
   startFeature: (repo: string, name: string, base: string, wip: WipMode | null) => invoke<string>("start_feature", { repo, name, base, wip }),
-  updateBranch: (repo: string, branch: string, parent: string, rebase: boolean) => invoke<void>("update_branch", { repo, branch, parent, rebase }),
+  /** "conflicts": the checked-out branch stopped for the resolver. */
+  updateBranch: (repo: string, branch: string, parent: string, rebase: boolean) => invoke<"done" | "conflicts">("update_branch", { repo, branch, parent, rebase }),
   /** Sets the upstream the first time. "behind": refused, the server has commits the branch doesn't. */
   push: (repo: string, branch: string, force: boolean) => invoke<"done" | "behind">("push", { repo, branch, force }),
+  /** After a refused push: rebases onto the server's commits, then pushes. */
+  pullAndPush: (repo: string, branch: string) => invoke<string>("pull_and_push", { repo, branch }),
   moveBranch: (repo: string, branch: string, expected: string | null, target: string) => invoke<void>("move_branch", { repo, branch, expected, target }),
-  discardFile: (repo: string, path: string) => invoke<void>("discard_file", { repo, path }),
-  discardAll: (repo: string) => invoke<void>("discard_all", { repo }),
+  discardFile: (repo: string, path: string) => invoke<Discarded>("discard_file", { repo, path }),
+  discardAll: (repo: string) => invoke<Discarded>("discard_all", { repo }),
+  /** Undo of a discard: refused if those files changed since. */
+  restoreDiscarded: (repo: string, discarded: NonNullable<Discarded>) => invoke<void>("restore_discarded", { repo, discarded }),
   untrackedCheck: (repo: string, paths: string[]) => invoke<Doomed[]>("untracked_check", { repo, paths }),
   deleteUntracked: (repo: string, paths: string[]) => invoke<void>("delete_untracked", { repo, paths }),
   /** The block the diff pane showed as `index`, with its "@@" `header` (refused if the file changed since). */
-  discardHunk: (repo: string, path: string, index: number, header: string) => invoke<void>("discard_hunk", { repo, path, index, header }),
+  discardHunk: (repo: string, path: string, index: number, header: string) => invoke<Discarded>("discard_hunk", { repo, path, index, header }),
   stage: (repo: string, paths: string[]) => invoke<void>("stage", { repo, paths }),
   unstage: (repo: string, paths: string[]) => invoke<void>("unstage", { repo, paths }),
   /** A new commit, into the last one (`message` null keeps its message), or the branch squashed into one since a base. */
-  commit: (repo: string, message: string | null, kind: CommitKind, push: boolean, rewrite = false) => invoke<string>("commit", { repo, message, kind, push, rewrite }),
+  /** `behind`: its push was refused, the server has commits the branch doesn't. */
+  commit: (repo: string, message: string | null, kind: CommitKind, push: boolean, rewrite = false) =>
+    invoke<{ status: string; behind: boolean }>("commit", { repo, message, kind, push, rewrite }),
+
+  /** Stashes, by their commit id. Apply needs a clean tree; drop returns the message, for its Undo. */
+  stashApply: (repo: string, id: string, pop: boolean) => invoke<string>("stash_apply", { repo, id, pop }),
+  stashDrop: (repo: string, id: string) => invoke<string>("stash_drop", { repo, id }),
+  stashRestore: (repo: string, id: string, message: string) => invoke<void>("stash_restore", { repo, id, message }),
+
+  ownCommits: (repo: string, branch: string, base: string) => invoke<OwnCommit[]>("own_commits", { repo, branch, base }),
+  rewriteBranch: (repo: string, branch: string, base: string, steps: RewriteStep[], rewrite: boolean) =>
+    invoke<string>("rewrite_branch", { repo, branch, base, steps, rewrite }),
+
+  conflictParts: (repo: string, path: string) => invoke<ConflictPart[]>("conflict_parts", { repo, path }),
+  /** One pick per conflict block; refused if the file's blocks changed since. */
+  resolveConflict: (repo: string, path: string, picks: Pick[]) => invoke<void>("resolve_conflict", { repo, path, picks }),
+  takeSide: (repo: string, path: string, mine: boolean) => invoke<void>("take_side", { repo, path, mine }),
+  continueOperation: (repo: string) => invoke<string>("continue_operation", { repo }),
+  abortOperation: (repo: string) => invoke<string>("abort_operation", { repo }),
 };
