@@ -406,12 +406,18 @@ export class RepoModel {
     return commit.id === WORKTREE_ID ? null : commit.id;
   }
 
+  /** Collapsed view: a row is its whole branch, so the files are everything since it left the base (Rust falls back to
+   *  the one commit when it's already in the base). */
+  private spanBase() {
+    return this.branchesOnly && this.focus == null && this.historyPath == null ? this.history.base : null;
+  }
+
   /** Tree search by content, on the selection: diff lines, or whole files (only the changed ones unless the tree shows all). */
   async searchLines(query: string, diffOnly: boolean): Promise<Record<string, LineHits>> {
     if (!this.repo || !this.selected) return {};
     const paths = this.showAllFiles ? [] : Object.keys(this.changes).filter((p) => this.changes[p] !== "D");
     if (!this.showAllFiles && !paths.length) return {};
-    return api.searchLines(this.repo, this.target(this.selected), query, paths, diffOnly);
+    return api.searchLines(this.repo, this.target(this.selected), this.spanBase(), query, paths, diffOnly);
   }
 
   setShowAllFiles(all: boolean) {
@@ -424,7 +430,7 @@ export class RepoModel {
     const repo = this.repo, commit = this.selected, all = this.showAllFiles, fresh = this.ticket("tree");
     if (!repo || !commit) return;
     try {
-      const result = await api.loadChanges(repo, this.target(commit), all);
+      const result = await api.loadChanges(repo, this.target(commit), this.spanBase(), all);
       if (!fresh()) return; // the user moved on while git was running
       this.changes = result.changes;
       this.counts = result.counts;
@@ -497,7 +503,7 @@ export class RepoModel {
     if (!repo || !commit || !path) return;
     whole ||= !(path in this.changes) && Object.keys(this.changes).length > 0;
     try {
-      const result = await api.loadDiff(repo, path, this.target(commit), whole);
+      const result = await api.loadDiff(repo, path, this.target(commit), this.spanBase(), whole);
       if (!fresh()) return;
       this.diff = { path, ...result, whole };
       this.diffMessage = whole ? "Empty or binary file" : "Binary file or no text changes";

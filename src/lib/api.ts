@@ -71,6 +71,16 @@ export type PullRequest = {
   checks: "pass" | "fail" | "pending" | null;
 };
 
+/** A deploy on GitHub, newest per workflow or environment and commit: a workflow run named deploy, release or
+ *  publish (`done`/`total`: its steps), or a Deployment from Vercel, Netlify… (`total` 0: no steps to count). */
+export type Deploy = {
+  name: string; sha: string; url: string; created: string;
+  state: "queued" | "running" | "success" | "failure" | "cancelled";
+  done: number; total: number;
+};
+/** What GitHub knows about a repo's branches (github.rs): pull requests by branch name, and deploy runs. */
+export type GithubStatus = { pullRequests: Record<string, PullRequest>; deploys: Deploy[] };
+
 /** "Edit commits": one of the branch's own commits, oldest first; `pushed`: on a server branch. */
 export type OwnCommit = { id: string; message: string; author: string; date: number; pushed: boolean };
 /** One line of the new history: kept, squashed into the one above, or dropped; `message`: reworded. */
@@ -172,8 +182,9 @@ export const api = {
 
   loadHistory: (repo: string, query: HistoryQuery) => invoke<History>("load_history", { repo, query }),
   /** `commit` null = the uncommitted row. A commit shows what it changed against its real first parent (Span in git.rs). */
-  loadChanges: (repo: string, commit: string | null, all: boolean) => invoke<Changes>("load_changes", { repo, commit, all }),
-  loadDiff: (repo: string, path: string, commit: string | null, whole: boolean) => invoke<FileDiff>("load_diff", { repo, path, commit, whole }),
+  /** `base`: the whole branch since it left it (Collapsed view), unless `commit` is already in the base. */
+  loadChanges: (repo: string, commit: string | null, base: string | null, all: boolean) => invoke<Changes>("load_changes", { repo, commit, base, all }),
+  loadDiff: (repo: string, path: string, commit: string | null, base: string | null, whole: boolean) => invoke<FileDiff>("load_diff", { repo, path, commit, base, whole }),
   commitInfo: (repo: string, id: string) => invoke<CommitInfo>("commit_info", { repo, id }),
   blame: (repo: string, path: string, rev: string | null) => invoke<Blame>("blame", { repo, path, rev }),
   branchStatus: (repo: string, refs: string[], base: string, targets: string[]) =>
@@ -190,7 +201,7 @@ export const api = {
   lastCommitMessage: (repo: string) => invoke<string>("last_commit_message", { repo }),
   /** Whether amending or squashing would change commits already on the server (then it force-pushes). */
   rewritesPushed: (repo: string, kind: CommitKind) => invoke<boolean>("rewrites_pushed", { repo, kind }),
-  pullRequests: (repo: string) => invoke<Record<string, PullRequest>>("pull_requests", { repo }),
+  githubStatus: (repo: string) => invoke<GithubStatus>("github_status", { repo }),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   changedFileCount: (repo: string) => invoke<number>("changed_file_count", { repo }),
   gitLogs: (since: number) => invoke<GitLog[]>("git_logs", { since }),
@@ -199,8 +210,8 @@ export const api = {
   searchCode: (repos: string[], bases: Record<string, string>, query: string, scope: CodeScope) =>
     invoke<Found<CodeHit>>("search_code", { repos, bases, query, scope }),
   /** Tree search by content: path -> matching lines. `paths` empty = every file. */
-  searchLines: (repo: string, commit: string | null, query: string, paths: string[], diffOnly: boolean) =>
-    invoke<Record<string, LineHits>>("search_lines", { repo, commit, query, paths, diffOnly }),
+  searchLines: (repo: string, commit: string | null, base: string | null, query: string, paths: string[], diffOnly: boolean) =>
+    invoke<Record<string, LineHits>>("search_lines", { repo, commit, base, query, paths, diffOnly }),
   commitPlaces: (repo: string, id: string) => invoke<Place[]>("commit_places", { repo, id }),
 
   sync: (repo: string) => invoke<SyncResult>("sync", { repo }),

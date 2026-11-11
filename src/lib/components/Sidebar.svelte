@@ -2,7 +2,7 @@
      (uncommitted changes count as now: discarding them sends the repo back down, committing keeps it up). -->
 <script lang="ts">
   import { whatsNew } from "./WhatsNew.svelte";
-  import { ChevronRight, ArrowUpRight, CloudDownload, Sparkles, Copy, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
+  import { Check, ChevronRight, ArrowUpRight, CloudDownload, Sparkles, Copy, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
   import ActionRow from "./ActionRow.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import { Button } from "$lib/components/ui/button";
@@ -110,18 +110,6 @@
       </Popover.Root>
     {/if}
   </div>
-  <!-- Global (every repo, same setting), so it lives in the sidebar. On by default; the line under it forces a pull right now. -->
-  <!-- Toggle button, same look on or off: the label says which. -->
-  <button class="sync-button" aria-pressed={model.autoSyncOn} id="auto-sync"
-    onclick={() => model.setAutoSync(!model.autoSyncOn)}
-    title={`Auto sync: ${model.autoSyncOn ? "on" : "off"}\nKeeps every branch up to date with origin on its own: fetch and safe fast-forwards when you use the app (at most once a minute) and every 5 minutes. Never merges or rewrites anything.`}>
-    <RefreshCw size={12} class="shrink-0 {model.isSyncing || model.isAutoSyncing ? 'animate-spin' : ''}" />Auto sync {model.autoSyncOn ? "on" : "off"}
-  </button>
-  <button class="sync-button pull" onclick={() => model.sync()} disabled={!model.repo || model.isSyncing} id="sync-button"
-    title="Downloads the latest from the server and updates every branch that's behind. Safe: it skips branches where you have unpushed commits or uncommitted changes. Ej: main is 3 behind → it catches up.">
-    <CloudDownload size={11} class={model.isSyncing ? "animate-pulse" : ""} />Force pull now
-  </button>
-  <span class="synced" id="last-synced">{model.isSyncing || model.isAutoSyncing ? "syncing…" : model.lastSynced ? `synced ${ago(model.lastSynced / 1000, now)}` : ""}</span>
   <nav class="flex-1 overflow-auto px-2 pb-3" id="repo-sidebar">
     <!-- First item of the list, dashed: add a repo, or a folder whose repos are all listed. -->
     <Popover.Root bind:open={showAdd}>
@@ -134,6 +122,20 @@
           example="pick your Dev folder: all 20 repos inside show up, and the one you clone tomorrow too." />
       </Popover.Content>
     </Popover.Root>
+    <!-- One pill: the body forces a pull of the open repo now and says when it last synced; the icon on its right
+         toggles Auto sync (global: every repo, same setting). -->
+    <div class="sync-pill" class:off={!model.autoSyncOn}>
+      <button class="pull" onclick={() => model.sync()} disabled={!model.repo || model.isSyncing} id="sync-button"
+        title="Pull now: updates every branch that's behind. Skips unpushed or uncommitted work.">
+        <CloudDownload size={13} class="shrink-0 {model.isSyncing ? 'animate-pulse' : ''}" />
+        <span class="text"><b>Pull now</b>
+          <small id="last-synced">{model.isSyncing || model.isAutoSyncing ? "syncing…" : model.lastSynced ? `synced ${ago(model.lastSynced / 1000, now)}` : "not synced yet"}</small></span>
+      </button>
+      <button class="toggle" aria-pressed={model.autoSyncOn} id="auto-sync" onclick={() => model.setAutoSync(!model.autoSyncOn)}
+        title={`Auto sync ${model.autoSyncOn ? "on" : "off"}: fetches and fast-forwards every 5 min.`}>
+        <RefreshCw size={13} class={model.isAutoSyncing ? "animate-spin" : ""} />
+      </button>
+    </div>
     {#each sections as [owner, list] (owner)}
       <div class="px-2 pt-5 pb-1.5 text-[11px] font-semibold text-tertiary">{owner}</div>
       {#each list as repo (repo.path)}
@@ -141,26 +143,30 @@
         <button
           class="repo flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left text-[13px]"
           class:active={model.repo === repo.path}
-          title={repo.path}
           id="repo-{repo.path}"
           onclick={() => model.open(repo.path, "graph")}
           oncontextmenu={(e) => { e.preventDefault(); menu = { x: e.clientX, y: e.clientY, repo }; }}
         >
-          <GitBranch size={13} class="shrink-0 text-muted-foreground" />
+          <!-- Hidden until hover: they grow in from the left, one after the other, and push the name right. No tooltips
+               (aria-label only). Spans, not buttons: they sit inside the row's <button>. -->
+          <span class="tools">
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+            <span role="button" tabindex="0" class="row-tool star" class:on={isFavorite} id="favorite-toggle-{baseName(repo.path)}"
+              aria-label={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+              onclick={(e) => { e.stopPropagation(); model.toggleFavorite(repo.path); }}>
+              <Star size={14} fill={isFavorite ? "currentColor" : "none"} />
+            </span>
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+            <span role="button" tabindex="0" class="row-tool" id="repo-copy-path-{baseName(repo.path)}" aria-label="Copy the full path"
+              onclick={(e) => { e.stopPropagation(); flash.copy(repo.path, repo.path); }}>
+              {#if flash.copied === repo.path}<Check size={13} class="text-green-500" />{:else}<Copy size={13} />{/if}
+            </span>
+          </span>
           <span class="flex-1 truncate">{baseName(repo.path)}</span>
           {#if model.changesDot(repo)}
-            {@const isNew = model.changesDot(repo) === "new"}
             <!-- Uncommitted changes in that repo: pulsing until you open it, then still; gone once it's clean. -->
-            <span class="changes" class:new={isNew} id="repo-changes-{baseName(repo.path)}"
-              title={isNew ? "New uncommitted changes: open it to see them" : "Uncommitted changes"}></span>
+            <span class="changes" class:new={model.changesDot(repo) === "new"} id="repo-changes-{baseName(repo.path)}"></span>
           {/if}
-          <!-- A span, not a button: it sits inside the row's <button>. -->
-          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <span role="button" tabindex="0" class="star shrink-0" class:on={isFavorite} id="favorite-toggle-{baseName(repo.path)}"
-            title={isFavorite ? "Remove from Favorites" : "Add to Favorites: keeps this repo at the top of the list."}
-            onclick={(e) => { e.stopPropagation(); model.toggleFavorite(repo.path); }}>
-            <Star size={14} fill={isFavorite ? "currentColor" : "none"} />
-          </span>
         </button>
       {/each}
     {/each}
@@ -223,22 +229,25 @@
   .news-dot { width: 6px; height: 6px; border-radius: 99px; background: var(--primary); box-shadow: 0 0 0 0 var(--primary); animation: news 2s ease-out infinite; }
   @keyframes news { 70% { box-shadow: 0 0 0 5px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
   @media (prefers-reduced-motion: reduce) { .news-dot { animation: none; } }
-  /* Auto sync and Force pull: two stacked buttons, same width and look. */
-  .sync-button {
-    display: flex; flex-shrink: 0; align-items: center; gap: 7px; height: 30px; margin: 0 8px 6px; padding: 0 10px; border-radius: 8px;
-    font-size: 12px; font-weight: 500; color: var(--muted-foreground);
+  /* Auto sync (toggle, with the last sync under it) and force pull, in one pill. */
+  .sync-pill {
+    display: flex; align-items: stretch; margin: 0 0 4px; border-radius: 9px; overflow: hidden;
     background: oklch(0.5 0 0 / 0.07); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.12);
   }
-  #auto-sync { margin-top: 10px; }
-  .sync-button:hover:not(:disabled) { color: var(--foreground); background: oklch(0.5 0 0 / 0.12); }
+  .sync-pill .pull { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; padding: 6px 10px; text-align: left; color: var(--muted-foreground); }
+  .sync-pill .text { display: flex; min-width: 0; flex-direction: column; line-height: 1.25; }
+  .sync-pill b { font-size: 12px; font-weight: 500; }
+  .sync-pill small { font-size: 10.5px; color: var(--tertiary); }
+  .sync-pill .toggle { display: grid; place-items: center; width: 34px; flex-shrink: 0; color: #34c77b; border-left: 1px solid oklch(0.5 0 0 / 0.12); }
+  .sync-pill.off .toggle { color: var(--tertiary); }
+  .sync-pill button:hover:not(:disabled) { background: oklch(0.5 0 0 / 0.08); }
+  .sync-pill .pull:hover:not(:disabled) { color: var(--foreground); }
+  .sync-pill .pull:disabled { opacity: 0.45; }
   :global(.add-repo) {
     display: flex; width: 100%; align-items: center; justify-content: center; gap: 6px; height: 30px; margin: 10px 0 6px; padding: 0 8px; border-radius: 6px;
     font-size: 12.5px; color: var(--tertiary); border: 1px dashed oklch(0.5 0 0 / 0.3);
   }
   :global(.add-repo:hover), :global(.add-repo[data-state="open"]) { color: var(--foreground); border-color: color-mix(in oklab, var(--primary) 55%, transparent); }
-  /* Second line under Auto sync, quiet until hovered. */
-  .synced { flex-shrink: 0; height: 14px; margin: -2px 18px 10px; font-size: 10.5px; color: var(--tertiary); }
-  .pull:disabled { opacity: 0.45; }
   .repo:hover { background: var(--quinary); }
   .repo.active { background: color-mix(in oklch, var(--primary) 20%, transparent); }
   /* 13–14px with real contrast: at 10px and tertiary grey they vanished on non-retina Windows screens. */
@@ -246,9 +255,18 @@
   .changes.new { opacity: 1; background: var(--primary); animation: changes 1.8s ease-out infinite; }
   @keyframes changes { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 70%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
   @media (prefers-reduced-motion: reduce) { .changes.new { animation: none; } }
-  .star { padding: 3px; margin: -3px 0; border-radius: 5px; }
-  .star { display: none; color: var(--muted-foreground); }
-  .star:hover { color: rgb(234 179 8); background: oklch(0.5 0 0 / 0.15); }
-  .star.on { display: block; color: rgb(234 179 8); }
-  .repo:hover .star { display: block; }
+  /* The tools take no room (the gap included) until the row is hovered; then each grows in and pops, staggered. */
+  .tools { display: flex; min-width: 0; flex-shrink: 0; overflow: hidden; margin: 0 -8px 0 0; transition: margin 0.22s var(--ease, ease); }
+  .repo:hover .tools, .repo:focus-within .tools { margin: 0 0 0 -4px; }
+  .row-tool {
+    display: grid; place-items: center; width: 0; min-width: 0; height: 22px; padding: 0; overflow: hidden; border-radius: 5px; color: var(--muted-foreground);
+    opacity: 0; transform: scale(0.3) rotate(-72deg); pointer-events: none;
+    transition: width 0.22s var(--ease, ease), opacity 0.18s, transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .row-tool:nth-child(2) { transition-delay: 0.04s; }
+  .repo:hover .row-tool, .repo:focus-within .row-tool { width: 22px; opacity: 1; transform: none; pointer-events: auto; }
+  .row-tool:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.15); }
+  .repo .row-tool:active { transform: scale(0.8); }
+  .star.on, .star:hover { color: rgb(234 179 8); }
+  @media (prefers-reduced-motion: reduce) { .tools, .row-tool { transition: none; } }
 </style>

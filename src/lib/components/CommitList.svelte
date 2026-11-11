@@ -1,7 +1,7 @@
 <!-- Virtualized commit list: only the rows on screen are in the DOM. Rows touch so the graph lines stay continuous. -->
 <script lang="ts">
   import { Archive, ArrowDown, ArrowUp, ArchiveRestore, CircleCheck, Clock, Cloud, Copy, Laptop, GitCommitHorizontal, GitPullRequestDraft, PackageOpen, Sparkles, Trash2 } from "@lucide/svelte";
-  import { api, WORKTREE_ID, type Card, type Commit, type PullRequest } from "$lib/api";
+  import { api, WORKTREE_ID, type Card, type Commit, type GithubStatus } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
   import { CopyFlash } from "$lib/clipboard.svelte";
   import { plural, subject, when } from "$lib/format";
@@ -17,6 +17,7 @@
   import StartFeature from "./StartFeature.svelte";
   import UpdatePanel from "./UpdatePanel.svelte";
   import PrBadge from "./PrBadge.svelte";
+  import DeployStatus from "./DeployStatus.svelte";
   import EditCommits from "./EditCommits.svelte";
 
   let { model }: { model: RepoModel } = $props();
@@ -79,20 +80,31 @@
   });
   const cardOf = (ref: string): Card | null => cards.get(refName(ref)) ?? null;
 
-  // Pull requests on GitHub, by branch name (Rust keeps them for a minute): asked again with each history load.
-  let prs = $state.raw<Record<string, PullRequest>>({});
+  // GitHub (pull requests and deploys): asked again with each history load, and every 5 s while a deploy runs.
+  const NO_GITHUB: GithubStatus = { pullRequests: {}, deploys: [] };
+  let github = $state.raw<GithubStatus>(NO_GITHUB);
   $effect(() => {
     const repo = model.repo;
     void model.history;
     if (!repo) return;
-    let stale = false;
-    api.pullRequests(repo).then((found) => { if (!stale && model.repo === repo) prs = found; }, () => {});
-    return () => (stale = true);
+    let stale = false, timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => api.githubStatus(repo).then((found) => {
+      if (stale || model.repo !== repo) return;
+      github = found;
+      if (found.deploys.some((d) => d.state === "queued" || d.state === "running")) timer = setTimeout(load, 5000);
+    }, () => {});
+    load();
+    return () => { stale = true; clearTimeout(timer); };
   });
   $effect(() => {
     void model.repo;
-    prs = {}; // another repo: none of the previous one's
+    github = NO_GITHUB; // another repo: nothing of the previous one's
   });
+  /** The deploy of the commit a card points at: running first, else the newest. Never another commit's. */
+  const deployOf = (sha: string) => {
+    const mine = github.deploys.filter((d) => d.sha === sha);
+    return mine.find((d) => d.state === "queued" || d.state === "running") ?? mine[0] ?? null;
+  };
   const isPending = (ref: string) => hasCard(ref) && !!model.history.base && !cardOf(ref);
 
   /** Only branches with something to say get status icons. */
@@ -278,8 +290,9 @@
                       <div class="status">
                         {#if own && hasStatus(own)}{@render status(own)}{:else if isPending(badge.ref)}<span class="skel"></span>{/if}
                       </div>
+                      {#if deployOf(commit.id)}<DeployStatus deploy={deployOf(commit.id)!} id="branch-deploy-{name}" />{/if}
                     </div>
-                    {#if prs[name]}<PrBadge pr={prs[name]} id="branch-pr-{name}" />{/if}
+                    {#if github.pullRequests[name]}<PrBadge pr={github.pullRequests[name]} id="branch-pr-{name}" />{/if}
                     <!-- Right of the card: its own commits as a count (amber part: not pushed yet); hover says so, click opens the focus view. -->
                     {#if own?.firstParentCount}
                       {@const local = own.unpushed}
@@ -400,6 +413,7 @@
 <style>
   /* Commits collapsed: the branch as a solid card (name + status line), tinted with its line color; checked out = deeper fill. */
   .bcard {
+    position: relative; /* the deploy bar runs along its bottom edge */
     display: flex; align-items: center; gap: 8px; min-width: 0; flex-shrink: 1; height: 40px; padding: 0 12px; border-radius: 12px;
     /* Pastel: a light wash of the line color, text leaning to the foreground. */
     color: color-mix(in oklab, var(--lane) 28%, var(--foreground)); background: color-mix(in oklab, var(--lane) 7%, var(--background));

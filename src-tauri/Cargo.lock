@@ -2130,7 +2130,7 @@ dependencies = [
 
 [[package]]
 name = "monti-git"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "serde",
  "serde_json",

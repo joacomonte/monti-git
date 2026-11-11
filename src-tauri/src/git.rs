@@ -379,27 +379,39 @@ pub fn line_count(text: &str) -> u32 {
 pub enum Span<'a> {
     Worktree,
     Commit(&'a str),
+    /// Everything a branch brought since it left its base (`base...tip`): the Collapsed view's row.
+    Branch { tip: &'a str, base: &'a str },
 }
 
 impl<'a> Span<'a> {
     /// None = the uncommitted-changes row.
-    pub fn new(commit: Option<&'a str>) -> Span<'a> {
-        commit.map_or(Span::Worktree, Span::Commit)
+    /// `base`: the whole branch since it left `base`, unless `commit` is already in it (the base itself, an
+    /// environment, a merged branch): then just that commit.
+    pub fn new(commit: Option<&'a str>, base: Option<&'a str>, repo: &Path) -> Span<'a> {
+        match (commit, base) {
+            (Some(tip), Some(base)) if run(&["merge-base", "--is-ancestor", tip, base], repo).is_err() => Span::Branch { tip, base },
+            _ => commit.map_or(Span::Worktree, Span::Commit),
+        }
     }
 
     /// The commit whose files these are; None = the working tree.
     pub fn target(&self) -> Option<&'a str> {
         match self {
             Span::Worktree => None,
-            Span::Commit(id) => Some(id),
+            Span::Commit(id) | Span::Branch { tip: id, .. } => Some(id),
         }
     }
 
     /// `git diff` (diff-tree for a commit) with `flags`, limited to `paths`.
     fn diff(&self, flags: &[&str], paths: &[&str], repo: &Path) -> Result<String, String> {
+        let range = match self {
+            Span::Branch { tip, base } => format!("{base}...{tip}"),
+            _ => String::new(),
+        };
         let mut args: Vec<&str> = match self {
             Span::Worktree => vec!["diff", "--no-ext-diff", "HEAD"],
             Span::Commit(id) => vec!["diff-tree", "--no-ext-diff", "-r", "--root", "--diff-merges=first-parent", "--no-commit-id", id],
+            Span::Branch { .. } => vec!["diff", "--no-ext-diff", &range],
         };
         args.splice(1..1, flags.iter().copied());
         args.push("--");
@@ -559,6 +571,21 @@ mod tests {
         assert_eq!(files.keys().collect::<Vec<_>>(), ["feature.txt"]);
         let root = repo.git(&["rev-list", "--max-parents=0", "HEAD"]).trim().to_string();
         assert_eq!(super::changed_files(super::Span::Commit(&root), repo.path()).unwrap().keys().collect::<Vec<_>>(), ["a.txt"]);
+    }
+
+    #[test]
+    fn a_branch_span_is_everything_since_it_left_its_base() {
+        let repo = Repo::new("branch-span");
+        repo.commit("a.txt", "1\n", "init");
+        repo.git(&["checkout", "-q", "-b", "feat"]);
+        repo.commit("one.txt", "1\n", "one");
+        repo.commit("two.txt", "1\n", "two");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.commit("main.txt", "1\n", "main only");
+        let names = |span| super::changed_files(span, repo.path()).unwrap().into_keys().collect::<Vec<_>>();
+        assert_eq!(names(super::Span::new(Some("feat"), Some("main"), repo.path())), ["one.txt", "two.txt"]);
+        // Already in the base: just that commit.
+        assert_eq!(names(super::Span::new(Some("main"), Some("main"), repo.path())), ["main.txt"]);
     }
 
     #[test]

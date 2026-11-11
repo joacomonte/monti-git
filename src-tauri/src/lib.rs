@@ -73,16 +73,18 @@ fn load_history(repo: String, query: history::Query) -> Result<history::History>
     history::load(Path::new(&repo), &query)
 }
 
-/// Files of a selection. `commit` None = the uncommitted-changes row.
+/// Files of a selection. `commit` None = the uncommitted-changes row; `base`: the whole branch since it left it.
 #[tauri::command(async)]
-fn load_changes(repo: String, commit: Option<String>, all: bool) -> Result<changes::Changes> {
-    changes::load(Path::new(&repo), Span::new(commit.as_deref()), all)
+fn load_changes(repo: String, commit: Option<String>, base: Option<String>, all: bool) -> Result<changes::Changes> {
+    let repo = Path::new(&repo);
+    changes::load(repo, Span::new(commit.as_deref(), base.as_deref(), repo), all)
 }
 
 /// One file of a selection. `whole`: its full content instead of its diff.
 #[tauri::command(async)]
-fn load_diff(repo: String, path: String, commit: Option<String>, whole: bool) -> Result<changes::FileDiff> {
-    changes::file_diff(Path::new(&repo), &path, Span::new(commit.as_deref()), whole)
+fn load_diff(repo: String, path: String, commit: Option<String>, base: Option<String>, whole: bool) -> Result<changes::FileDiff> {
+    let repo = Path::new(&repo);
+    changes::file_diff(repo, &path, Span::new(commit.as_deref(), base.as_deref(), repo), whole)
 }
 
 #[derive(Serialize)]
@@ -172,10 +174,10 @@ fn rewrites_pushed(repo: String, kind: actions::CommitKind) -> bool {
     actions::rewrites_pushed(&kind, Path::new(&repo))
 }
 
-/// Each branch's pull request on GitHub (through gh; none without it).
+/// What GitHub knows about the branches (through gh; nothing without it): pull requests and deploy runs.
 #[tauri::command(async)]
-fn pull_requests(repo: String) -> HashMap<String, github::PullRequest> {
-    github::pull_requests(Path::new(&repo))
+fn github_status(repo: String) -> github::Status {
+    github::status(Path::new(&repo))
 }
 
 /// A web page (a pull request) in the default browser.
@@ -224,9 +226,10 @@ fn search_code(repos: Vec<String>, bases: HashMap<String, String>, query: String
 
 /// File tree search by content in a selection: path -> its matching lines.
 #[tauri::command(async)]
-fn search_lines(repo: String, commit: Option<String>, query: String, paths: Vec<String>, diff_only: bool) -> HashMap<String, search::LineHits> {
+fn search_lines(repo: String, commit: Option<String>, base: Option<String>, query: String, paths: Vec<String>, diff_only: bool) -> HashMap<String, search::LineHits> {
     let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
-    search::lines(Path::new(&repo), Span::new(commit.as_deref()), &query, &paths, diff_only)
+    let repo = Path::new(&repo);
+    search::lines(repo, Span::new(commit.as_deref(), base.as_deref(), repo), &query, &paths, diff_only)
 }
 
 #[tauri::command(async)]
@@ -408,7 +411,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_repos, is_repo, open_file, list_editors,
             load_history, load_changes, load_diff, commit_info, blame, branch_status, recent_activity, safe_to_delete, merged_into, branch_tip, last_commit_message, rewrites_pushed,
-            changed_file_count, git_logs, pull_requests, open_url,
+            changed_file_count, git_logs, github_status, open_url,
             search_commits, search_code, search_lines, commit_places,
             sync, checkout, pull, delete_branch, deletion, update_branch, base_status, start_feature, move_branch, push, pull_and_push,
             discard_file, discard_all, untracked_check, delete_untracked, discard_hunk, stage, unstage, commit, restore_discarded,

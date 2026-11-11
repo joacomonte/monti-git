@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.7.1",
+    "changes": [
+      { "kind": "improved", "title": "Deploys on the cards", "detail": "A branch card shows its GitHub deploy (Actions or Vercel & co.): a bar fills along the card while it runs, a small green rocket stays when it's live, red if it failed. Click to open it." },
+      { "kind": "improved", "title": "A whole branch at once", "detail": "In the Collapsed view, clicking a branch's row shows every change since it left the base, not only its last commit." },
+      { "kind": "improved", "title": "Tidier sidebar", "detail": "Repo rows lose the branch icon; hover shows Favorite and Copy path on the left. Pull now and Auto sync share one pill above Favorites." }
+    ]
+  },
+  {
     "version": "1.7.0",
     "changes": [
       { "kind": "improved", "title": "Resolve conflicts in the app", "detail": "Updating the branch you're on no longer gives up on a conflict: it stops, the uncommitted row lists the files, and each block shows yours and theirs to pick from (or both). Continue finishes it, Abort puts everything back." },
