@@ -11,12 +11,11 @@
   import { ArrowDown, ArrowRight, Sparkles, CircleCheck, Clock, Cloud, ChevronRight, CloudUpload, Copy, Crosshair, PenLine, UserRound, Waypoints } from "@lucide/svelte";
   import { api, WORKTREE_ID, type ActiveBranch, type RepoActivity } from "$lib/api";
   import type { RepoModel } from "$lib/model.svelte";
-  import { ago, baseName, plural } from "$lib/format";
+  import { ago, baseName, edited, plural } from "$lib/format";
   import { prefs } from "$lib/prefs";
   import { isRemote, localName } from "$lib/refs";
   import { mergeState } from "$lib/cards";
   import ContextMenu from "./ContextMenu.svelte";
-  import { fly } from "svelte/transition";
   import { laneColor } from "./GraphCell.svelte";
   import Loader from "./Loader.svelte";
   import Segmented from "./Segmented.svelte";
@@ -31,7 +30,6 @@
   let activity = $state.raw<RepoActivity[] | null>(cache.get(`${days}:${onlyMine}`) ?? null); // the cache, before the first frame
   let refreshing = $state(false); // a thin bar on top while it reads the repos again; what's shown stays usable
   let version = $state(0); // bumped after a push from here, to read the repos again
-  let sub = $state<"safe" | null>(null); // a sub view: "Dashboard › Safe to delete"
   let menu = $state<{ group: RepoActivity; branch: ActiveBranch; x: number; y: number } | null>(null);
 
   // Reads the repos on every visit and when the window, the filter or the sidebar's repos change; a newer request wins.
@@ -60,11 +58,15 @@
   // Each repo keeps its color: its place in the sidebar list.
   const colorOf = (repo: string) => laneColor(Math.max(0, model.repos.findIndex((r) => r.path === repo)) + 1);
   const hasWork = (g: RepoActivity, b: ActiveBranch) => g.changed > 0 && localName(b.name) === g.current;
-  // Every repo's branches in one list, newest first (uncommitted work counts as now); each run of the same repo gets its title.
+  // Every repo's branches in one list, newest first; uncommitted work goes on top, the most recently edited first.
+  // Each run of the same repo gets its title.
   const runs = $derived.by(() => {
-    const when = (g: RepoActivity, b: ActiveBranch) => (hasWork(g, b) ? Infinity : b.date);
+    const rank = (g: RepoActivity, b: ActiveBranch) => (hasWork(g, b) ? [1, g.edited] : [0, b.date]);
     const all = (activity ?? []).flatMap((group) => group.branches.map((b) => ({ group, b })));
-    all.sort((x, y) => when(y.group, y.b) - when(x.group, x.b));
+    all.sort((x, y) => {
+      const [xw, xt] = rank(x.group, x.b), [yw, yt] = rank(y.group, y.b);
+      return yw - xw || yt - xt;
+    });
     const out: { group: RepoActivity; branches: ActiveBranch[] }[] = [];
     for (const { group, b } of all) {
       const last = out.at(-1);
@@ -90,7 +92,7 @@
   }
   /** Each action's count with its unit, under its name ("73 files", "5 commits"), and what it means (tooltip, menu hint). */
   function detail(kind: "commit" | "push", g: RepoActivity, b: ActiveBranch) {
-    if (kind === "commit") return { count: plural(g.changed, "file"), text: `${plural(g.changed, "changed file")} not committed` };
+    if (kind === "commit") return { count: plural(g.changed, "file") + edited(g.edited), text: `${plural(g.changed, "changed file")} not committed${edited(g.edited)}` };
     const n = b.status?.unpushed ?? 0;
     return { count: plural(n, "commit"), text: `${plural(n, "commit")} not pushed${b.status?.hasUpstream ? "" : ": the branch was never pushed"}` };
   }
@@ -124,14 +126,10 @@
 <div class="relative h-full">
 {#if refreshing && activity}<div class="refreshing" title="Checking every repo for anything new"></div>{/if}
 <div class="dashboard enter-fade" id="dashboard">
-  <!-- Title (a breadcrumb in a sub view), the filters under it. -->
+  <!-- The filters (the title is the header's breadcrumb). -->
   <div class="head">
-    <div class="crumbs">
-      {#if sub}<button class="crumb" id="dashboard-crumb-home" onclick={() => (sub = null)}>Dashboard</button><ChevronRight size={18} class="text-tertiary" /><span class="title" in:fly={{ x: 12, duration: 220 }}>Safe to delete</span>
-      {:else}<span class="title">Dashboard</span>{/if}
-    </div>
     <div class="filters">
-      {#if !sub}
+      {#if !model.dashboardView}
         <span class="hint">Branches with commits in the last</span>
         <Segmented id="dashboard-days" value={String(days)} onchange={(v) => setDays(Number(v))}
           options={DAYS.map((d) => ({ value: String(d), label: d === 1 ? "24 h" : `${d} days` }))} />
@@ -141,7 +139,7 @@
     </div>
   </div>
 
-  {#if sub === "safe"}
+  {#if model.dashboardView === "safe"}
     <!-- Loaded only when opened: its code and its (heavier) read of every branch. -->
     {#await import("./SafeToDelete.svelte") then { default: SafeToDelete }}<SafeToDelete {model} {onlyMine} {colorOf} />{/await}
   {:else if activity == null}
@@ -203,11 +201,11 @@
       </section>
     {/each}
   {/if}
-  {#if !sub && activity != null}
+  {#if !model.dashboardView && activity != null}
     <!-- Below every card, in a section of its own: the way into the clean-up list. -->
     <section class="tools-section">
     <h4 class="section-title">Maintenance</h4>
-    <button class="cleanup" id="dashboard-open-safe-to-delete" onclick={() => (sub = "safe")}>
+    <button class="cleanup" id="dashboard-open-safe-to-delete" onclick={() => (model.dashboardView = "safe")}>
       <span class="cleanup-icon"><Sparkles size={20} /></span>
       <span class="flex min-w-0 flex-1 flex-col text-left"><span class="cleanup-title">Clean up merged branches</span>
         <span class="cleanup-detail">Every branch that's already in the base and every environment: safe to delete, newest first</span></span>
@@ -251,10 +249,6 @@
   @keyframes sweep { from { background-position: -40% 0; } to { background-position: 140% 0; } }
   @media (prefers-reduced-motion: reduce) { .refreshing { animation: none; background-size: 100% 100%; opacity: 0.5; } }
   .head { display: flex; flex-direction: column; gap: 10px; }
-  .crumbs { display: flex; align-items: center; gap: 6px; }
-  .title { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; }
-  .crumb { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; color: var(--tertiary); transition: color 0.15s; }
-  .crumb:hover { color: var(--foreground); }
   .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
   /* Its own section under the cards: a line above, a small title. */
   .tools-section { display: flex; flex-direction: column; gap: 10px; padding-top: 22px; border-top: 1px solid var(--border); }

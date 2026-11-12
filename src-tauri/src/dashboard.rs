@@ -20,6 +20,7 @@ pub struct RepoActivity {
     base: Option<String>,
     current: Option<String>, // the checked-out branch
     changed: usize,          // files with uncommitted changes on it: its card offers Commit first
+    edited: i64,             // when that work was last touched (git::Status::edited): the repo being edited goes first
     branches: Vec<Active>,
 }
 
@@ -45,6 +46,7 @@ pub fn activity(repos: &[RepoPicks], days: u32, only_mine: bool) -> Vec<RepoActi
         // uncommitted work (even the base or an environment), and branches with commits not pushed yet.
         let status = git::status(repo).ok();
         let changed = status.as_ref().map_or(0, |s| s.files.len());
+        let edited = status.as_ref().map_or(0, |s| s.edited(repo));
         let current = status.and_then(|s| s.branch);
         let dirty: Option<String> = current.clone().filter(|_| changed > 0);
         let keep: Vec<String> = dirty.iter().cloned().chain(refs::ahead_of_upstream(repo)).collect();
@@ -54,7 +56,7 @@ pub fn activity(repos: &[RepoPicks], days: u32, only_mine: bool) -> Vec<RepoActi
         let names: Vec<String> = recent.iter().filter(|b| !is_target(&b.name)).map(|b| b.name.clone()).collect();
         let mut statuses = statuses_of(repo, &names, base.as_deref(), &targets);
         let branches = recent.into_iter().map(|branch| Active { status: statuses.remove(&branch.name), branch }).collect();
-        RepoActivity { repo: picks.path.clone(), base, current, changed, branches }
+        RepoActivity { repo: picks.path.clone(), base, current, changed, edited, branches }
     });
     all.retain(|r| !r.branches.is_empty());
     all.sort_by_key(|r| std::cmp::Reverse(r.branches[0].branch.date));

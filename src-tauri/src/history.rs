@@ -61,7 +61,8 @@ pub fn load(repo: &Path, q: &Query) -> Result<History, String> {
         conflict = conflicts::state(repo, unmerged);
         let stat = Stat { files: status.files.len() as u32, ..Default::default() }; // lines aren't shown: no extra diff
         // Right above the checked-out commit, not at the very top of the graph; focused, only if that commit is shown.
-        if let Some(row) = git::worktree_commit(status.head, stat) {
+        let edited = status.edited(repo);
+        if let Some(row) = git::worktree_commit(status.head, stat, edited) {
             let at = commits.iter().position(|c| Some(&c.id) == row.parents.first());
             if focus.is_empty() || at.is_some() {
                 commits.insert(at.unwrap_or(0), row);

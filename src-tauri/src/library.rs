@@ -18,11 +18,12 @@ pub fn is_repo(path: &Path) -> bool {
     path.join(".git").exists()
 }
 
-pub fn discover(folders: &[String], repos: &[String]) -> Vec<RepoEntry> {
+/// `hidden`: repos inside an added folder that the user took out of the sidebar one by one.
+pub fn discover(folders: &[String], repos: &[String], hidden: &[String]) -> Vec<RepoEntry> {
     let mut found: Vec<(PathBuf, Option<String>)> = repos.iter().map(|r| (PathBuf::from(r), None)).collect();
     for folder in folders {
         let children = std::fs::read_dir(folder).into_iter().flatten().flatten().map(|e| e.path());
-        found.extend(children.map(|p| (p, Some(folder.clone()))));
+        found.extend(children.filter(|p| !hidden.iter().any(|h| Path::new(h) == p)).map(|p| (p, Some(folder.clone()))));
     }
     found.retain(|(p, _)| is_repo(p));
     found.sort_by(|a, b| a.0.cmp(&b.0));
@@ -74,6 +75,17 @@ fn owner(repo: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use crate::testutil::Repo;
+
+    #[test]
+    fn a_hidden_repo_leaves_its_folder_but_not_when_added_on_its_own() {
+        let a = Repo::new("library-hidden-a");
+        let b = Repo::new("library-hidden-b");
+        let folder = a.path().parent().unwrap().to_string_lossy().to_string();
+        let hidden = [a.path().to_string_lossy().to_string()];
+        let paths = |repos: &[String]| super::discover(&[folder.clone()], repos, &hidden).into_iter().map(|r| r.path).collect::<Vec<_>>();
+        assert!(!paths(&[]).contains(&hidden[0]) && paths(&[]).contains(&b.path().to_string_lossy().to_string()));
+        assert!(paths(&hidden).contains(&hidden[0]), "added on its own: listed again");
+    }
 
     #[test]
     fn changes_fingerprint_moves_with_the_files() {

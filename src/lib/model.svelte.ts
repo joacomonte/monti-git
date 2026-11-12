@@ -54,6 +54,9 @@ type ShownDiff = { path: string; rows: DiffRow[]; truncated: boolean; whole: boo
 /** A search result to land on: this line of this file, highlighted and blamed. */
 type Jump = { path: string; line: number; old: boolean };
 
+/** The folder a path sits in (either separator: Windows paths too). */
+const parentOf = (path: string) => path.replace(/[\\/][^\\/]*$/, "");
+
 export class RepoModel {
   repo = $state<string | null>(null);
   history = $state.raw<History>(EMPTY);
@@ -64,6 +67,7 @@ export class RepoModel {
   focus = $state.raw<string[] | null>(null); // "Only this branch": the branch and its base, the rest of the graph hidden
   historyPath = $state<string | null>(null); // a file's history: the graph shows only the commits that touched it
   showGraph = $state(true); // the graph is the app; the Dashboard tab is a placeholder for what comes next
+  dashboardView = $state<"safe" | null>(null); // a view inside the dashboard: "Dashboard › Safe to delete" in the header
   scrollTo = $state.raw<{ id: string } | null>(null); // a row to bring into view, once (CommitList takes it)
   private limit = PAGE;
   private viewEnd = 0; // last row on screen: a refresh near the top only reloads the first page
@@ -596,8 +600,7 @@ export class RepoModel {
 
   // MARK: Repo sources: what the sidebar lists, added by the user (nothing is scanned by default)
 
-  // Only these two fields: a "hidden" list saved by older versions is dropped.
-  sources = $state<Sources>((({ folders, repos }) => ({ folders, repos }))(prefs.get("repoSources", { folders: [], repos: [] })));
+  sources = $state<Sources>((({ folders, repos, hidden = [] }) => ({ folders, repos, hidden }))(prefs.get("repoSources", { folders: [], repos: [], hidden: [] })));
   onboarding = $state(false); // keeps the onboarding up after the first repos are added, for its favorites step
   favorites = $state<string[]>(prefs.get("sidebarPrefs", {}).favorites ?? []); // same blob as SidebarPrefs in RepoSidebar.swift
 
@@ -607,7 +610,7 @@ export class RepoModel {
   /** Relists the repos (and whether each has uncommitted changes). The open repo's changes count as seen. */
   async refreshRepos() {
     const fresh = this.ticket("repos");
-    const list = await api.listRepos(this.sources.folders, this.sources.repos);
+    const list = await api.listRepos(this.sources.folders, this.sources.repos, this.sources.hidden);
     if (!fresh()) return this.repos;
     this.repos = list;
     if (this.repo) this.markSeen(this.repo);
@@ -638,10 +641,18 @@ export class RepoModel {
     return this.sources.folders.length + this.sources.repos.length > 0;
   }
 
-  /** Still in the sidebar: added on its own, or inside an added folder. */
+  /** Still in the sidebar: added on its own, or inside an added folder and not hidden from it. */
   private isListed(path: string) {
-    const folder = path.replace(/[\\/][^\\/]*$/, "");
-    return this.sources.repos.includes(path) || this.sources.folders.includes(folder);
+    return this.sources.repos.includes(path) || (this.inFolder(path) && !this.sources.hidden.includes(path));
+  }
+
+  private inFolder(path: string) {
+    return this.sources.folders.includes(parentOf(path));
+  }
+
+  /** Repos taken out of an added folder, for the sidebar's Hidden list. */
+  get hiddenRepos() {
+    return this.sources.hidden.filter((path) => this.inFolder(path));
   }
 
   toggleFavorite(path: string) {
@@ -665,16 +676,25 @@ export class RepoModel {
     const rejected = paths.filter((_, i) => !checks[i]);
     if (rejected.length) this.syncStatus = `Not a git repository: ${rejected.map((p) => p.split(/[\\/]/).pop()).join(", ")}. Use "Add folder of repos" for a folder that contains several.`;
     if (!repos.length) return;
-    this.saveSources({ ...s, repos: [...new Set([...s.repos, ...repos])] });
+    this.saveSources({ ...s, repos: [...new Set([...s.repos, ...repos])], hidden: s.hidden.filter((h) => !repos.includes(h)) });
     if (!this.repo) this.open(repos[0]);
   }
 
+  /** Out of the sidebar, wherever it came from: added on its own, or found in an added folder (it stays hidden from
+   *  that folder until it's shown again or re-added). */
   removeRepo(path: string) {
-    this.saveSources({ ...this.sources, repos: this.sources.repos.filter((r) => r !== path) });
+    const s = this.sources;
+    this.saveSources({ ...s, repos: s.repos.filter((r) => r !== path), hidden: this.inFolder(path) ? [...new Set([...s.hidden, path])] : s.hidden });
   }
 
+  unhideRepo(path: string) {
+    this.saveSources({ ...this.sources, hidden: this.sources.hidden.filter((h) => h !== path) });
+  }
+
+  /** Its hidden repos go with it: re-adding the folder lists them all again. */
   removeFolder(folder: string) {
-    this.saveSources({ ...this.sources, folders: this.sources.folders.filter((f) => f !== folder) });
+    const s = this.sources;
+    this.saveSources({ ...s, folders: s.folders.filter((f) => f !== folder), hidden: s.hidden.filter((h) => parentOf(h) !== folder) });
   }
 
   // MARK: Actions (src-tauri/src/actions.rs): one at a time from the UI; Rust also serializes them per repo.

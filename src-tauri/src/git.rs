@@ -302,6 +302,16 @@ pub struct Status {
     pub untracked: Vec<String>,        // new files git doesn't know yet
 }
 
+impl Status {
+    /// When the uncommitted work was last touched: the newest modification time (unix s) of the changed files on
+    /// disk; 0 when none is left to look at (only deletions) or there are none.
+    pub fn edited(&self, repo: &Path) -> i64 {
+        let modified = |path: &String| repo_file(repo, path).ok()?.metadata().ok()?.modified().ok();
+        let newest = self.files.keys().filter_map(modified).max();
+        newest.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64)
+    }
+}
+
 pub fn status(repo: &Path) -> Result<Status, String> {
     let out = run(&["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"], repo)?;
     let mut s = Status { branch: None, head: None, files: BTreeMap::new(), staged: vec![], untracked: vec![] };
@@ -343,12 +353,13 @@ pub fn status(repo: &Path) -> Result<Status, String> {
 }
 
 /// The "Uncommitted changes" row on top of `head`, or None when the working tree is clean.
-pub fn worktree_commit(head: Option<String>, stat: Stat) -> Option<Commit> {
+/// `edited`: when the work was last touched (Status::edited), the row's date.
+pub fn worktree_commit(head: Option<String>, stat: Stat, edited: i64) -> Option<Commit> {
     (stat.files > 0).then(|| Commit {
         id: WORKTREE_ID.into(),
         parents: head.into_iter().collect(),
         author: String::new(),
-        date: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
+        date: edited,
         refs: vec![],
         subject: String::new(),
         stash: None,

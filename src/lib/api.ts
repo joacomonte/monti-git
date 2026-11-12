@@ -154,7 +154,7 @@ export type Deletion = { local: boolean; remote: boolean; current: boolean; dirt
 /** Dashboard: a branch with recent commits and its card facts (null without a base to compare with). */
 export type ActiveBranch = { name: string; tip: string; date: number; author: string; subject: string; status: Omit<Card, "local"> | null };
 /** Dashboard: one repo's recently active branches, newest first. */
-export type RepoActivity = { repo: string; base: string | null; current: string | null; changed: number; branches: ActiveBranch[] };
+export type RepoActivity = { repo: string; base: string | null; current: string | null; changed: number; edited: number; branches: ActiveBranch[] };
 /** A repo with the user's picks for it (null = detected). */
 export type RepoPicks = { path: string; preferred: string | null; environments: string[] | null };
 
@@ -175,7 +175,7 @@ export type WipMode = "shelve" | "commit" | "carry";
 
 
 export const api = {
-  listRepos: (folders: string[], repos: string[]) => invoke<RepoEntry[]>("list_repos", { folders, repos }),
+  listRepos: (folders: string[], repos: string[], hidden: string[]) => invoke<RepoEntry[]>("list_repos", { folders, repos, hidden }),
   isRepo: (path: string) => invoke<boolean>("is_repo", { path }),
   openFile: (repo: string, path: string, how: OpenWith) => invoke<void>("open_file", { repo, path, with: how }),
   listEditors: () => invoke<Editor[]>("list_editors"),

@@ -1,8 +1,8 @@
-<!-- Repos the user added (one by one or a folder of them): Favorites first, then one section per owner; groups and repos ordered by most recent activity
-     (uncommitted changes count as now: discarding them sends the repo back down, committing keeps it up). -->
+<!-- Repos the user added (one by one or a folder of them): Favorites first, then one section per owner or one list, by
+     recent activity or by name; repos hidden from a folder are listed in the Add or edit popover. -->
 <script lang="ts">
   import { whatsNew } from "./WhatsNew.svelte";
-  import { Check, ChevronRight, ArrowUpRight, CloudDownload, Sparkles, Copy, FolderGit2, FolderMinus, FolderTree, GitBranch, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
+  import { Search, ArrowDownAZ, ArrowUpDown, LayoutDashboard, Check, ChevronRight, ArrowUpRight, Clock, CloudDownload, Eye, EyeOff, Sparkles, Copy, FolderGit2, FolderMinus, FolderTree, GitBranch, Layers, List, Plus, RefreshCw, Star, TriangleAlert, X } from "@lucide/svelte";
   import ActionRow from "./ActionRow.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import { Button } from "$lib/components/ui/button";
@@ -13,9 +13,10 @@
   import type { RepoModel } from "$lib/model.svelte";
   import { CopyFlash } from "$lib/clipboard.svelte";
   import { pickFolders } from "$lib/dialogs";
+  import { prefs } from "$lib/prefs";
   import { ago, baseName } from "$lib/format";
 
-  let { model }: { model: RepoModel } = $props();
+  let { model, onsearch }: { model: RepoModel; onsearch: () => void } = $props();
   let version = $state("");
   getVersion().then((v) => (version = v));
   // Ticks so "2m ago" next to Auto sync stays current.
@@ -37,17 +38,31 @@
   const run = (action: () => void) => () => { action(); menu = null; };
   const flash = new CopyFlash();
 
+  // How the list is laid out (Favorites always first): grouped by owner or one list; by recent activity or by name.
+  let group = $state(prefs.get("sidebarPrefs", {}).group ?? "owner");
+  let sort = $state(prefs.get("sidebarPrefs", {}).sort ?? "recent");
+  function layout(next: { group?: "owner" | "none"; sort?: "recent" | "name" }) {
+    group = next.group ?? group;
+    sort = next.sort ?? sort;
+    prefs.set("sidebarPrefs", { ...prefs.get("sidebarPrefs", {}), group, sort });
+  }
+  let showLayout = $state(false);
+
   const sections = $derived.by(() => {
     const favorites = model.favorites;
+    // Recent: uncommitted changes count as now (discarding them sends the repo back down, committing keeps it up).
     const when = (r: RepoEntry) => (r.changes ? Infinity : r.lastActivity);
-    const sorted = [...model.repos].sort((a, b) => when(b) - when(a));
-    const groups = new Map<string, RepoEntry[]>();
-    for (const repo of sorted.filter((r) => !favorites.includes(r.path))) {
-      groups.set(repo.owner, [...(groups.get(repo.owner) ?? []), repo]);
-    }
+    const order = sort === "name" ? (a: RepoEntry, b: RepoEntry) => baseName(a.path).localeCompare(baseName(b.path)) : (a: RepoEntry, b: RepoEntry) => when(b) - when(a);
+    const sorted = [...model.repos].sort(order);
     const pinned = sorted.filter((r) => favorites.includes(r.path));
-    return [...(pinned.length ? [["Favorites", pinned] as const] : []),
-      ...[...groups].sort((a, b) => when(b[1][0]) - when(a[1][0]))];
+    const rest = sorted.filter((r) => !favorites.includes(r.path));
+    const groups = new Map<string, RepoEntry[]>();
+    for (const repo of rest) {
+      const key = group === "owner" ? repo.owner : pinned.length ? "All" : "";
+      groups.set(key, [...(groups.get(key) ?? []), repo]);
+    }
+    const byGroup = sort === "name" ? (a: [string, RepoEntry[]], b: [string, RepoEntry[]]) => a[0].localeCompare(b[0]) : (a: [string, RepoEntry[]], b: [string, RepoEntry[]]) => when(b[1][0]) - when(a[1][0]);
+    return [...(pinned.length ? [["Favorites", pinned] as const] : []), ...[...groups].sort(byGroup)];
   });
 
   // The open repo stays in sight: opening one from the dashboard (graph or focus view) scrolls the list to it.
@@ -70,7 +85,16 @@
 
 <aside class="flex h-full flex-col bg-sidebar">
   <!-- Room for the window buttons, then the controls; the strip drags the window. -->
-  <div data-tauri-drag-region class="flex h-[38px] shrink-0 items-center justify-end gap-1 px-2 pl-20">
+  <div data-tauri-drag-region class="flex h-[38px] shrink-0 items-center justify-end gap-1 px-2 pl-[92px]">
+    <!-- Commit search (⌘K): the full field when the strip has room, only its icon when it doesn't. -->
+    {#if model.repo && model.hasSources && !model.onboarding}
+      <div class="search-slot">
+        <button class="search" id="commit-search-open" onclick={onsearch}
+          title="Find a text like MOA-854 in commit titles and descriptions, in this repo or all of them.">
+          <Search size={13} class="shrink-0" /><span class="label">Search</span><kbd>⌘K</kbd>
+        </button>
+      </div>
+    {/if}
     {#if model.syncFailure}
       {@const failure = model.syncFailure}
       <!-- Skipped branches: stays until dismissed; the friendly reasons first, the raw git output one click away. -->
@@ -111,15 +135,32 @@
     {/if}
   </div>
   <nav class="flex-1 overflow-auto px-2 pb-3" id="repo-sidebar">
-    <!-- First item of the list, dashed: add a repo, or a folder whose repos are all listed. -->
+    <!-- Dashed: add a repo or a folder whose repos are all listed, and edit what was added. -->
     <Popover.Root bind:open={showAdd}>
-      <Popover.Trigger class="add-repo" id="add-repos" title="Add repositories: one or more repos, or a folder with several">
-        <Plus size={13} strokeWidth={2.5} class="shrink-0" />Add repository
+      <Popover.Trigger class="add-repo" id="add-repos" title="Add or edit repositories: one or more repos, or a folder with several">
+        <Plus size={13} strokeWidth={2.5} class="shrink-0" />Add or edit repositories
       </Popover.Trigger>
-      <Popover.Content side="right" align="start" class="w-[300px] gap-1 p-1.5">
+      <Popover.Content side="right" align="start" class="max-h-[70vh] w-[300px] gap-1 overflow-auto p-1.5">
         <ActionRow title="Add repository" detail="One or more git repos, picked one by one" icon={FolderGit2} color="#8b7bff" id="add-repository" onclick={() => add("repo")} />
         <ActionRow title="Add folder of repos" detail="Every repo inside it; new ones show up by themselves" icon={FolderTree} color="#2fc4b2" id="add-folder" onclick={() => add("folder")}
           example="pick your Dev folder: all 20 repos inside show up, and the one you clone tomorrow too." />
+        <!-- What was added, to take it out again (nothing is deleted from disk), and repos hidden from a folder. -->
+        {#each [["Folders", model.sources.folders, FolderTree], ["Repositories", model.sources.repos, FolderGit2], ["Hidden", model.hiddenRepos, EyeOff]] as const as [title, paths, Icon] (title)}
+          {#if paths.length}
+            <span class="source-title">{title}</span>
+            {#each paths as path (path)}
+              <div class="source" id="source-{title.toLowerCase()}-{baseName(path)}" title={path}>
+                <Icon size={12} class="shrink-0" /><span class="flex-1 truncate">{baseName(path)}</span>
+                {#if title === "Hidden"}
+                  <button id="source-show-{baseName(path)}" onclick={() => model.unhideRepo(path)}><Eye size={12} />Show</button>
+                {:else}
+                  <button id="source-remove-{baseName(path)}" aria-label="Remove {baseName(path)} from the sidebar"
+                    onclick={() => (title === "Folders" ? model.removeFolder(path) : model.removeRepo(path))}><X size={12} /></button>
+                {/if}
+              </div>
+            {/each}
+          {/if}
+        {/each}
       </Popover.Content>
     </Popover.Root>
     <!-- One pill: the body forces a pull of the open repo now and says when it last synced; the icon on its right
@@ -136,10 +177,34 @@
         <RefreshCw size={13} class={model.isAutoSyncing ? "animate-spin" : ""} />
       </button>
     </div>
-    {#each sections as [owner, list] (owner)}
-      <div class="px-2 pt-5 pb-1.5 text-[11px] font-semibold text-tertiary">{owner}</div>
+    <!-- Right above the list: back to the dashboard. -->
+    <button class="dashboard" class:active={!model.showGraph} id="sidebar-dashboard"
+      onclick={() => { model.showGraph = false; model.dashboardView = null; }}>
+      <LayoutDashboard size={15} />Dashboard
+    </button>
+    {#each sections as [owner, list], i (owner)}
+      {#if i === 0}
+        <!-- The first header also holds the one subtle icon for how the list is laid out. -->
+        <div class="flex items-center pt-5 pb-1 pl-2 text-[11px] font-semibold text-tertiary">
+          <span class="flex-1">{owner}</span>
+  <Popover.Root bind:open={showLayout}>
+    <Popover.Trigger class="layout-trigger" id="sidebar-layout" aria-label="Group and sort repos"><ArrowUpDown size={13} /></Popover.Trigger>
+    <Popover.Content side="right" align="start" class="w-[170px] gap-0.5 p-1">
+      {#each [["Group", [["owner", "By owner", Layers], ["none", "No groups", List]]], ["Sort", [["recent", "Recent", Clock], ["name", "Name", ArrowDownAZ]]]] as const as [title, options] (title)}
+        <span class="layout-title">{title}</span>
+        {#each options as [value, label, Icon] (value)}
+          {@const on = title === "Group" ? group === value : sort === value}
+          <button class="layout-option" id="sidebar-{title.toLowerCase()}-{value}"
+            onclick={() => layout(title === "Group" ? { group: value as "owner" | "none" } : { sort: value as "recent" | "name" })}>
+            <Icon size={12} />{label}{#if on}<Check size={12} class="ml-auto" />{/if}
+          </button>
+        {/each}
+      {/each}
+    </Popover.Content>
+  </Popover.Root>
+        </div>
+      {:else if owner}<div class="px-2 pt-5 pb-1.5 text-[11px] font-semibold text-tertiary">{owner}</div>{:else}<div class="pt-3"></div>{/if}
       {#each list as repo (repo.path)}
-        {@const isFavorite = model.favorites.includes(repo.path)}
         <button
           class="repo flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left text-[13px]"
           class:active={model.repo === repo.path}
@@ -147,15 +212,9 @@
           onclick={() => model.open(repo.path, "graph")}
           oncontextmenu={(e) => { e.preventDefault(); menu = { x: e.clientX, y: e.clientY, repo }; }}
         >
-          <!-- Hidden until hover: they grow in from the left, one after the other, and push the name right. No tooltips
-               (aria-label only). Spans, not buttons: they sit inside the row's <button>. -->
+          <!-- Hidden until hover: it grows in from the left and pushes the name right. No tooltip
+               (aria-label only). A span, not a button: it sits inside the row's <button>. Favorites: right click. -->
           <span class="tools">
-            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-            <span role="button" tabindex="0" class="row-tool star" class:on={isFavorite} id="favorite-toggle-{baseName(repo.path)}"
-              aria-label={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
-              onclick={(e) => { e.stopPropagation(); model.toggleFavorite(repo.path); }}>
-              <Star size={14} fill={isFavorite ? "currentColor" : "none"} />
-            </span>
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <span role="button" tabindex="0" class="row-tool" id="repo-copy-path-{baseName(repo.path)}" aria-label="Copy the full path"
               onclick={(e) => { e.stopPropagation(); flash.copy(repo.path, repo.path); }}>
@@ -178,13 +237,17 @@
       <button class="menu-item" title={repo.path} id="repo-menu-copy-path" onclick={run(() => flash.copy(repo.path, repo.path))}>
         <Copy size={13} />Copy full path
       </button>
+      {@const isFavorite = model.favorites.includes(repo.path)}
+      <button class="menu-item" id="repo-menu-favorite" onclick={run(() => model.toggleFavorite(repo.path))}>
+        <Star size={13} fill={isFavorite ? "currentColor" : "none"} />{isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+      </button>
       <div class="menu-separator"></div>
+      <button class="menu-item" title={repo.folder ? `Hide it from the sidebar; the rest of "${folderName}" stays. Bring it back from Add or edit repositories. Nothing is deleted from disk.` : "Take it out of the sidebar. Nothing is deleted from disk."}
+        id="repo-menu-remove" onclick={run(() => model.removeRepo(repo.path))}><X size={13} />Remove from sidebar</button>
       {#if repo.folder}
         <button class="menu-item" title="Stop listing every repo in this folder. Nothing is deleted from disk." id="repo-menu-remove-folder" onclick={run(() => model.removeFolder(repo.folder!))}>
           <FolderMinus size={13} /><span class="truncate">Remove folder "{folderName}"</span>
         </button>
-      {:else}
-        <button class="menu-item" title="Take it out of the sidebar. Nothing is deleted from disk." id="repo-menu-remove" onclick={run(() => model.removeRepo(repo.path))}><X size={13} />Remove from sidebar</button>
       {/if}
     </ContextMenu>
   {/if}
@@ -231,7 +294,7 @@
   @media (prefers-reduced-motion: reduce) { .news-dot { animation: none; } }
   /* Auto sync (toggle, with the last sync under it) and force pull, in one pill. */
   .sync-pill {
-    display: flex; align-items: stretch; margin: 0 0 4px; border-radius: 9px; overflow: hidden;
+    display: flex; align-items: stretch; margin: 0; border-radius: 9px; overflow: hidden;
     background: oklch(0.5 0 0 / 0.07); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.12);
   }
   .sync-pill .pull { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; padding: 6px 10px; text-align: left; color: var(--muted-foreground); }
@@ -243,8 +306,36 @@
   .sync-pill button:hover:not(:disabled) { background: oklch(0.5 0 0 / 0.08); }
   .sync-pill .pull:hover:not(:disabled) { color: var(--foreground); }
   .sync-pill .pull:disabled { opacity: 0.45; }
+  .search-slot { min-width: 0; flex: 1; container-type: inline-size; }
+  .search {
+    display: flex; width: 100%; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: 7px;
+    font-size: 12px; color: var(--tertiary); background: oklch(0.5 0 0 / 0.08); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.12);
+  }
+  .search:hover { color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.12); }
+  .search kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tertiary); }
+  @container (max-width: 96px) {
+    .search { width: 26px; justify-content: center; padding: 0; margin-left: auto; }
+    .search .label, .search kbd { display: none; }
+  }
+  .dashboard {
+    display: flex; width: 100%; align-items: center; gap: 8px; height: 36px; margin: 10px 0 0; padding: 0 10px; border-radius: 8px;
+    font-size: 13.5px; font-weight: 600; color: var(--muted-foreground); transition: color 0.15s, background 0.15s;
+  }
+  .dashboard:hover { color: var(--foreground); background: var(--quinary); }
+  .dashboard.active { color: var(--foreground); }
+  :global(.layout-trigger) { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--tertiary); opacity: 0.7; transition: opacity 0.15s, background 0.15s; }
+  :global(.layout-trigger:hover), :global(.layout-trigger[data-state="open"]) { opacity: 1; color: var(--foreground); background: oklch(0.5 0 0 / 0.08); }
+  .layout-title { padding: 6px 8px 2px; font-size: 10.5px; font-weight: 600; color: var(--tertiary); }
+  .layout-option { display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 8px; border-radius: 5px; font-size: 12px; }
+  .layout-option:hover { background: oklch(0.5 0 0 / 0.1); }
+  .source-title { padding: 10px 8px 2px; font-size: 10.5px; font-weight: 600; color: var(--tertiary); }
+  .source { display: flex; height: 28px; align-items: center; gap: 8px; padding: 0 4px 0 8px; border-radius: 5px; font-size: 12.5px; color: var(--muted-foreground); }
+  .source:hover { background: oklch(0.5 0 0 / 0.08); }
+  .source button { display: flex; align-items: center; gap: 4px; height: 22px; padding: 0 6px; border-radius: 5px; font-size: 11px; color: var(--tertiary); opacity: 0; transition: opacity 0.15s; }
+  .source:hover button, .source button:focus-visible { opacity: 1; }
+  .source button:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.12); }
   :global(.add-repo) {
-    display: flex; width: 100%; align-items: center; justify-content: center; gap: 6px; height: 30px; margin: 10px 0 6px; padding: 0 8px; border-radius: 6px;
+    display: flex; width: 100%; align-items: center; justify-content: center; gap: 6px; height: 30px; margin: 10px 0 8px; padding: 0 8px; border-radius: 6px;
     font-size: 12.5px; color: var(--tertiary); border: 1px dashed oklch(0.5 0 0 / 0.3);
   }
   :global(.add-repo:hover), :global(.add-repo[data-state="open"]) { color: var(--foreground); border-color: color-mix(in oklab, var(--primary) 55%, transparent); }
@@ -263,10 +354,8 @@
     opacity: 0; transform: scale(0.3) rotate(-72deg); pointer-events: none;
     transition: width 0.22s var(--ease, ease), opacity 0.18s, transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
   }
-  .row-tool:nth-child(2) { transition-delay: 0.04s; }
   .repo:hover .row-tool, .repo:focus-within .row-tool { width: 22px; opacity: 1; transform: none; pointer-events: auto; }
   .row-tool:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.15); }
   .repo .row-tool:active { transform: scale(0.8); }
-  .star.on, .star:hover { color: rgb(234 179 8); }
   @media (prefers-reduced-motion: reduce) { .tools, .row-tool { transition: none; } }
 </style>

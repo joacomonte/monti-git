@@ -2,7 +2,9 @@
 import type { CodeScope } from "./api";
 import type { Activity } from "./model.svelte";
 
-export type Sources = { folders: string[]; repos: string[] };
+/** `hidden`: repos inside an added folder that were taken out of the sidebar one by one. */
+export type Sources = { folders: string[]; repos: string[]; hidden: string[] };
+export type SidebarPrefs = { favorites?: string[]; group?: "owner" | "none"; sort?: "recent" | "name" };
 export type SearchMode = "commits" | "code" | "both";
 
 export type TreeSearchMode = "names" | "lines" | "both";
@@ -15,7 +17,7 @@ type Prefs = {
   mainBranches: Record<string, string>; // repo -> the base the user picked
   environments: Record<string, string[]>; // repo -> the environments the user picked
   repoSources: Sources;
-  sidebarPrefs: { favorites?: string[] };
+  sidebarPrefs: SidebarPrefs;
   activity: Activity[];
   seenChanges: Record<string, string>; // repo -> fingerprint of the uncommitted changes the user has already seen
   treeShowsAll: boolean;

@@ -34,8 +34,13 @@ export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" :
 export const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 /** A row's subject: the commit's, or what the uncommitted and saved-WIP rows hold. */
+/** " · edited 3m ago" for uncommitted work last touched at `seconds`; nothing when unknown (0: only deletions). */
+export function edited(seconds: number) {
+  return seconds ? ` · edited ${ago(seconds)}` : "";
+}
+
 export function subject(commit: Commit) {
-  if (commit.id === WORKTREE_ID) return plural(commit.stat?.files ?? 0, "changed file");
+  if (commit.id === WORKTREE_ID) return plural(commit.stat?.files ?? 0, "changed file") + edited(commit.date);
   if (commit.stat) return `${plural(commit.stat.files, "file")} · +${commit.stat.added} −${commit.stat.removed}`;
   return commit.subject;
 }

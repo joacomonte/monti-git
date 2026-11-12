@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.7.2",
+    "changes": [
+      { "kind": "improved", "title": "A header that says where you are", "detail": "The top bar is now a big breadcrumb (Dashboard › repo › Focus or History): click any step to go back. Search moved to the sidebar and shrinks to an icon when it's narrow." },
+      { "kind": "improved", "title": "When you last edited", "detail": "Uncommitted changes show when you last touched a file (\"edited 3m ago\"), in the graph and on the dashboard, and the repo you're editing goes to the top of the dashboard." },
+      { "kind": "improved", "title": "Your sidebar, your way", "detail": "A Dashboard button above the list, one small icon to group by owner or not and sort by recent or name, and Add or edit repositories to remove a single repo from a folder (and bring it back). Favorites moved to right click." }
+    ]
+  },
+  {
     "version": "1.7.1",
     "changes": [
       { "kind": "improved", "title": "Deploys on the cards", "detail": "A branch card shows its GitHub deploy (Actions or Vercel & co.): a bar fills along the card while it runs, a small green rocket stays when it's live, red if it failed. Click to open it." },

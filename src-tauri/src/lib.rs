@@ -32,8 +32,8 @@ use std::path::Path;
 type Result<T> = std::result::Result<T, String>;
 
 #[tauri::command(async)]
-fn list_repos(folders: Vec<String>, repos: Vec<String>) -> Vec<library::RepoEntry> {
-    library::discover(&folders, &repos)
+fn list_repos(folders: Vec<String>, repos: Vec<String>, hidden: Vec<String>) -> Vec<library::RepoEntry> {
+    library::discover(&folders, &repos, &hidden)
 }
 
 #[tauri::command(async)]

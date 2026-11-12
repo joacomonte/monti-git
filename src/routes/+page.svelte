@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { LayoutGrid, Search, TriangleAlert, Waypoints } from "@lucide/svelte";
+  import { LayoutGrid, TriangleAlert, Waypoints } from "@lucide/svelte";
+  import Breadcrumb from "$lib/components/Breadcrumb.svelte";
   import CommitSearch from "$lib/components/CommitSearch.svelte";
   import CheckoutPrompt from "$lib/components/CheckoutPrompt.svelte";
   import CommitList from "$lib/components/CommitList.svelte";
@@ -58,17 +59,14 @@
   }} />
 <UpdateGate>
 <div class="grid h-full grid-cols-[220px_1fr] grid-rows-1">
-  <div class="border-r"><Sidebar {model} /></div>
+  <div class="border-r"><Sidebar {model} onsearch={() => (searching = true)} /></div>
 
   <main class="relative flex min-w-0 flex-col">
     {#if model.isRefreshing}<div class="refresh-bar" title="Refreshing: checking the repo for anything new"></div>{/if}
-    <!-- Top row: global search on the left, Dashboard and Logs on the right. The strip drags the window. -->
-    <header data-tauri-drag-region class="relative flex h-[56px] shrink-0 items-center gap-2 px-3.5 pt-1">
+    <!-- Top row: where you are (a breadcrumb) on the left, Dashboard and Logs on the right. The strip drags the window. -->
+    <header data-tauri-drag-region class="relative flex h-[72px] shrink-0 items-center gap-2 px-4 pt-1">
       {#if model.repo && !model.error && model.hasSources && !model.onboarding}
-        <button class="search" id="commit-search-open" onclick={() => (searching = true)}
-          title={"Find a text like MOA-854 in commit titles and descriptions, in this repo or all of them."}>
-          <Search size={13} />Search commits<kbd>⌘K</kbd>
-        </button>
+        <Breadcrumb {model} />
         <!-- Dashboard: every repo's recently active branches; the same button goes back to the graph. -->
         <div class="ml-auto flex items-center gap-1">
           <button class="side-btn" class:on={!model.showGraph} aria-pressed={!model.showGraph} id="view-dashboard"
@@ -154,13 +152,6 @@
   .side-btn { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--muted-foreground); }
   .side-btn:hover { color: var(--foreground); background: oklch(0.5 0 0 / 0.1); }
   .side-btn.on { color: var(--primary); background: color-mix(in oklab, var(--primary) 12%, transparent); }
-  .search {
-    display: flex; align-items: center; gap: 7px; height: 30px; width: 220px; padding: 0 10px; border-radius: 8px;
-    font-size: 12px; color: var(--tertiary); background: oklch(0.5 0 0 / 0.08); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.12);
-  }
-  .search:hover { color: var(--muted-foreground); background: oklch(0.5 0 0 / 0.12); }
-  .search kbd { margin-left: auto; }
-  kbd { font-family: inherit; font-size: 10px; color: var(--tertiary); }
   /* Thin sliding line along the top while cached content is being refreshed. */
   .refresh-bar {
     position: absolute; top: 0; left: 0; z-index: 10; height: 2px; width: 30%; pointer-events: none;
