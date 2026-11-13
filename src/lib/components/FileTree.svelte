@@ -1,6 +1,6 @@
 <!-- Files of the selected commit: only the changed ones, or the whole repo with changes highlighted. -->
 <script lang="ts">
-  import { CaseSensitive, Check, ChevronDown, FolderGit2, Trash2, ChevronRight, ChevronsDownUp, Copy, Diff, FileDiff, Files, FileText, Folder, FolderOpen, History, Layers, List, ListTree, LoaderCircle, Search, SquareArrowOutUpRight, Sparkles, Square, SquareCheck, SquareMinus, TextSearch, X } from "@lucide/svelte";
+  import { CaseSensitive, Check, ChevronDown, FolderGit2, Trash2, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy, Diff, FileDiff, Files, FileText, Folder, FolderOpen, History, Layers, List, ListTree, LoaderCircle, Search, SquareArrowOutUpRight, Sparkles, Square, SquareCheck, SquareMinus, TextSearch, X } from "@lucide/svelte";
   import { api, WORKTREE_ID, type Editor, type LineHits, type OpenWith } from "$lib/api";
   import * as Popover from "$lib/components/ui/popover";
   import type { Component } from "svelte";
@@ -224,6 +224,8 @@
       {#if !flat}
         <button class="icon-button" id="file-tree-collapse-all" title="Collapse all folders" disabled={!model.expandedDirs.size}
           transition:scale={{ duration: 150, start: 0.6 }} onclick={() => (model.expandedDirs = new Set())}><ChevronsDownUp size={16} /></button>
+        <button class="icon-button" id="file-tree-expand-all" title={model.showAllFiles ? "Expand all folders" : "Expand the folders with changes"}
+          transition:scale={{ duration: 150, start: 0.6 }} onclick={() => model.expandAll()}><ChevronsUpDown size={16} /></button>
       {/if}
       <Popover.Root>
         <Popover.Trigger class="view-button" id="file-tree-view" title="List as a folder tree or a flat list">

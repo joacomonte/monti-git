@@ -460,8 +460,7 @@ export class RepoModel {
     }
     if (this.treeFor !== commit.id) {
       this.treeFor = commit.id;
-      // A new selection opens the folders with changes, in both sections.
-      this.expandedDirs = new Set([...this.changedDirs].flatMap((dir) => [dir, "untracked:" + dir]));
+      this.openDirs(this.changedDirs); // a new selection opens the folders with changes
     }
     if (this.diffOpen && !this.jump && (!this.fileFilter || !(this.fileFilter in this.changes))) {
       this.fileFilter = this.changedOrder[0] ?? null; // new selection: start at the first changed file
@@ -492,6 +491,16 @@ export class RepoModel {
     const section = this.untrackedApart && this.untracked.has(path) ? "untracked:" : "";
     this.expandedDirs = new Set([...this.expandedDirs, ...parentDirs(path).map((dir) => section + dir)]);
     this.showFile(path);
+  }
+
+  /** Only these folders open, in both sections. */
+  private openDirs(dirs: Iterable<string>) {
+    this.expandedDirs = new Set([...dirs].flatMap((dir) => [dir, "untracked:" + dir]));
+  }
+
+  /** Every folder the tree lists: Changed lists only changed files, so that's the folders with changes; All files, all. */
+  expandAll() {
+    this.openDirs(new Set(this.paths.flatMap(parentDirs)));
   }
 
   toggleDir(path: string) {

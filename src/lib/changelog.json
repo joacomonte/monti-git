@@ -1,5 +1,11 @@
 [
   {
+    "version": "1.7.3",
+    "changes": [
+      { "kind": "improved", "title": "Expand all", "detail": "Next to Collapse all in the file tree: in Changed it opens every folder with changes, in All files every folder." }
+    ]
+  },
+  {
     "version": "1.7.2",
     "changes": [
       { "kind": "improved", "title": "A header that says where you are", "detail": "The top bar is now a big breadcrumb (Dashboard › repo › Focus or History): click any step to go back. Search moved to the sidebar and shrinks to an icon when it's narrow." },
