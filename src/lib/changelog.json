@@ -1,6 +1,6 @@
 [
   {
-    "version": "1.8.0",
+    "version": "1.8.1",
     "changes": [
       { "kind": "improved", "title": "The best way to update from main", "detail": "Update from main now checks your branch first (who pushed to it, merges already in it, uncommitted changes) and simulates Merge, Rebase and Squash + rebase for conflicts. It recommends one and says why, with each option's conflict prediction." },
       { "kind": "improved", "title": "Know what each option does", "detail": "Hover an option for a moment: a side card explains what will happen and the git commands it runs. A force push after a rebase is its own step, never automatic." }

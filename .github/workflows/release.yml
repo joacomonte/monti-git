@@ -34,7 +34,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
+          # shortcut: Intel because the arm64 pool (macos-latest) had no free runners (Nov 2026);
+          # back to macos-latest when it's reliable, or before macos-15-intel is retired.
+          - platform: macos-15-intel
             args: --target universal-apple-darwin # one .dmg for Apple Silicon and Intel
           - platform: windows-latest
             args: ""
@@ -50,7 +52,7 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
