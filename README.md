@@ -14,6 +14,7 @@ After that it updates itself: at launch it installs any new version and restarts
 
 ```bash
 pnpm install
+cargo install cargo-sweep --locked --root .tools # once: trims src-tauri/target/ after each `pnpm tauri …`
 pnpm tauri dev
 ```
 

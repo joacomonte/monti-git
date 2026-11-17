@@ -1,6 +1,7 @@
 //! The commands the web view calls: one line each into the module that owns the work. `async` in the attribute
 //! runs them on a worker thread, so git never blocks the UI. Errors come back as text (git's stderr, mostly).
 mod actions;
+mod advice;
 mod blame;
 mod branches;
 mod changes;
@@ -266,8 +267,14 @@ fn deletion(repo: String, branch: String, base: String, targets: Vec<String>) ->
 }
 
 #[tauri::command(async)]
-fn update_branch(repo: String, branch: String, parent: String, rebase: bool) -> Result<actions::Integrated> {
-    actions::update(&branch, &parent, rebase, Path::new(&repo))
+fn update_branch(repo: String, branch: String, parent: String, method: actions::Method) -> Result<actions::Integrated> {
+    actions::update(&branch, &parent, method, Path::new(&repo))
+}
+
+/// Which way to bring `parent` into `branch`, and why: simulated in memory, nothing changes.
+#[tauri::command(async)]
+fn update_advice(repo: String, branch: String, parent: String) -> advice::Advice {
+    advice::advise(&branch, &parent, Path::new(&repo))
 }
 
 #[tauri::command(async)]
@@ -413,7 +420,7 @@ pub fn run() {
             load_history, load_changes, load_diff, commit_info, blame, branch_status, recent_activity, safe_to_delete, merged_into, branch_tip, last_commit_message, rewrites_pushed,
             changed_file_count, git_logs, github_status, open_url,
             search_commits, search_code, search_lines, commit_places,
-            sync, checkout, pull, delete_branch, deletion, update_branch, base_status, start_feature, move_branch, push, pull_and_push,
+            sync, checkout, pull, delete_branch, deletion, update_branch, update_advice, base_status, start_feature, move_branch, push, pull_and_push,
             discard_file, discard_all, untracked_check, delete_untracked, discard_hunk, stage, unstage, commit, restore_discarded,
             stash_apply, stash_drop, stash_restore, own_commits, rewrite_branch,
             conflict_parts, resolve_conflict, take_side, continue_operation, abort_operation,

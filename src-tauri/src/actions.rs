@@ -343,9 +343,63 @@ pub fn delete_branch(branch: &str, base: &str, targets: &[String], remote: bool,
     })
 }
 
-/// Brings `parent`'s new commits into `branch` by merge (or rebase).
-pub fn update(branch: &str, parent: &str, rebase: bool, repo: &Path) -> Result<Integrated, String> {
-    exclusive(repo, || integrate(branch, parent, rebase, repo))
+/// How "Update from main" brings the base's new commits in (advice.rs recommends one).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum Method {
+    Merge,
+    Rebase,
+    SquashRebase,
+}
+
+/// Brings `parent`'s new commits into `branch`.
+pub fn update(branch: &str, parent: &str, method: Method, repo: &Path) -> Result<Integrated, String> {
+    exclusive(repo, || match method {
+        Method::Merge => integrate(branch, parent, false, repo),
+        Method::Rebase => integrate(branch, parent, true, repo),
+        Method::SquashRebase => squash_onto(branch, parent, repo),
+    })
+}
+
+/// The checked-out branch can't take a merge, rebase or squash over uncommitted tracked changes: an abort can't always
+/// restore them.
+fn refuse_uncommitted(repo: &Path) -> Result<(), String> {
+    let status = git::status(repo)?;
+    if status.files.len() > status.untracked.len() {
+        return Err("You have uncommitted changes on this branch. Commit or stash them first, so nothing can get lost if the update hits a conflict.".into());
+    }
+    Ok(())
+}
+
+/// Squash + rebase: one commit on top of `parent` holding the branch's whole change and all its messages. Built in
+/// memory from the same 3-way merge the squashed commit would replay, so there is no half-done state to abort: on a
+/// conflict it refuses and changes nothing (Merge or Rebase stop on them for the resolver).
+fn squash_onto(branch: &str, parent: &str, repo: &Path) -> Result<Integrated, String> {
+    let is_current = current_branch(repo).as_deref() == Some(branch);
+    if is_current {
+        refuse_uncommitted(repo)?;
+    }
+    let out = git::run_output(&["merge-tree", "--write-tree", "--name-only", "--no-messages", branch, parent], repo)?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let tree = lines.next().unwrap_or_default().to_string();
+    if !out.status.success() {
+        let files: Vec<&str> = lines.filter(|l| !l.is_empty()).collect();
+        return Err(if files.is_empty() {
+            String::from_utf8_lossy(&out.stderr).trim().to_string()
+        } else {
+            format!("Conflicts in:\n{}\nSquash + rebase only runs without conflicts: Merge or Rebase stop on them so you can resolve them.", files.join("\n"))
+        });
+    }
+    let old = run(&["rev-parse", &format!("refs/heads/{branch}")], repo)?.trim().to_string();
+    let message = run(&["log", "--reverse", "--format=%B", &format!("{parent}..{branch}")], repo)?;
+    let new = write_input(&["commit-tree", &tree, "-p", parent, "-F", "-"], repo, message.trim())?.trim().to_string();
+    if is_current {
+        write(&["reset", "--keep", &new], repo)?;
+    } else {
+        write(&["update-ref", "-m", &format!("squash + rebase onto {parent}"), &format!("refs/heads/{branch}"), &new, &old], repo)?;
+    }
+    Ok(Integrated::Done)
 }
 
 /// How bringing commits in went: done, or stopped on conflicts in the checkout (resolved in the app, or aborted).
@@ -364,10 +418,7 @@ fn integrate(branch: &str, parent: &str, rebase: bool, repo: &Path) -> Result<In
     let run_in = |dir: &Path| if rebase { write(&["rebase", parent], dir) } else { write(&["merge", "--no-edit", parent], dir) };
     let conflicts = |dir: &Path| read_opt(&["diff", "--name-only", "--diff-filter=U"], dir).unwrap_or_default().trim().to_string();
     if current_branch(repo).as_deref() == Some(branch) {
-        let status = git::status(repo)?;
-        if status.files.len() > status.untracked.len() {
-            return Err("You have uncommitted changes on this branch. Commit or stash them first, so nothing can get lost if the update hits a conflict.".into());
-        }
+        refuse_uncommitted(repo)?;
         return match run_in(repo) {
             Ok(_) => Ok(Integrated::Done),
             Err(_) if !conflicts(repo).is_empty() => Ok(Integrated::Conflicts),

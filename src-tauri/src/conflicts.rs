@@ -221,7 +221,7 @@ mod tests {
         repo.git(&["checkout", "-q", "main"]);
         repo.commit("a.txt", "main\n", "main change");
         repo.git(&["checkout", "-q", "feat"]);
-        assert_eq!(crate::actions::update("feat", "main", false, repo.path()).unwrap(), crate::actions::Integrated::Conflicts);
+        assert_eq!(crate::actions::update("feat", "main", crate::actions::Method::Merge, repo.path()).unwrap(), crate::actions::Integrated::Conflicts);
         let state = super::current(repo.path()).unwrap();
         assert_eq!((state.operation, state.files.as_slice(), state.incoming.as_str()), (super::Operation::Merge, ["a.txt".to_string()].as_slice(), "main"));
         assert!(super::continue_operation(repo.path()).is_err(), "still conflicted");
@@ -234,11 +234,11 @@ mod tests {
 
         // A rebase onto main: the user's commit is "mine" though git writes it second; abort goes back.
         repo.git(&["reset", "-q", "--hard", "HEAD~1"]);
-        assert_eq!(crate::actions::update("feat", "main", true, repo.path()).unwrap(), crate::actions::Integrated::Conflicts);
+        assert_eq!(crate::actions::update("feat", "main", crate::actions::Method::Rebase, repo.path()).unwrap(), crate::actions::Integrated::Conflicts);
         assert_eq!(super::read("a.txt", repo.path()).unwrap(), [Part::Conflict { mine: "feat\n".into(), theirs: "main\n".into() }]);
         super::abort(repo.path()).unwrap();
         assert_eq!(std::fs::read_to_string(repo.path().join("a.txt")).unwrap(), "feat\n");
-        assert_eq!(crate::actions::update("feat", "main", true, repo.path()).unwrap(), crate::actions::Integrated::Conflicts);
+        assert_eq!(crate::actions::update("feat", "main", crate::actions::Method::Rebase, repo.path()).unwrap(), crate::actions::Integrated::Conflicts);
         super::take("a.txt", true, repo.path()).unwrap();
         super::continue_operation(repo.path()).unwrap();
         assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "feat change");

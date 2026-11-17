@@ -44,6 +44,11 @@ pub fn write_input(args: &[&str], repo: &Path, input: &str) -> Result<String, St
     output(args, repo, Some(input), Kind::Write)
 }
 
+/// A read whose exit code is an answer and whose stdout matters either way (merge-tree, replay: 1 = conflicts).
+pub fn run_output(args: &[&str], repo: &Path) -> Result<Output, String> {
+    spawn(args, repo, None, Kind::Read)
+}
+
 /// A read whose failure means "nothing": a missing ref, no upstream, no match.
 pub fn read_opt(args: &[&str], repo: &Path) -> Option<String> {
     run(args, repo).ok()

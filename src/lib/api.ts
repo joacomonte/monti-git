@@ -147,6 +147,23 @@ export type Card = {
   unpushed: number; // of its own commits, how many the server doesn't have yet (all of them when never pushed)
 };
 
+/** How "Update from main" brings the base in (actions::Method). */
+export type UpdateMethod = "merge" | "rebase" | "squashRebase";
+/** Which way to update a branch from its base, and why (advice.rs): simulated in memory, judged on the last fetch.
+ *  `recommended` null: uncommitted changes in the way. `rebaseConflicts` null: not simulated (merge commits). */
+export type Advice = {
+  recommended: UpdateMethod | null;
+  reason: string;
+  own: number;
+  incoming: number;
+  dirty: number;
+  pushed: boolean;
+  others: string[];
+  merges: number;
+  mergeConflicts: string[];
+  rebaseConflicts: boolean | null;
+};
+
 /** Where a branch is and whether it can go (actions::Deletion). `missing`: targets its work isn't in yet; `target`: it's
  *  the base or an environment; `fetched` false: offline, judged on the last fetch. */
 export type Deletion = { local: boolean; remote: boolean; current: boolean; dirty: boolean; missing: string[]; target: boolean; fetched: boolean };
@@ -226,7 +243,9 @@ export const api = {
   baseStatus: (repo: string, base: string) => invoke<{ ahead: number; behind: number; remote: boolean }>("base_status", { repo, base }),
   startFeature: (repo: string, name: string, base: string, wip: WipMode | null) => invoke<string>("start_feature", { repo, name, base, wip }),
   /** "conflicts": the checked-out branch stopped for the resolver. */
-  updateBranch: (repo: string, branch: string, parent: string, rebase: boolean) => invoke<"done" | "conflicts">("update_branch", { repo, branch, parent, rebase }),
+  updateBranch: (repo: string, branch: string, parent: string, method: UpdateMethod) => invoke<"done" | "conflicts">("update_branch", { repo, branch, parent, method }),
+  /** Which way to bring `parent` into `branch`, and why. Changes nothing. */
+  updateAdvice: (repo: string, branch: string, parent: string) => invoke<Advice>("update_advice", { repo, branch, parent }),
   /** Sets the upstream the first time. "behind": refused, the server has commits the branch doesn't. */
   push: (repo: string, branch: string, force: boolean) => invoke<"done" | "behind">("push", { repo, branch, force }),
   /** After a refused push: rebases onto the server's commits, then pushes. */

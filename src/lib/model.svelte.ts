@@ -1,7 +1,7 @@
 // App state, ported from RepoModel in ContentView.swift: the open repo's graph, the selected commit's files and diff,
 // the repos in the sidebar, and the git actions. One class, because those three meet in every flow (an action reloads
 // the graph, a reload re-finds the selection, opening a repo resets both).
-import { api, WORKTREE_ID, type Card, type Commit, type Deletion, type DiffRow, type Discarded, type History, type HistoryQuery, type LineHits, type Pick, type RepoEntry, type RepoPicks, type CommitKind, type RewriteStep, type SyncResult, type WipMode } from "./api";
+import { api, WORKTREE_ID, type Card, type Commit, type Deletion, type DiffRow, type Discarded, type History, type HistoryQuery, type LineHits, type Pick, type RepoEntry, type RepoPicks, type CommitKind, type RewriteStep, type SyncResult, type UpdateMethod, type WipMode } from "./api";
 import { fileTree, filesInOrder, parentDirs } from "./fileTree";
 import { gitCommand, lineName, ranBy } from "./format";
 import { prefs, type Sources } from "./prefs";
@@ -900,15 +900,16 @@ export class RepoModel {
     return result;
   }
 
-  /** "Update from main": merge (or rebase) the base into the branch. Undo puts the branch back. */
-  async updateFromParent(card: Card, rebase: boolean): Promise<Outcome> {
+  /** "Update from main": merge, rebase, or squash + rebase the base into the branch. Undo puts the branch back. */
+  async updateFromParent(card: Card, method: UpdateMethod): Promise<Outcome> {
     const repo = this.repo, parent = this.history.base;
     if (!repo || !parent) return { ok: false, error: "No base branch" };
     const before = await api.branchTip(repo, card.local);
-    const text = `${rebase ? "Rebased" : "Merged"} ${parent} into ${card.local}`;
-    const result = await this.act(`${rebase ? "Rebasing" : "Merging"} ${parent} into ${card.local}…`, "Update failed",
-      [`${rebase ? "Rebasing" : "Merging"} ${parent} into ${card.local}`, "Aborts cleanly on a conflict"],
-      async (repo) => (await api.updateBranch(repo, card.local, parent, rebase)) === "done" ? text
+    const [doing, done] = { merge: ["Merging", "Merged"], rebase: ["Rebasing", "Rebased"], squashRebase: ["Squashing and rebasing", "Squashed and rebased"] }[method];
+    const text = method === "merge" ? `Merged ${parent} into ${card.local}` : `${done} ${card.local} onto ${parent}`;
+    const result = await this.act(`${doing} ${card.local}…`, "Update failed",
+      [method === "merge" ? `Merging ${parent} into ${card.local}` : `${doing} ${card.local} onto ${parent}`, method === "squashRebase" ? "Changes nothing on a conflict" : "Aborts cleanly on a conflict"],
+      async (repo) => (await api.updateBranch(repo, card.local, parent, method)) === "done" ? text
         : `Stopped on conflicts: resolve them on the uncommitted row, then Continue (or Abort to go back)`);
     if (result.ok && this.history.conflict) this.select(WORKTREE_ID); // the resolver is on the uncommitted row
     else if (result.ok) this.record(repo, text, result.started, await this.moveBack(repo, card.local, before));

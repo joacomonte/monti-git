@@ -101,14 +101,20 @@ fn list_branches(repo: &Path) -> Vec<Listed> {
 
 /// Whether a branch's newest commit was authored by the identity git commits with in `repo`.
 fn mine(repo: &Path) -> impl Fn(&Listed) -> bool {
+    let is_me = me(repo);
+    move |b: &Listed| is_me(&b.author, &b.email)
+}
+
+/// Whether an author (name, email) is the identity git commits with in `repo`: same name or email, ignoring case.
+pub fn me(repo: &Path) -> impl Fn(&str, &str) -> bool {
     // "Ana <ana@x.com> 1700000000 +0100": the effective name and email, wherever they are configured.
     let ident = run(&["var", "GIT_AUTHOR_IDENT"], repo).unwrap_or_default();
     let (name, rest) = ident.split_once(" <").unwrap_or_default();
     let email = rest.split_once('>').map(|(e, _)| e).unwrap_or_default();
     let (name, email) = (name.to_string(), email.to_string());
-    move |b: &Listed| {
+    move |author: &str, author_email: &str| {
         let same = |a: &str, b: &str| !b.is_empty() && a.eq_ignore_ascii_case(b);
-        same(&b.author, &name) || same(&b.email, &email)
+        same(author, &name) || same(author_email, &email)
     }
 }
 
