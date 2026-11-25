@@ -348,7 +348,8 @@ export class RepoModel {
   // Folder paths; the untracked section's are "untracked:"-prefixed, so each section opens its own "src".
   expandedDirs = $state.raw(new Set<string>());
   showAllFiles = $state(prefs.get("treeShowsAll", false));
-  private treeFor: string | null = null; // the selection the folders were opened for: a refresh keeps the user's collapses
+  private treeFor: string | null = null; // the selection (repo + commit) the folders were opened for
+  private autoOpened = new Set<string>(); // changed folders already opened for it: a refresh keeps the user's collapses
 
   fileFilter = $state<string | null>(null); // file shown in the diff pane
   diffOpen = $state(false); // diff pane under the graph: opens on the first file click in the tree
@@ -458,9 +459,17 @@ export class RepoModel {
       if (fresh()) this.diffMessage = `Couldn't read the files: ${firstLine(error)}`;
       return;
     }
-    if (this.treeFor !== commit.id) {
-      this.treeFor = commit.id;
-      this.openDirs(this.changedDirs); // a new selection opens the folders with changes
+    // A new selection opens the folders with changes; a refresh opens only folders that just got one (uncommitted).
+    const selection = repo + "\0" + commit.id;
+    if (this.treeFor !== selection) {
+      this.treeFor = selection;
+      this.autoOpened = new Set();
+      this.expandedDirs = new Set();
+    }
+    const newDirs = [...this.changedDirs].filter((dir) => !this.autoOpened.has(dir));
+    if (newDirs.length) {
+      newDirs.forEach((dir) => this.autoOpened.add(dir));
+      this.expandedDirs = new Set([...this.expandedDirs, ...newDirs.flatMap((dir) => [dir, "untracked:" + dir])]);
     }
     if (this.diffOpen && !this.jump && (!this.fileFilter || !(this.fileFilter in this.changes))) {
       this.fileFilter = this.changedOrder[0] ?? null; // new selection: start at the first changed file
